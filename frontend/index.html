@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/brand/Incos%20New%20Logo_Square.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>INCOS Workspace</title>
+    <script>
+      (() => {
+        const storedTheme = localStorage.getItem('incos-workspace-theme');
+        const theme = storedTheme === 'light' || storedTheme === 'dark' ? storedTheme : 'dark';
+        const storedLanguage = localStorage.getItem('incos-workspace-language');
+        const language = storedLanguage === 'ko' ? 'ko' : 'en';
+        document.documentElement.classList.toggle('dark', theme === 'dark');
+        document.documentElement.style.colorScheme = theme;
+        document.documentElement.lang = language;
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

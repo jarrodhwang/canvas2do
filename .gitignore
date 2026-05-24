@@ -1,0 +1,16 @@
+bin/
+obj/
+node_modules/
+dist/
+.vite/
+.env
+.env.*
+!.env.example
+.DS_Store
+*.user
+*.suo
+*.log
+frontend/node_modules/
+frontend/dist/
+backend/**/bin/
+backend/**/obj/

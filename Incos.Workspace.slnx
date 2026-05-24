@@ -1,0 +1,5 @@
+<Solution>
+  <Folder Name="/backend/">
+    <Project Path="backend/Incos.Workspace.Api/Incos.Workspace.Api.csproj" />
+  </Folder>
+</Solution>

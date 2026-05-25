@@ -194,7 +194,21 @@ public sealed record GoogleChatMessageDto(
     string Name,
     string Sender,
     string Text,
-    DateTimeOffset? CreatedAt);
+    DateTimeOffset? CreatedAt,
+    string? SenderName = null,
+    string? SenderEmail = null,
+    string? SenderType = null,
+    string? SenderAvatarUrl = null,
+    GoogleChatAttachmentDto[]? Attachments = null);
+
+public sealed record GoogleChatAttachmentDto(
+    string Name,
+    string FileName,
+    string ContentType,
+    string Source,
+    string? ThumbnailUri = null,
+    string? DownloadUri = null,
+    string? DriveFileId = null);
 
 public sealed record GoogleChatSpaceDto(
     string Name,

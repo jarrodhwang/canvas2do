@@ -63,6 +63,8 @@ const dictionary = {
     dashboardStartMeetingNow: 'Start meeting now',
     dashboardPlanMeeting: 'Plan meeting',
     dashboardWriteMeetingReport: 'Write in-person meeting report',
+    boardCourseMenu: 'Courses',
+    boardAddTodoItem: 'Add todo item',
     dashboardCards: {
       academy: {
         'semester-lectures': {
@@ -524,6 +526,8 @@ const dictionary = {
     dashboardStartMeetingNow: '지금 회의 시작',
     dashboardPlanMeeting: '회의 예약',
     dashboardWriteMeetingReport: '대면 회의 보고서 작성',
+    boardCourseMenu: '과목',
+    boardAddTodoItem: '할 일 추가',
     dashboardCards: {
       academy: {
         'semester-lectures': {

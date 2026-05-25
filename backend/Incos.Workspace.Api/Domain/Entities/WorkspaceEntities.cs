@@ -242,6 +242,16 @@ public sealed class ScheduledGmailMessage : AuditableEntity
     public string? GmailThreadId { get; set; }
 }
 
+public sealed class GoogleOAuthToken : AuditableEntity
+{
+    public string UserKey { get; set; } = string.Empty;
+    public string? Email { get; set; }
+    public string AccessToken { get; set; } = string.Empty;
+    public string? RefreshToken { get; set; }
+    public DateTimeOffset? AccessTokenExpiresAt { get; set; }
+    public string? Scope { get; set; }
+}
+
 public sealed class AuditLog : Entity
 {
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;

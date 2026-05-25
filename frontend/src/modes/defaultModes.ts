@@ -100,7 +100,7 @@ export const defaultModeConfigs: WorkspaceModeConfig[] = [
     ],
     calendar: {
       title: 'Academy Calendar',
-      subtitle: 'Routine, lectures, assignments, quizzes, exams, and study links.',
+      subtitle: '',
       behavior: [
         'Mood and routine status can appear in each day cell.',
         'Assignment starts use a light dot, active assignment spans use thin timeline bars, and due dates use stronger markers.',
@@ -117,10 +117,10 @@ export const defaultModeConfigs: WorkspaceModeConfig[] = [
     },
     board: {
       columns: [
-        { id: 'upcoming', label: 'Upcoming', color: 'purple' },
-        { id: 'doing', label: 'Doing', color: 'blue' },
-        { id: 'waiting', label: 'Waiting', color: 'orange' },
-        { id: 'done', label: 'Done', color: 'green' },
+        { id: 'cmpt225', label: 'CMPT225', color: 'blue' },
+        { id: 'math202', label: 'MATH202', color: 'orange' },
+        { id: 'engl110', label: 'ENGL110', color: 'purple' },
+        { id: 'cmpt276', label: 'CMPT276', color: 'green' },
       ],
     },
     detailFields: [

@@ -33,6 +33,10 @@ public static class GoogleIntegrationEndpoints
     private const string ScheduledGmailStatusSent = "sent";
     private const string ScheduledGmailStatusFailed = "failed";
     private const string ScheduledGmailStatusCancelled = "cancelled";
+    private const string ChatMessageFields =
+        "messages(name,text,argumentText,formattedText,createTime,sender(name,displayName,email,type),attachment(name,contentName,contentType,thumbnailUri,downloadUri,source,driveDataRef(driveFileId))),nextPageToken";
+    private const string ChatMessageFieldsWithAvatar =
+        "messages(name,text,argumentText,formattedText,createTime,sender(name,displayName,email,type,avatarUrl),attachment(name,contentName,contentType,thumbnailUri,downloadUri,source,driveDataRef(driveFileId))),nextPageToken";
 
     private sealed record GmailMessagesPage(
         GoogleGmailMessageDto[] Messages,
@@ -1071,7 +1075,24 @@ public static class GoogleIntegrationEndpoints
             return accessToken;
         }
 
+        var db = context.RequestServices.GetService<IncosWorkspaceDbContext>();
+        var storedToken = db is null
+            ? null
+            : await GetStoredGoogleOAuthTokenAsync(db, context.User, cancellationToken);
+
+        if (storedToken is not null &&
+            !ShouldRefreshAccessToken(
+                storedToken.AccessToken,
+                storedToken.AccessTokenExpiresAt?.ToString("o", CultureInfo.InvariantCulture)))
+        {
+            await StoreGoogleTokenInCookieAsync(context, storedToken);
+            return storedToken.AccessToken;
+        }
+
         var refreshToken = await context.GetTokenAsync("refresh_token");
+        refreshToken = string.IsNullOrWhiteSpace(refreshToken)
+            ? storedToken?.RefreshToken
+            : refreshToken;
 
         if (string.IsNullOrWhiteSpace(refreshToken))
         {
@@ -1103,6 +1124,15 @@ public static class GoogleIntegrationEndpoints
         }
 
         await StoreRefreshedGoogleTokenAsync(context, refreshedToken, refreshToken);
+        if (db is not null)
+        {
+            await StoreRefreshedGoogleTokenAsync(
+                db,
+                context.User,
+                refreshedToken,
+                refreshToken,
+                cancellationToken);
+        }
 
         return refreshedToken.AccessToken;
     }
@@ -1198,6 +1228,96 @@ public static class GoogleIntegrationEndpoints
             StoreToken(tokens, "scope", refreshedToken.Scope);
         }
 
+        properties.StoreTokens(tokens);
+        await context.SignInAsync(
+            CookieAuthenticationDefaults.AuthenticationScheme,
+            authenticateResult.Principal,
+            properties);
+    }
+
+    private static async Task<GoogleOAuthToken?> GetStoredGoogleOAuthTokenAsync(
+        IncosWorkspaceDbContext db,
+        ClaimsPrincipal user,
+        CancellationToken cancellationToken)
+    {
+        await EnsureGoogleOAuthTokensTableAsync(db, cancellationToken);
+        var userKey = GetCurrentUserKey(user);
+
+        return await db.GoogleOAuthTokens
+            .AsNoTracking()
+            .FirstOrDefaultAsync(token => token.UserKey == userKey, cancellationToken);
+    }
+
+    private static async Task StoreRefreshedGoogleTokenAsync(
+        IncosWorkspaceDbContext db,
+        ClaimsPrincipal user,
+        GoogleTokenRefreshResult refreshedToken,
+        string previousRefreshToken,
+        CancellationToken cancellationToken)
+    {
+        await EnsureGoogleOAuthTokensTableAsync(db, cancellationToken);
+        var userKey = GetCurrentUserKey(user);
+        var now = DateTimeOffset.UtcNow;
+        var token = await db.GoogleOAuthTokens
+            .FirstOrDefaultAsync(currentToken => currentToken.UserKey == userKey, cancellationToken);
+
+        if (token is null)
+        {
+            token = new GoogleOAuthToken
+            {
+                Id = Guid.NewGuid(),
+                CreatedAt = now,
+                UserKey = userKey,
+                Email = user.FindFirstValue(ClaimTypes.Email),
+            };
+            db.GoogleOAuthTokens.Add(token);
+        }
+
+        token.AccessToken = refreshedToken.AccessToken;
+        token.RefreshToken = refreshedToken.RefreshToken ?? previousRefreshToken;
+        token.AccessTokenExpiresAt = now.AddSeconds(Math.Max(60, refreshedToken.ExpiresIn - 60));
+        token.Scope = string.IsNullOrWhiteSpace(refreshedToken.Scope)
+            ? token.Scope
+            : refreshedToken.Scope;
+        token.UpdatedAt = now;
+
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private static async Task StoreGoogleTokenInCookieAsync(HttpContext context, GoogleOAuthToken storedToken)
+    {
+        var authenticateResult = await context.AuthenticateAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+
+        if (!authenticateResult.Succeeded || authenticateResult.Principal is null)
+        {
+            return;
+        }
+
+        var properties = authenticateResult.Properties ?? new AuthenticationProperties();
+        var tokens = properties.GetTokens().ToList();
+
+        StoreToken(tokens, "access_token", storedToken.AccessToken);
+
+        if (storedToken.AccessTokenExpiresAt.HasValue)
+        {
+            StoreToken(
+                tokens,
+                "expires_at",
+                storedToken.AccessTokenExpiresAt.Value.ToString("o", CultureInfo.InvariantCulture));
+        }
+
+        if (!string.IsNullOrWhiteSpace(storedToken.RefreshToken))
+        {
+            StoreToken(tokens, "refresh_token", storedToken.RefreshToken);
+        }
+
+        if (!string.IsNullOrWhiteSpace(storedToken.Scope))
+        {
+            StoreToken(tokens, "scope", storedToken.Scope);
+        }
+
+        properties.IsPersistent = true;
+        properties.ExpiresUtc = DateTimeOffset.UtcNow.AddDays(14);
         properties.StoreTokens(tokens);
         await context.SignInAsync(
             CookieAuthenticationDefaults.AuthenticationScheme,
@@ -1477,6 +1597,27 @@ public static class GoogleIntegrationEndpoints
             );
             CREATE INDEX IF NOT EXISTS "IX_scheduled_gmail_messages_UserKey_Status_ScheduledFor"
                 ON scheduled_gmail_messages ("UserKey", "Status", "ScheduledFor");
+            """,
+            cancellationToken);
+
+    public static Task EnsureGoogleOAuthTokensTableAsync(
+        IncosWorkspaceDbContext db,
+        CancellationToken cancellationToken = default) =>
+        db.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE IF NOT EXISTS google_oauth_tokens (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                "UserKey" character varying(320) NOT NULL,
+                "Email" character varying(320) NULL,
+                "AccessToken" text NOT NULL,
+                "RefreshToken" text NULL,
+                "AccessTokenExpiresAt" timestamp with time zone NULL,
+                "Scope" text NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_google_oauth_tokens_UserKey"
+                ON google_oauth_tokens ("UserKey");
             """,
             cancellationToken);
 
@@ -2346,11 +2487,10 @@ public static class GoogleIntegrationEndpoints
             return [];
         }
 
+        var searchTerm = search?.Trim();
         var spaces = spacesElement
             .EnumerateArray()
             .Select(CreateGoogleChatSpaceSeed)
-            .Where(space => string.IsNullOrWhiteSpace(search) ||
-                            space.DisplayName.Contains(search.Trim(), StringComparison.OrdinalIgnoreCase))
             .Take(pageSize)
             .ToArray();
         var spacesWithMessages = await Task.WhenAll(spaces.Select(async space =>
@@ -2364,11 +2504,13 @@ public static class GoogleIntegrationEndpoints
             return space with
             {
                 Messages = messages,
-                LastActiveTime = space.LastActiveTime ?? messages.FirstOrDefault()?.CreatedAt,
+                DisplayName = CreateChatSpaceDisplayName(space, messages),
+                LastActiveTime = space.LastActiveTime ?? messages.LastOrDefault()?.CreatedAt,
             };
         }));
 
         return spacesWithMessages
+            .Where(space => string.IsNullOrWhiteSpace(searchTerm) || MatchesChatSearch(space, searchTerm))
             .OrderByDescending(space => space.LastActiveTime)
             .ThenBy(space => space.DisplayName)
             .ToArray();
@@ -2407,26 +2549,68 @@ public static class GoogleIntegrationEndpoints
                 $"https://chat.googleapis.com/v1/{spaceName}/messages",
                 new Dictionary<string, string?>
                 {
-                    ["pageSize"] = "8",
+                    ["pageSize"] = "20",
                     ["orderBy"] = "createTime DESC",
-                    ["fields"] = "messages(name,text,argumentText,formattedText,createTime,sender(displayName,email,type)),nextPageToken",
+                    ["fields"] = ChatMessageFieldsWithAvatar,
                 });
-            var payload = await SendGoogleGetAsync(
-                httpClientFactory,
-                accessToken,
-                requestUrl,
-                "Google Chat messages request failed.",
-                cancellationToken);
+            string payload;
+
+            try
+            {
+                payload = await SendGoogleGetAsync(
+                    httpClientFactory,
+                    accessToken,
+                    requestUrl,
+                    "Google Chat messages request failed.",
+                    cancellationToken);
+            }
+            catch (GoogleApiRequestException exception) when (exception.StatusCode == StatusCodes.Status400BadRequest)
+            {
+                var fallbackRequestUrl = QueryHelpers.AddQueryString(
+                    $"https://chat.googleapis.com/v1/{spaceName}/messages",
+                    new Dictionary<string, string?>
+                    {
+                        ["pageSize"] = "20",
+                        ["orderBy"] = "createTime DESC",
+                        ["fields"] = ChatMessageFields,
+                    });
+                payload = await SendGoogleGetAsync(
+                    httpClientFactory,
+                    accessToken,
+                    fallbackRequestUrl,
+                    "Google Chat messages request failed.",
+                    cancellationToken);
+            }
 
             using var document = JsonDocument.Parse(payload);
 
-            return document.RootElement.TryGetProperty("messages", out var messagesElement)
-                ? messagesElement
-                    .EnumerateArray()
-                    .Select(CreateGoogleChatMessageDto)
-                    .OrderBy(message => message.CreatedAt)
-                    .ToArray()
-                : [];
+            if (!document.RootElement.TryGetProperty("messages", out var messagesElement))
+            {
+                return [];
+            }
+
+            var messages = messagesElement
+                .EnumerateArray()
+                .Select(CreateGoogleChatMessageDto)
+                .OrderBy(message => message.CreatedAt)
+                .ToArray();
+
+            var profileEnrichedMessages = await EnrichChatMessagesWithGoogleProfilesAsync(
+                httpClientFactory,
+                accessToken,
+                messages,
+                cancellationToken);
+            var directoryEnrichedMessages = await EnrichChatMessagesWithDirectoryProfilesAsync(
+                httpClientFactory,
+                accessToken,
+                profileEnrichedMessages,
+                cancellationToken);
+
+            return await EnrichChatMessagesWithDrivePermissionPhotosAsync(
+                httpClientFactory,
+                accessToken,
+                directoryEnrichedMessages,
+                cancellationToken);
         }
         catch (GoogleApiRequestException exception) when (exception.StatusCode is StatusCodes.Status403Forbidden or StatusCodes.Status404NotFound)
         {
@@ -2436,19 +2620,662 @@ public static class GoogleIntegrationEndpoints
 
     private static GoogleChatMessageDto CreateGoogleChatMessageDto(JsonElement message)
     {
-        var sender = message.TryGetProperty("sender", out var senderElement)
-            ? GetJsonString(senderElement, "displayName") ?? GetJsonString(senderElement, "email")
-            : null;
+        var senderName = string.Empty;
+        var senderEmail = (string?)null;
+        var senderType = (string?)null;
+        var senderAvatarUrl = (string?)null;
+        var sender = (string?)null;
+
+        if (message.TryGetProperty("sender", out var senderElement))
+        {
+            senderName = GetJsonString(senderElement, "name") ?? string.Empty;
+            senderEmail = GetJsonString(senderElement, "email");
+            senderType = GetJsonString(senderElement, "type");
+            senderAvatarUrl = GetJsonString(senderElement, "avatarUrl");
+            sender = GetJsonString(senderElement, "displayName") ?? senderEmail;
+        }
+
         var text = GetJsonString(message, "text") ??
                    GetJsonString(message, "argumentText") ??
                    GetJsonString(message, "formattedText") ??
-                   "(No message text)";
+                   string.Empty;
+        var attachments = GetChatAttachments(message);
+        var cleanedSender = CleanChatSenderName(sender);
 
         return new GoogleChatMessageDto(
             GetJsonString(message, "name") ?? string.Empty,
-            string.IsNullOrWhiteSpace(sender) ? "Google Chat" : sender,
-            NormalizeWhitespace(StripHtml(text)),
-            GetJsonDateTimeOffset(message, "createTime"));
+            string.IsNullOrWhiteSpace(cleanedSender) ? "Google Chat" : cleanedSender,
+            string.IsNullOrWhiteSpace(text) && attachments.Length > 0
+                ? string.Empty
+                : NormalizeChatText(StripHtml(text)),
+            GetJsonDateTimeOffset(message, "createTime"),
+            senderName,
+            senderEmail,
+            senderType,
+            senderAvatarUrl,
+            attachments);
+    }
+
+    private static async Task<GoogleChatMessageDto[]> EnrichChatMessagesWithGoogleProfilesAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        GoogleChatMessageDto[] messages,
+        CancellationToken cancellationToken)
+    {
+        var senderResourceNames = messages
+            .Select(message => message.SenderName)
+            .Where(IsGoogleHumanUserResourceName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (senderResourceNames.Length == 0)
+        {
+            return messages;
+        }
+
+        var profileTasks = senderResourceNames.Select(async senderResourceName => new
+        {
+            SenderResourceName = senderResourceName!,
+            Profile = await GetGoogleWorkspaceProfileAsync(
+                httpClientFactory,
+                accessToken,
+                senderResourceName!,
+                cancellationToken),
+        });
+        var profiles = (await Task.WhenAll(profileTasks))
+            .Where(result => result.Profile is not null)
+            .ToDictionary(
+                result => result.SenderResourceName,
+                result => result.Profile!,
+                StringComparer.OrdinalIgnoreCase);
+
+        if (profiles.Count == 0)
+        {
+            return messages;
+        }
+
+        return messages
+            .Select(message =>
+            {
+                if (string.IsNullOrWhiteSpace(message.SenderName) ||
+                    !profiles.TryGetValue(message.SenderName, out var profile))
+                {
+                    return message;
+                }
+
+                return message with
+                {
+                    Sender = string.IsNullOrWhiteSpace(profile.DisplayName) ? message.Sender : profile.DisplayName,
+                    SenderEmail = string.IsNullOrWhiteSpace(profile.Email) ? message.SenderEmail : profile.Email,
+                    SenderAvatarUrl = string.IsNullOrWhiteSpace(profile.PhotoUrl) ? message.SenderAvatarUrl : profile.PhotoUrl,
+                };
+            })
+            .ToArray();
+    }
+
+    private static bool IsGoogleHumanUserResourceName(string? senderResourceName) =>
+        !string.IsNullOrWhiteSpace(senderResourceName) &&
+        senderResourceName.StartsWith("users/", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(senderResourceName, "users/app", StringComparison.OrdinalIgnoreCase);
+
+    private static async Task<GoogleWorkspaceProfile?> GetGoogleWorkspaceProfileAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        string senderResourceName,
+        CancellationToken cancellationToken)
+    {
+        var personId = senderResourceName["users/".Length..].Trim();
+
+        if (string.IsNullOrWhiteSpace(personId))
+        {
+            return null;
+        }
+
+        var requestUrl = QueryHelpers.AddQueryString(
+            $"https://people.googleapis.com/v1/people/{Uri.EscapeDataString(personId)}",
+            new Dictionary<string, string?>
+            {
+                ["personFields"] = "names,emailAddresses,photos",
+                ["fields"] = "names(displayName),emailAddresses(value),photos(url,default)",
+            });
+        string payload;
+
+        try
+        {
+            payload = await SendGoogleGetAsync(
+                httpClientFactory,
+                accessToken,
+                requestUrl,
+                "Google Workspace profile request failed.",
+                cancellationToken);
+        }
+        catch (GoogleApiRequestException exception) when (exception.StatusCode is
+            StatusCodes.Status400BadRequest or
+            StatusCodes.Status403Forbidden or
+            StatusCodes.Status404NotFound)
+        {
+            return null;
+        }
+
+        using var document = JsonDocument.Parse(payload);
+
+        return new GoogleWorkspaceProfile(
+            GetPeopleDisplayName(document.RootElement),
+            GetPeopleEmail(document.RootElement),
+            GetPeoplePhotoUrl(document.RootElement));
+    }
+
+    private static string? GetPeopleDisplayName(JsonElement person) =>
+        person.TryGetProperty("names", out var namesElement) &&
+        namesElement.ValueKind == JsonValueKind.Array
+            ? namesElement
+                .EnumerateArray()
+                .Select(name => GetJsonString(name, "displayName"))
+                .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
+            : null;
+
+    private static string? GetPeopleEmail(JsonElement person) =>
+        person.TryGetProperty("emailAddresses", out var emailsElement) &&
+        emailsElement.ValueKind == JsonValueKind.Array
+            ? emailsElement
+                .EnumerateArray()
+                .Select(email => GetJsonString(email, "value"))
+                .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
+            : null;
+
+    private static string? GetPeoplePhotoUrl(JsonElement person)
+    {
+        if (!person.TryGetProperty("photos", out var photosElement) ||
+            photosElement.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var photos = photosElement.EnumerateArray().ToArray();
+        var nonDefaultPhoto = photos.FirstOrDefault(photo =>
+            photo.TryGetProperty("default", out var defaultElement) &&
+            defaultElement.ValueKind == JsonValueKind.False);
+        var photoUrl = nonDefaultPhoto.ValueKind == JsonValueKind.Object
+            ? GetJsonString(nonDefaultPhoto, "url")
+            : null;
+
+        return string.IsNullOrWhiteSpace(photoUrl)
+            ? photos.Select(photo => GetJsonString(photo, "url")).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
+            : photoUrl;
+    }
+
+    private static async Task<GoogleChatMessageDto[]> EnrichChatMessagesWithDirectoryProfilesAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        GoogleChatMessageDto[] messages,
+        CancellationToken cancellationToken)
+    {
+        var queries = messages
+            .SelectMany(CreateDirectoryProfileQueries)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(20)
+            .ToArray();
+
+        if (queries.Length == 0)
+        {
+            return messages;
+        }
+
+        var profileTasks = queries.Select(query => GetGoogleDirectoryProfileAsync(
+            httpClientFactory,
+            accessToken,
+            query,
+            cancellationToken));
+        var profiles = (await Task.WhenAll(profileTasks))
+            .Where(profile => profile is not null)
+            .Select(profile => profile!)
+            .GroupBy(
+                profile => profile.Email ?? profile.DisplayName ?? profile.PhotoUrl,
+                StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToArray();
+
+        if (profiles.Length == 0)
+        {
+            return messages;
+        }
+
+        return messages
+            .Select(message =>
+            {
+                var matchedProfile = FindMatchingGoogleWorkspaceProfile(message, profiles);
+
+                if (matchedProfile is null)
+                {
+                    return message;
+                }
+
+                return message with
+                {
+                    Sender = string.IsNullOrWhiteSpace(matchedProfile.DisplayName)
+                        ? message.Sender
+                        : matchedProfile.DisplayName,
+                    SenderEmail = string.IsNullOrWhiteSpace(matchedProfile.Email)
+                        ? message.SenderEmail
+                        : matchedProfile.Email,
+                    SenderAvatarUrl = string.IsNullOrWhiteSpace(matchedProfile.PhotoUrl)
+                        ? message.SenderAvatarUrl
+                        : matchedProfile.PhotoUrl,
+                };
+            })
+            .ToArray();
+    }
+
+    private static IEnumerable<string?> CreateDirectoryProfileQueries(GoogleChatMessageDto message)
+    {
+        yield return message.SenderEmail;
+        yield return ExtractEmailAddress(message.Text);
+        yield return ExtractChatActorName(message.Text);
+
+        if (!string.Equals(message.Sender, "Google Chat", StringComparison.OrdinalIgnoreCase))
+        {
+            yield return message.Sender;
+        }
+    }
+
+    private static async Task<GoogleWorkspaceProfile?> GetGoogleDirectoryProfileAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        string query,
+        CancellationToken cancellationToken)
+    {
+        var requestUrl = QueryHelpers.AddQueryString(
+            "https://people.googleapis.com/v1/people:searchDirectoryPeople",
+            new Dictionary<string, string?>
+            {
+                ["query"] = query,
+                ["readMask"] = "names,emailAddresses,photos",
+                ["sources"] = "DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE",
+                ["pageSize"] = "5",
+                ["fields"] = "people(names(displayName),emailAddresses(value),photos(url,default))",
+            });
+        string payload;
+
+        try
+        {
+            payload = await SendGoogleGetAsync(
+                httpClientFactory,
+                accessToken,
+                requestUrl,
+                "Google Workspace directory profile request failed.",
+                cancellationToken);
+        }
+        catch (GoogleApiRequestException exception) when (exception.StatusCode is
+            StatusCodes.Status400BadRequest or
+            StatusCodes.Status403Forbidden or
+            StatusCodes.Status404NotFound)
+        {
+            return null;
+        }
+
+        using var document = JsonDocument.Parse(payload);
+
+        if (!document.RootElement.TryGetProperty("people", out var peopleElement) ||
+            peopleElement.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var profiles = peopleElement
+            .EnumerateArray()
+            .Select(person => new GoogleWorkspaceProfile(
+                GetPeopleDisplayName(person),
+                GetPeopleEmail(person),
+                GetPeoplePhotoUrl(person)))
+            .ToArray();
+
+        return FindBestGoogleWorkspaceProfile(query, profiles);
+    }
+
+    private static GoogleWorkspaceProfile? FindBestGoogleWorkspaceProfile(
+        string query,
+        GoogleWorkspaceProfile[] profiles)
+    {
+        var queryEmail = ExtractEmailAddress(query) ?? (query.Contains('@', StringComparison.Ordinal) ? query : null);
+        var normalizedQuery = NormalizeIdentityName(query);
+
+        return profiles.FirstOrDefault(profile =>
+                   !string.IsNullOrWhiteSpace(queryEmail) &&
+                   string.Equals(profile.Email, queryEmail, StringComparison.OrdinalIgnoreCase)) ??
+               profiles.FirstOrDefault(profile =>
+                   !string.IsNullOrWhiteSpace(normalizedQuery) &&
+                   string.Equals(NormalizeIdentityName(profile.DisplayName), normalizedQuery, StringComparison.OrdinalIgnoreCase)) ??
+               profiles.FirstOrDefault(profile => !string.IsNullOrWhiteSpace(profile.PhotoUrl));
+    }
+
+    private static GoogleWorkspaceProfile? FindMatchingGoogleWorkspaceProfile(
+        GoogleChatMessageDto message,
+        GoogleWorkspaceProfile[] profiles)
+    {
+        var senderEmail = message.SenderEmail ?? ExtractEmailAddress(message.Text);
+
+        if (!string.IsNullOrWhiteSpace(senderEmail))
+        {
+            var emailMatch = profiles.FirstOrDefault(profile =>
+                string.Equals(profile.Email, senderEmail, StringComparison.OrdinalIgnoreCase));
+
+            if (emailMatch is not null)
+            {
+                return emailMatch;
+            }
+        }
+
+        var senderName = NormalizeIdentityName(ExtractChatActorName(message.Text) ?? message.Sender);
+
+        if (string.IsNullOrWhiteSpace(senderName))
+        {
+            return null;
+        }
+
+        return profiles.FirstOrDefault(profile =>
+        {
+            var profileName = NormalizeIdentityName(profile.DisplayName);
+
+            return !string.IsNullOrWhiteSpace(profileName) &&
+                   (profileName.Contains(senderName, StringComparison.OrdinalIgnoreCase) ||
+                    senderName.Contains(profileName, StringComparison.OrdinalIgnoreCase));
+        });
+    }
+
+    private static async Task<GoogleChatMessageDto[]> EnrichChatMessagesWithDrivePermissionPhotosAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        GoogleChatMessageDto[] messages,
+        CancellationToken cancellationToken)
+    {
+        var driveFileIds = messages
+            .SelectMany(message => message.Attachments ?? [])
+            .Select(attachment => attachment.DriveFileId)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(12)
+            .ToArray();
+
+        if (driveFileIds.Length == 0)
+        {
+            return messages;
+        }
+
+        var permissionTasks = driveFileIds.Select(fileId => GetGoogleDrivePermissionProfilesAsync(
+            httpClientFactory,
+            accessToken,
+            fileId!,
+            cancellationToken));
+        var permissionProfiles = (await Task.WhenAll(permissionTasks))
+            .SelectMany(profile => profile)
+            .Where(profile => !string.IsNullOrWhiteSpace(profile.PhotoLink))
+            .GroupBy(
+                profile => profile.EmailAddress ?? profile.DisplayName ?? profile.PhotoLink,
+                StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToArray();
+
+        if (permissionProfiles.Length == 0)
+        {
+            return messages;
+        }
+
+        return messages
+            .Select(message =>
+            {
+                var matchedProfile = FindMatchingDrivePermissionProfile(message, permissionProfiles);
+
+                if (matchedProfile is null)
+                {
+                    return message;
+                }
+
+                return message with
+                {
+                    Sender = string.IsNullOrWhiteSpace(matchedProfile.DisplayName)
+                        ? message.Sender
+                        : matchedProfile.DisplayName,
+                    SenderEmail = string.IsNullOrWhiteSpace(matchedProfile.EmailAddress)
+                        ? message.SenderEmail
+                        : matchedProfile.EmailAddress,
+                    SenderAvatarUrl = string.IsNullOrWhiteSpace(matchedProfile.PhotoLink)
+                        ? message.SenderAvatarUrl
+                        : matchedProfile.PhotoLink,
+                };
+            })
+            .ToArray();
+    }
+
+    private static async Task<GoogleDrivePermissionProfile[]> GetGoogleDrivePermissionProfilesAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        string fileId,
+        CancellationToken cancellationToken)
+    {
+        var requestUrl = QueryHelpers.AddQueryString(
+            $"https://www.googleapis.com/drive/v3/files/{Uri.EscapeDataString(fileId)}/permissions",
+            new Dictionary<string, string?>
+            {
+                ["supportsAllDrives"] = "true",
+                ["fields"] = "permissions(type,displayName,emailAddress,photoLink,deleted)",
+            });
+        string payload;
+
+        try
+        {
+            payload = await SendGoogleGetAsync(
+                httpClientFactory,
+                accessToken,
+                requestUrl,
+                "Google Drive permissions request failed.",
+                cancellationToken);
+        }
+        catch (GoogleApiRequestException exception) when (exception.StatusCode is
+            StatusCodes.Status400BadRequest or
+            StatusCodes.Status403Forbidden or
+            StatusCodes.Status404NotFound)
+        {
+            return [];
+        }
+
+        using var document = JsonDocument.Parse(payload);
+
+        return document.RootElement.TryGetProperty("permissions", out var permissionsElement) &&
+               permissionsElement.ValueKind == JsonValueKind.Array
+            ? permissionsElement
+                .EnumerateArray()
+                .Where(permission =>
+                    string.Equals(GetJsonString(permission, "type"), "user", StringComparison.OrdinalIgnoreCase) &&
+                    GetJsonBool(permission, "deleted") != true)
+                .Select(permission => new GoogleDrivePermissionProfile(
+                    GetJsonString(permission, "displayName"),
+                    GetJsonString(permission, "emailAddress"),
+                    GetJsonString(permission, "photoLink")))
+                .Where(profile => !string.IsNullOrWhiteSpace(profile.PhotoLink))
+                .ToArray()
+            : [];
+    }
+
+    private static GoogleDrivePermissionProfile? FindMatchingDrivePermissionProfile(
+        GoogleChatMessageDto message,
+        GoogleDrivePermissionProfile[] permissionProfiles)
+    {
+        var senderEmail = message.SenderEmail ?? ExtractEmailAddress(message.Text);
+
+        if (!string.IsNullOrWhiteSpace(senderEmail))
+        {
+            var emailMatch = permissionProfiles.FirstOrDefault(profile =>
+                string.Equals(profile.EmailAddress, senderEmail, StringComparison.OrdinalIgnoreCase));
+
+            if (emailMatch is not null)
+            {
+                return emailMatch;
+            }
+        }
+
+        var actorName = ExtractChatActorName(message.Text);
+        var senderName = NormalizeIdentityName(actorName ?? message.Sender);
+
+        if (string.IsNullOrWhiteSpace(senderName))
+        {
+            return null;
+        }
+
+        return permissionProfiles.FirstOrDefault(profile =>
+        {
+            var profileName = NormalizeIdentityName(profile.DisplayName);
+
+            return !string.IsNullOrWhiteSpace(profileName) &&
+                   (profileName.Contains(senderName, StringComparison.OrdinalIgnoreCase) ||
+                    senderName.Contains(profileName, StringComparison.OrdinalIgnoreCase));
+        });
+    }
+
+    private static string? ExtractEmailAddress(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        var emailMatch = Regex.Match(
+            text,
+            @"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        return emailMatch.Success ? emailMatch.Value : null;
+    }
+
+    private static string? NormalizeIdentityName(string? value)
+    {
+        var cleanedValue = CleanChatSenderName(value);
+
+        return string.IsNullOrWhiteSpace(cleanedValue)
+            ? null
+            : Regex.Replace(cleanedValue.ToUpperInvariant(), @"[^\p{L}\p{N}]+", "", RegexOptions.Compiled);
+    }
+
+    private static GoogleChatAttachmentDto[] GetChatAttachments(JsonElement message)
+    {
+        if (!message.TryGetProperty("attachment", out var attachmentsElement) ||
+            attachmentsElement.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        return attachmentsElement
+            .EnumerateArray()
+            .Select(attachment =>
+            {
+                var driveFileId = attachment.TryGetProperty("driveDataRef", out var driveDataRef)
+                    ? GetJsonString(driveDataRef, "driveFileId")
+                    : null;
+                var fileName = GetJsonString(attachment, "contentName");
+
+                return new GoogleChatAttachmentDto(
+                    GetJsonString(attachment, "name") ?? string.Empty,
+                    string.IsNullOrWhiteSpace(fileName) ? "Attachment" : fileName,
+                    GetJsonString(attachment, "contentType") ?? "application/octet-stream",
+                    GetJsonString(attachment, "source") ?? "UPLOADED_CONTENT",
+                    GetJsonString(attachment, "thumbnailUri"),
+                    GetJsonString(attachment, "downloadUri"),
+                    driveFileId);
+            })
+            .ToArray();
+    }
+
+    private static string CreateChatSpaceDisplayName(GoogleChatSpaceDto space, GoogleChatMessageDto[] messages)
+    {
+        if (!IsGeneratedChatSpaceDisplayName(space.DisplayName, space.SpaceType))
+        {
+            return space.DisplayName;
+        }
+
+        var latestMessage = messages.LastOrDefault();
+        var inferredName = latestMessage is null
+            ? null
+            : ExtractChatActorName(latestMessage.Text) ?? latestMessage.Sender;
+
+        if (!string.IsNullOrWhiteSpace(inferredName) &&
+            !string.Equals(inferredName, "Google Chat", StringComparison.OrdinalIgnoreCase))
+        {
+            return inferredName;
+        }
+
+        return space.SpaceType switch
+        {
+            "DIRECT_MESSAGE" => "Direct message",
+            "GROUP_CHAT" => "Group chat",
+            _ => "Space",
+        };
+    }
+
+    private static bool IsGeneratedChatSpaceDisplayName(string displayName, string spaceType) =>
+        displayName.StartsWith("Direct message ", StringComparison.OrdinalIgnoreCase) ||
+        displayName.StartsWith("Group chat ", StringComparison.OrdinalIgnoreCase) ||
+        displayName.StartsWith("Space ", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(displayName, FormatChatSpaceFallbackName(string.Empty, spaceType), StringComparison.OrdinalIgnoreCase);
+
+    private static bool MatchesChatSearch(GoogleChatSpaceDto space, string searchTerm) =>
+        space.DisplayName.Contains(searchTerm, StringComparison.OrdinalIgnoreCase) ||
+        space.Messages.Any(message =>
+            message.Sender.Contains(searchTerm, StringComparison.OrdinalIgnoreCase) ||
+            (message.SenderEmail?.Contains(searchTerm, StringComparison.OrdinalIgnoreCase) ?? false) ||
+            message.Text.Contains(searchTerm, StringComparison.OrdinalIgnoreCase) ||
+            (message.Attachments?.Any(attachment =>
+                attachment.FileName.Contains(searchTerm, StringComparison.OrdinalIgnoreCase)) ?? false));
+
+    private static string? ExtractChatActorName(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        var koreanSharedMatch = Regex.Match(text, @"^(?<name>.+?)님이\s", RegexOptions.Compiled);
+
+        if (koreanSharedMatch.Success)
+        {
+            return CleanChatSenderName(koreanSharedMatch.Groups["name"].Value);
+        }
+
+        var englishSharedMatch = Regex.Match(
+            text,
+            @"^(?<name>.+?)\s+(shared|sent|uploaded|commented)\b",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        return englishSharedMatch.Success
+            ? CleanChatSenderName(englishSharedMatch.Groups["name"].Value)
+            : null;
+    }
+
+    private static string? CleanChatSenderName(string? sender)
+    {
+        if (string.IsNullOrWhiteSpace(sender))
+        {
+            return null;
+        }
+
+        var withoutEmailParentheses = Regex.Replace(
+            sender,
+            @"\s*\([^)]*@[^)]*\)\s*",
+            " ",
+            RegexOptions.Compiled);
+
+        return NormalizeWhitespace(withoutEmailParentheses);
+    }
+
+    private static string NormalizeChatText(string value)
+    {
+        var normalizedLineEndings = value.ReplaceLineEndings("\n");
+        var lines = normalizedLineEndings
+            .Split('\n')
+            .Select(line => Regex.Replace(line.Trim(), @"[ \t]+", " ", RegexOptions.Compiled))
+            .ToArray();
+
+        return Regex.Replace(string.Join('\n', lines).Trim(), @"\n{3,}", "\n\n", RegexOptions.Compiled);
     }
 
     private static string FormatChatSpaceFallbackName(string name, string spaceType)
@@ -3258,6 +4085,16 @@ public static class GoogleIntegrationEndpoints
         long ExpiresIn,
         string? RefreshToken,
         string? Scope);
+
+    private sealed record GoogleWorkspaceProfile(
+        string? DisplayName,
+        string? Email,
+        string? PhotoUrl);
+
+    private sealed record GoogleDrivePermissionProfile(
+        string? DisplayName,
+        string? EmailAddress,
+        string? PhotoLink);
 
     private sealed record DriveDownloadPayload(byte[] Content, string ContentType, string FileName);
 

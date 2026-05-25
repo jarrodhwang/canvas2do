@@ -80,6 +80,8 @@ public static class AuthEndpoints
                     RedirectUri = callbackUrl,
                     AccessType = "offline",
                     IncludeGrantedScopes = true,
+                    IsPersistent = true,
+                    ExpiresUtc = DateTimeOffset.UtcNow.AddDays(14),
                 };
 
                 if (string.Equals(context.Request.Query["forceConsent"], "true", StringComparison.OrdinalIgnoreCase))

@@ -65,7 +65,7 @@ function isHtmlErrorResponse(response: Response, text: string) {
 
 function getFriendlyServerErrorMessage(response: Response) {
   if (response.status === 401 || response.status === 403) {
-    return 'Your workspace session needs attention. Reconnect Gmail and try sending again.';
+    return 'Your workspace session expired. Sign in again, then try sending once more.';
   }
 
   if (response.status === 404 || response.status === 405) {
@@ -377,6 +377,21 @@ export interface GoogleChatMessage {
   sender: string;
   text: string;
   createdAt?: string;
+  senderName?: string;
+  senderEmail?: string;
+  senderType?: string;
+  senderAvatarUrl?: string;
+  attachments?: GoogleChatAttachment[];
+}
+
+export interface GoogleChatAttachment {
+  name: string;
+  fileName: string;
+  contentType: string;
+  source: string;
+  thumbnailUri?: string;
+  downloadUri?: string;
+  driveFileId?: string;
 }
 
 export interface GoogleChatSpace {

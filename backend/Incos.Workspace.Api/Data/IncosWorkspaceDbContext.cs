@@ -28,6 +28,7 @@ public sealed class IncosWorkspaceDbContext(DbContextOptions<IncosWorkspaceDbCon
     public DbSet<PdmLink> PdmLinks => Set<PdmLink>();
     public DbSet<Notification> Notifications => Set<Notification>();
     public DbSet<ScheduledGmailMessage> ScheduledGmailMessages => Set<ScheduledGmailMessage>();
+    public DbSet<GoogleOAuthToken> GoogleOAuthTokens => Set<GoogleOAuthToken>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -238,6 +239,17 @@ public sealed class IncosWorkspaceDbContext(DbContextOptions<IncosWorkspaceDbCon
             entity.Property(message => message.Error).HasColumnType("text");
             entity.Property(message => message.GmailMessageId).HasMaxLength(120);
             entity.Property(message => message.GmailThreadId).HasMaxLength(120);
+        });
+
+        modelBuilder.Entity<GoogleOAuthToken>(entity =>
+        {
+            entity.ToTable("google_oauth_tokens");
+            entity.HasIndex(token => token.UserKey).IsUnique();
+            entity.Property(token => token.UserKey).HasMaxLength(320);
+            entity.Property(token => token.Email).HasMaxLength(320);
+            entity.Property(token => token.AccessToken).HasColumnType("text");
+            entity.Property(token => token.RefreshToken).HasColumnType("text");
+            entity.Property(token => token.Scope).HasColumnType("text");
         });
 
         modelBuilder.Entity<AuditLog>(entity =>

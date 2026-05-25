@@ -75,6 +75,7 @@ type CanvasLecturePreferences = Record<string, {
   friendlyCourseCode?: string;
   friendlyName?: string;
   hidden?: boolean;
+  originalCourseCode?: string;
   starred?: boolean;
 }>;
 
@@ -108,7 +109,7 @@ function createCanvasLectureRows(
         isStarred: Boolean(coursePreferences.starred),
         lectureKey: `canvas:${course.id}`,
         lectureSource: 'canvas',
-        originalCourseCode,
+        originalCourseCode: coursePreferences.originalCourseCode?.trim() || originalCourseCode,
       };
     });
 }
@@ -901,6 +902,7 @@ export function DashboardCards({
           ...(currentPreferences[friendlyNameRow.canvasCourseId!] ?? {}),
           friendlyCourseCode: friendlyCourseCode || undefined,
           friendlyName: friendlyName || undefined,
+          originalCourseCode: friendlyNameRow.originalCourseCode,
         },
       }));
     } else if (friendlyNameRow.manualLectureId) {
@@ -977,6 +979,7 @@ export function DashboardCards({
         [row.canvasCourseId!]: {
           ...(currentPreferences[row.canvasCourseId!] ?? {}),
           chipColor: color,
+          originalCourseCode: row.originalCourseCode,
         },
       }));
       return;

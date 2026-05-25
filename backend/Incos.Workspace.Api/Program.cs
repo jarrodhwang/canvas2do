@@ -1,4 +1,5 @@
 using Incos.Workspace.Api.Data;
+using Incos.Workspace.Api.Domain.Entities;
 using Incos.Workspace.Api.Endpoints;
 using Incos.Workspace.Api.Infrastructure;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -44,9 +45,7 @@ var authenticationBuilder = builder.Services
         options.DefaultAuthenticateScheme = CookieAuthenticationDefaults.AuthenticationScheme;
         options.DefaultSignInScheme = CookieAuthenticationDefaults.AuthenticationScheme;
         options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;
-        options.DefaultChallengeScheme = isGoogleAuthenticationConfigured
-            ? GoogleDefaults.AuthenticationScheme
-            : CookieAuthenticationDefaults.AuthenticationScheme;
+        options.DefaultChallengeScheme = CookieAuthenticationDefaults.AuthenticationScheme;
     })
     .AddCookie(options =>
     {
@@ -54,11 +53,45 @@ var authenticationBuilder = builder.Services
         options.Cookie.HttpOnly = true;
         options.Cookie.SameSite = SameSiteMode.Lax;
         options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
-        options.ExpireTimeSpan = TimeSpan.FromHours(12);
+        options.ExpireTimeSpan = TimeSpan.FromDays(14);
         options.SlidingExpiration = true;
         options.LoginPath = "/api/auth/google/login";
         options.LogoutPath = "/api/auth/logout";
         options.AccessDeniedPath = "/api/auth/denied";
+        options.Events.OnRedirectToLogin = context =>
+        {
+            if (context.Request.Path.StartsWithSegments("/api"))
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                context.Response.ContentType = "application/problem+json";
+                return context.Response.WriteAsJsonAsync(new
+                {
+                    title = "Google Workspace sign-in required.",
+                    detail = "Your workspace session expired. Sign in again; Gmail permissions remain connected.",
+                    status = StatusCodes.Status401Unauthorized,
+                });
+            }
+
+            context.Response.Redirect(context.RedirectUri);
+            return Task.CompletedTask;
+        };
+        options.Events.OnRedirectToAccessDenied = context =>
+        {
+            if (context.Request.Path.StartsWithSegments("/api"))
+            {
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                context.Response.ContentType = "application/problem+json";
+                return context.Response.WriteAsJsonAsync(new
+                {
+                    title = "Google Workspace access denied.",
+                    detail = "Your account is signed in but does not have access to this workspace action.",
+                    status = StatusCodes.Status403Forbidden,
+                });
+            }
+
+            context.Response.Redirect(context.RedirectUri);
+            return Task.CompletedTask;
+        };
     });
 
 if (isGoogleAuthenticationConfigured)
@@ -106,7 +139,7 @@ if (isGoogleAuthenticationConfigured)
             return Task.CompletedTask;
         };
 
-        options.Events.OnCreatingTicket = context =>
+        options.Events.OnCreatingTicket = async context =>
         {
             var email = context.Identity?.FindFirst(ClaimTypes.Email)?.Value;
             var userHostedDomain = TryGetJsonString(context.User, "hd");
@@ -138,7 +171,43 @@ if (isGoogleAuthenticationConfigured)
                 }
             }
 
-            return Task.CompletedTask;
+            context.Properties.IsPersistent = true;
+            context.Properties.ExpiresUtc = DateTimeOffset.UtcNow.AddDays(14);
+
+            if (!string.IsNullOrWhiteSpace(email) &&
+                !string.IsNullOrWhiteSpace(context.AccessToken))
+            {
+                var db = context.HttpContext.RequestServices.GetRequiredService<IncosWorkspaceDbContext>();
+                await GoogleIntegrationEndpoints.EnsureGoogleOAuthTokensTableAsync(db, context.HttpContext.RequestAborted);
+                var userKey = email;
+                var existingToken = await db.GoogleOAuthTokens
+                    .FirstOrDefaultAsync(token => token.UserKey == userKey, context.HttpContext.RequestAborted);
+                var now = DateTimeOffset.UtcNow;
+
+                if (existingToken is null)
+                {
+                    existingToken = new GoogleOAuthToken
+                    {
+                        Id = Guid.NewGuid(),
+                        CreatedAt = now,
+                        UserKey = userKey,
+                    };
+                    db.GoogleOAuthTokens.Add(existingToken);
+                }
+
+                existingToken.Email = email;
+                existingToken.AccessToken = context.AccessToken;
+                existingToken.RefreshToken = string.IsNullOrWhiteSpace(context.RefreshToken)
+                    ? existingToken.RefreshToken
+                    : context.RefreshToken;
+                existingToken.AccessTokenExpiresAt = context.ExpiresIn.HasValue
+                    ? now.Add(context.ExpiresIn.Value)
+                    : now.AddHours(1);
+                existingToken.Scope = string.Join(' ', GoogleWorkspaceScopes.All);
+                existingToken.UpdatedAt = now;
+
+                await db.SaveChangesAsync(context.HttpContext.RequestAborted);
+            }
         };
     });
 }
@@ -182,6 +251,7 @@ if (app.Configuration.GetValue("Database:EnsureCreated", false))
     var db = scope.ServiceProvider.GetRequiredService<IncosWorkspaceDbContext>();
 
     await db.Database.EnsureCreatedAsync();
+    await GoogleIntegrationEndpoints.EnsureGoogleOAuthTokensTableAsync(db);
     await GoogleIntegrationEndpoints.EnsureScheduledGmailMessagesTableAsync(db);
     await SeedData.SeedAsync(db);
 }

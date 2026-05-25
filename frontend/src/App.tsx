@@ -342,6 +342,7 @@ function App() {
               <CalendarShell
                 data={activeData}
                 mode={activeMode}
+                onOpenAddItem={() => setIsAddModalOpen(true)}
                 onSelectItem={() => undefined}
                 onViewChange={(view) =>
                   navigateWorkspace({

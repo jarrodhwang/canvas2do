@@ -143,6 +143,7 @@ if (isGoogleAuthenticationConfigured)
     });
 }
 builder.Services.AddAuthorization();
+builder.Services.AddHostedService<GoogleIntegrationEndpoints.GmailScheduledSendWorker>();
 
 builder.Services.AddDbContext<IncosWorkspaceDbContext>(options =>
 {
@@ -181,6 +182,7 @@ if (app.Configuration.GetValue("Database:EnsureCreated", false))
     var db = scope.ServiceProvider.GetRequiredService<IncosWorkspaceDbContext>();
 
     await db.Database.EnsureCreatedAsync();
+    await GoogleIntegrationEndpoints.EnsureScheduledGmailMessagesTableAsync(db);
     await SeedData.SeedAsync(db);
 }
 

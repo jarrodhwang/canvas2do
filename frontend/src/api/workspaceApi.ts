@@ -64,6 +64,14 @@ function isHtmlErrorResponse(response: Response, text: string) {
 }
 
 function getFriendlyServerErrorMessage(response: Response) {
+  if (response.status === 401 || response.status === 403) {
+    return 'Your workspace session needs attention. Reconnect Gmail and try sending again.';
+  }
+
+  if (response.status === 404 || response.status === 405) {
+    return 'The Gmail API route is not available yet. Restart the workspace API and try again.';
+  }
+
   if (response.status === 502) {
     return 'The workspace server is temporarily unavailable. The API may still be starting or restarting.';
   }
@@ -81,6 +89,16 @@ function getFriendlyServerErrorMessage(response: Response) {
   }
 
   return 'The workspace returned an unexpected page instead of API data.';
+}
+
+function createRequestTimeout(timeoutMs: number) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  return {
+    cancel: () => window.clearTimeout(timeoutId),
+    signal: controller.signal,
+  };
 }
 
 async function readErrorResponse(
@@ -117,6 +135,24 @@ async function readErrorResponse(
       message: textError.message || text || fallbackMessage,
       googleReason: textError.reason,
     };
+  }
+}
+
+async function readJsonResponse<T>(response: Response, fallbackMessage: string): Promise<T> {
+  const text = await response.text();
+
+  if (!text) {
+    throw new Error(fallbackMessage);
+  }
+
+  if (isHtmlErrorResponse(response, text)) {
+    throw new Error(getFriendlyServerErrorMessage(response));
+  }
+
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(fallbackMessage);
   }
 }
 
@@ -294,11 +330,46 @@ export interface SendGoogleGmailMessageRequest {
   bcc?: string;
   subject: string;
   body: string;
+  attachments?: SendGoogleGmailAttachmentRequest[];
+}
+
+export interface SendGoogleGmailAttachmentRequest {
+  fileName: string;
+  mimeType: string;
+  sizeBytes?: number;
+  contentBase64: string;
 }
 
 export interface SendGoogleGmailMessageResponse {
   id: string;
   threadId: string;
+}
+
+export interface ScheduledGoogleGmailMessage {
+  id: string;
+  to: string;
+  cc?: string;
+  bcc?: string;
+  subject: string;
+  body: string;
+  scheduledFor: string;
+  createdAt: string;
+  status: 'cancelled' | 'failed' | 'pending' | 'sending' | 'sent';
+  attachments: ScheduledGoogleGmailAttachment[];
+  error?: string;
+  sentAt?: string;
+  gmailMessageId?: string;
+  gmailThreadId?: string;
+}
+
+export interface ScheduledGoogleGmailAttachment {
+  fileName: string;
+  mimeType: string;
+  sizeBytes?: number;
+}
+
+export interface ScheduleGoogleGmailMessageRequest extends SendGoogleGmailMessageRequest {
+  scheduledFor: string;
 }
 
 export interface GoogleChatMessage {
@@ -554,9 +625,13 @@ export const workspaceApi = {
   },
 
   async getGoogleGmailMessages(
-    options: { search?: string; pageSize?: number; pageToken?: string; signal?: AbortSignal } = {},
+    options: { label?: string; search?: string; pageSize?: number; pageToken?: string; signal?: AbortSignal } = {},
   ) {
     const params = new URLSearchParams();
+
+    if (options.label?.trim()) {
+      params.set('label', options.label.trim());
+    }
 
     if (options.search?.trim()) {
       params.set('search', options.search.trim());
@@ -642,8 +717,77 @@ export const workspaceApi = {
     }
   },
 
+  async modifyGoogleGmailMessageLabels(
+    messageId: string,
+    labels: { addLabelIds?: string[]; removeLabelIds?: string[] },
+  ) {
+    const response = await fetch(`${apiBaseUrl}/google/gmail/messages/${encodeURIComponent(messageId)}/labels`, {
+      body: JSON.stringify(labels),
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    });
+
+    if (!response.ok) {
+      if (response.status === 404 || response.status === 405) {
+        throw new Error('Restart the API container to enable Gmail label actions.');
+      }
+
+      const { googleReason, message } = await readErrorResponse(response, 'Unable to update Gmail labels.');
+
+      if (response.status === 403 || googleReason === 'insufficientPermissions' || /scope/i.test(message)) {
+        throw new Error('Reconnect Gmail to grant label update permission.');
+      }
+
+      throw new Error(message);
+    }
+  },
+
   async sendGoogleGmailMessage(message: SendGoogleGmailMessageRequest) {
-    const response = await fetch(`${apiBaseUrl}/google/gmail/messages/send`, {
+    const timeout = createRequestTimeout(45000);
+    let response: Response;
+
+    try {
+      response = await fetch(`${apiBaseUrl}/google/gmail/messages/send`, {
+        body: JSON.stringify(message),
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        method: 'POST',
+        signal: timeout.signal,
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new Error('Gmail send took too long. Check the attachment size or try again in a moment.');
+      }
+
+      throw new Error('Unable to reach the workspace API. Check that the API container is running.');
+    } finally {
+      timeout.cancel();
+    }
+
+    if (!response.ok) {
+      if (response.status === 404 || response.status === 405) {
+        throw new Error('Restart the API container to enable Gmail send.');
+      }
+
+      const { googleReason, message: errorMessage } = await readErrorResponse(response, 'Unable to send Gmail message.');
+
+      if (response.status === 403 || googleReason === 'insufficientPermissions' || /scope/i.test(errorMessage)) {
+        throw new Error('Reconnect Gmail to grant send permission.');
+      }
+
+      throw new Error(errorMessage);
+    }
+
+    return readJsonResponse<SendGoogleGmailMessageResponse>(response, 'Gmail sent the message, but the workspace could not read the send response.');
+  },
+
+  async scheduleGoogleGmailMessage(message: ScheduleGoogleGmailMessageRequest) {
+    const response = await fetch(`${apiBaseUrl}/google/gmail/messages/schedule`, {
       body: JSON.stringify(message),
       credentials: 'include',
       headers: {
@@ -653,12 +797,81 @@ export const workspaceApi = {
     });
 
     if (!response.ok) {
-      const { message: errorMessage } = await readErrorResponse(response, 'Unable to send Gmail message.');
+      const { googleReason, message: errorMessage } = await readErrorResponse(response, 'Unable to schedule Gmail message.');
+
+      if (response.status === 403 || googleReason === 'insufficientPermissions' || /scope/i.test(errorMessage)) {
+        throw new Error('Reconnect Gmail to grant scheduled-send permission.');
+      }
 
       throw new Error(errorMessage);
     }
 
-    return response.json() as Promise<SendGoogleGmailMessageResponse>;
+    return readJsonResponse<ScheduledGoogleGmailMessage>(
+      response,
+      'Gmail scheduled the message, but the workspace could not read the scheduled item.',
+    );
+  },
+
+  async getScheduledGoogleGmailMessages() {
+    const response = await fetch(`${apiBaseUrl}/google/gmail/messages/scheduled`, {
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to load scheduled Gmail messages.');
+
+      throw new Error(message);
+    }
+
+    return readJsonResponse<ScheduledGoogleGmailMessage[]>(
+      response,
+      'Unable to read scheduled Gmail messages.',
+    );
+  },
+
+  async sendScheduledGoogleGmailMessageNow(messageId: string) {
+    const timeout = createRequestTimeout(45000);
+    let response: Response;
+
+    try {
+      response = await fetch(`${apiBaseUrl}/google/gmail/messages/scheduled/${encodeURIComponent(messageId)}/send-now`, {
+        credentials: 'include',
+        method: 'POST',
+        signal: timeout.signal,
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new Error('Scheduled send took too long. Check the attachment size or try again in a moment.');
+      }
+
+      throw new Error('Unable to reach the workspace API. Check that the API container is running.');
+    } finally {
+      timeout.cancel();
+    }
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to send scheduled Gmail message.');
+
+      throw new Error(message);
+    }
+
+    return readJsonResponse<ScheduledGoogleGmailMessage>(
+      response,
+      'Scheduled Gmail message was processed, but the workspace could not read the result.',
+    );
+  },
+
+  async cancelScheduledGoogleGmailMessage(messageId: string) {
+    const response = await fetch(`${apiBaseUrl}/google/gmail/messages/scheduled/${encodeURIComponent(messageId)}`, {
+      credentials: 'include',
+      method: 'DELETE',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to cancel scheduled Gmail message.');
+
+      throw new Error(message);
+    }
   },
 
   async getGoogleChatSpaces(options: { search?: string; pageSize?: number } = {}) {

@@ -220,6 +220,28 @@ public sealed class Notification : AuditableEntity
     public DateTimeOffset? ScheduledAt { get; set; }
 }
 
+public sealed class ScheduledGmailMessage : AuditableEntity
+{
+    public string UserKey { get; set; } = string.Empty;
+    public string To { get; set; } = string.Empty;
+    public string? Cc { get; set; }
+    public string? Bcc { get; set; }
+    public string Subject { get; set; } = string.Empty;
+    public string Body { get; set; } = string.Empty;
+    public string AttachmentsJson { get; set; } = "[]";
+    public DateTimeOffset ScheduledFor { get; set; }
+    public string Status { get; set; } = "pending";
+    public string AccessToken { get; set; } = string.Empty;
+    public string? RefreshToken { get; set; }
+    public DateTimeOffset? AccessTokenExpiresAt { get; set; }
+    public int AttemptCount { get; set; }
+    public DateTimeOffset? LastAttemptAt { get; set; }
+    public DateTimeOffset? SentAt { get; set; }
+    public string? Error { get; set; }
+    public string? GmailMessageId { get; set; }
+    public string? GmailThreadId { get; set; }
+}
+
 public sealed class AuditLog : Entity
 {
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;

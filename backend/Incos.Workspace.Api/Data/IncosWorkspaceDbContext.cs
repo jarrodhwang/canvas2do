@@ -27,6 +27,7 @@ public sealed class IncosWorkspaceDbContext(DbContextOptions<IncosWorkspaceDbCon
     public DbSet<TopTrackCase> TopTrackCases => Set<TopTrackCase>();
     public DbSet<PdmLink> PdmLinks => Set<PdmLink>();
     public DbSet<Notification> Notifications => Set<Notification>();
+    public DbSet<ScheduledGmailMessage> ScheduledGmailMessages => Set<ScheduledGmailMessage>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -219,6 +220,24 @@ public sealed class IncosWorkspaceDbContext(DbContextOptions<IncosWorkspaceDbCon
             entity.Property(notification => notification.Channel).HasMaxLength(80);
             entity.Property(notification => notification.Title).HasMaxLength(240);
             entity.Property(notification => notification.Status).HasMaxLength(80);
+        });
+
+        modelBuilder.Entity<ScheduledGmailMessage>(entity =>
+        {
+            entity.ToTable("scheduled_gmail_messages");
+            entity.HasIndex(message => new { message.UserKey, message.Status, message.ScheduledFor });
+            entity.Property(message => message.UserKey).HasMaxLength(320);
+            entity.Property(message => message.To).HasMaxLength(1200);
+            entity.Property(message => message.Cc).HasMaxLength(1200);
+            entity.Property(message => message.Bcc).HasMaxLength(1200);
+            entity.Property(message => message.Subject).HasMaxLength(998);
+            entity.Property(message => message.Status).HasMaxLength(40);
+            entity.Property(message => message.AccessToken).HasColumnType("text");
+            entity.Property(message => message.RefreshToken).HasColumnType("text");
+            entity.Property(message => message.AttachmentsJson).HasColumnType("jsonb");
+            entity.Property(message => message.Error).HasColumnType("text");
+            entity.Property(message => message.GmailMessageId).HasMaxLength(120);
+            entity.Property(message => message.GmailThreadId).HasMaxLength(120);
         });
 
         modelBuilder.Entity<AuditLog>(entity =>

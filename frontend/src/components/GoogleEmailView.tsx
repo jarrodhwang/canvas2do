@@ -1,6 +1,8 @@
 import {
   Archive,
   ArrowLeft,
+  Bold,
+  CalendarPlus,
   CheckSquare,
   ChevronDown,
   ChevronLeft,
@@ -11,13 +13,21 @@ import {
   FileText,
   Folder,
   Forward,
+  Image as ImageIcon,
   Inbox,
+  Italic,
+  Link2,
+  List,
+  ListOrdered,
   Mail,
   MailPlus,
   MailOpen,
+  Maximize2,
   Menu,
+  Minus,
   MoreVertical,
   Paperclip,
+  Plus,
   Printer,
   RefreshCw,
   Reply,
@@ -27,13 +37,22 @@ import {
   Settings,
   SlidersHorizontal,
   Smile,
+  Sparkles,
   Star,
   Tag,
   Trash2,
+  Type,
+  Underline,
+  X,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 
-import { workspaceApi, type GoogleGmailMessage } from '../api/workspaceApi';
+import {
+  workspaceApi,
+  type GoogleGmailMessage,
+  type ScheduledGoogleGmailMessage,
+  type SendGoogleGmailMessageRequest,
+} from '../api/workspaceApi';
 import { useLanguage } from '../context/LanguageContext';
 import { cn } from '../lib/utils';
 import { GoogleProductIcon } from './GoogleProductIcon';
@@ -44,11 +63,22 @@ import { Checkbox } from './ui/checkbox';
 import { Input } from './ui/input';
 import { Separator } from './ui/separator';
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs';
-import { Textarea } from './ui/textarea';
 
 type GmailCategory = 'primary' | 'promotions' | 'social';
+type GmailMailbox =
+  | 'inbox'
+  | 'starred'
+  | 'snoozed'
+  | 'sent'
+  | 'drafts'
+  | 'important'
+  | 'scheduled'
+  | 'all'
+  | 'spam'
+  | 'updates';
 
 const gmailPageSize = 50;
+const composeDraftStorageKey = 'incos-workspace-gmail-compose-draft';
 
 interface ComposeForm {
   to: string;
@@ -58,12 +88,95 @@ interface ComposeForm {
   body: string;
 }
 
+interface ComposeAttachment {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  contentBase64: string;
+}
+
+type ScheduledDraft = ScheduledGoogleGmailMessage;
+
+interface AdvancedSearchForm {
+  from: string;
+  to: string;
+  subject: string;
+  includes: string;
+  excludes: string;
+  sizeOperator: 'larger' | 'smaller';
+  sizeValue: string;
+  sizeUnit: 'M' | 'K';
+  newerThan: string;
+  anywhere: boolean;
+  hasAttachment: boolean;
+}
+
+interface ContactSuggestion {
+  name: string;
+  email: string;
+  avatarUrl?: string;
+}
+
+type RecipientField = Extract<keyof ComposeForm, 'bcc' | 'cc' | 'to'>;
+
 const emptyComposeForm: ComposeForm = {
   to: '',
   cc: '',
   bcc: '',
   subject: '',
   body: '',
+};
+
+const emptyAdvancedSearchForm: AdvancedSearchForm = {
+  anywhere: false,
+  excludes: '',
+  from: '',
+  hasAttachment: false,
+  includes: '',
+  newerThan: '',
+  sizeOperator: 'larger',
+  sizeUnit: 'M',
+  sizeValue: '',
+  subject: '',
+  to: '',
+};
+
+const composeTemplates = [
+  {
+    id: 'incos-sj',
+    label: '[INCOS] SJ',
+    subject: '[INCOS] Follow-up',
+    body: 'Hello,\n\nThank you for your message. I will review this and follow up shortly.\n\nBest regards,\nJarrod',
+  },
+  {
+    id: 'meeting-follow-up',
+    label: 'Meeting follow-up',
+    subject: 'Meeting follow-up',
+    body: 'Hello,\n\nThank you for today. I summarized the next steps below:\n\n1. \n2. \n3. \n\nBest regards,\nJarrod',
+  },
+];
+
+const baseContactSuggestions: ContactSuggestion[] = [
+  { name: 'Jarrod Hwang', email: 'sj@incos.co.kr' },
+  { name: 'hwang.jarrod@gmail.com', email: 'hwang.jarrod@gmail.com' },
+  { name: 'jarrodhwang1234@gmail.com', email: 'jarrodhwang1234@gmail.com' },
+  { name: '신지한', email: 'jhshin@incos.kr' },
+  { name: '유재환', email: 'jhyu@incos.co.kr' },
+  { name: '인코스', email: 'jslee@incos.co.kr' },
+];
+
+const mailboxLabelIds: Record<GmailMailbox, string | undefined> = {
+  all: 'all',
+  drafts: 'DRAFT',
+  important: 'IMPORTANT',
+  inbox: 'INBOX',
+  scheduled: 'scheduled',
+  sent: 'SENT',
+  snoozed: 'snoozed',
+  spam: 'SPAM',
+  starred: 'STARRED',
+  updates: 'CATEGORY_UPDATES',
 };
 
 function createEmailFrameDocument(html: string) {
@@ -221,8 +334,61 @@ function getEmailAddress(value: string | undefined) {
   return (match?.[1] ?? value).trim();
 }
 
+function getContactFromAddress(value: string | undefined): ContactSuggestion | null {
+  const email = getEmailAddress(value);
+
+  if (!email) {
+    return null;
+  }
+
+  return {
+    email,
+    name: getSenderName(value ?? email),
+  };
+}
+
 function getSenderInitial(from: string) {
   return getSenderName(from).trim().charAt(0).toUpperCase() || 'G';
+}
+
+function getAvatarClass(value: string) {
+  const colors = [
+    'bg-purple-500',
+    'bg-slate-600',
+    'bg-pink-500',
+    'bg-orange-500',
+    'bg-stone-500',
+    'bg-indigo-500',
+    'bg-green-700',
+    'bg-red-500',
+  ];
+  const index = Math.abs(Array.from(value).reduce((sum, character) => sum + character.charCodeAt(0), 0)) % colors.length;
+
+  return colors[index];
+}
+
+function ContactAvatar({ contact, sizeClass = 'size-9' }: { contact: ContactSuggestion; sizeClass?: string }) {
+  if (contact.avatarUrl) {
+    return (
+      <img
+        alt=""
+        className={cn(sizeClass, 'shrink-0 rounded-full object-cover')}
+        src={contact.avatarUrl}
+      />
+    );
+  }
+
+  return (
+    <span
+      className={cn(
+        sizeClass,
+        'grid shrink-0 place-items-center rounded-full text-sm font-black text-white',
+        getAvatarClass(contact.email),
+      )}
+    >
+      {(contact.name || contact.email).charAt(0).toUpperCase()}
+    </span>
+  );
 }
 
 function formatFullMessageDate(value: string | undefined, language: 'en' | 'ko') {
@@ -291,6 +457,253 @@ function getAttachmentHints(message: GoogleGmailMessage) {
     .slice(0, 3);
 }
 
+function getAttachmentMeta(fileName: string, mimeType = '') {
+  const lowerName = fileName.toLowerCase();
+  const lowerMime = mimeType.toLowerCase();
+
+  if (lowerMime.includes('presentation') || lowerName.endsWith('.ppt') || lowerName.endsWith('.pptx')) {
+    return { color: 'border-yellow-500/30 bg-yellow-500/10 text-yellow-700', icon: 'slides', label: 'Slides' };
+  }
+
+  if (lowerMime.includes('spreadsheet') || lowerName.endsWith('.xls') || lowerName.endsWith('.xlsx') || lowerName.endsWith('.csv')) {
+    return { color: 'border-green-600/30 bg-green-600/10 text-green-700', icon: 'sheet', label: 'Sheet' };
+  }
+
+  if (lowerMime.includes('document') || lowerName.endsWith('.doc') || lowerName.endsWith('.docx')) {
+    return { color: 'border-blue-600/30 bg-blue-600/10 text-blue-700', icon: 'docs', label: 'Docs' };
+  }
+
+  if (lowerMime.includes('pdf') || lowerName.endsWith('.pdf')) {
+    return { color: 'border-red-600/30 bg-red-600/10 text-red-700', icon: 'pdf', label: 'PDF' };
+  }
+
+  if (lowerMime.includes('zip') || lowerName.endsWith('.zip') || lowerName.endsWith('.7z')) {
+    return { color: 'border-slate-600/30 bg-slate-600/10 text-slate-700', icon: 'zip', label: 'ZIP' };
+  }
+
+  if (lowerMime.includes('image') || /\.(png|jpe?g|gif|webp)$/i.test(lowerName)) {
+    return { color: 'border-rose-600/30 bg-rose-600/10 text-rose-700', icon: 'image', label: 'Image' };
+  }
+
+  return { color: 'border-muted-foreground/25 bg-muted/40 text-muted-foreground', icon: 'file', label: 'File' };
+}
+
+function AttachmentMetaIcon({ icon, className }: { icon: string; className?: string }) {
+  if (icon === 'image') {
+    return <ImageIcon className={cn('size-3.5 shrink-0', className)} />;
+  }
+
+  if (icon === 'slides') {
+    return <span className={cn('grid size-3.5 shrink-0 place-items-center rounded-[3px] bg-yellow-500 text-[8px] font-black text-white', className)}>S</span>;
+  }
+
+  if (icon === 'sheet') {
+    return <span className={cn('grid size-3.5 shrink-0 place-items-center rounded-[3px] bg-green-600 text-[8px] font-black text-white', className)}>X</span>;
+  }
+
+  if (icon === 'pdf') {
+    return <span className={cn('grid size-3.5 shrink-0 place-items-center rounded-[3px] bg-red-600 text-[7px] font-black text-white', className)}>PDF</span>;
+  }
+
+  return <FileText className={cn('size-3.5 shrink-0', className)} />;
+}
+
+function buildAdvancedSearchQuery(form: AdvancedSearchForm) {
+  const terms = [
+    form.from.trim() ? `from:${form.from.trim()}` : '',
+    form.to.trim() ? `to:${form.to.trim()}` : '',
+    form.subject.trim() ? `subject:(${form.subject.trim()})` : '',
+    form.includes.trim(),
+    form.excludes.trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((word) => `-${word}`)
+      .join(' '),
+    form.sizeValue.trim() ? `${form.sizeOperator}:${form.sizeValue.trim()}${form.sizeUnit}` : '',
+    form.newerThan.trim() ? `newer_than:${form.newerThan.trim()}` : '',
+    form.hasAttachment ? 'has:attachment' : '',
+    form.anywhere ? 'in:anywhere' : '',
+  ];
+
+  return terms.filter(Boolean).join(' ').trim();
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function textToComposeHtml(value: string) {
+  return escapeHtml(value).replace(/\r?\n/g, '<br>');
+}
+
+function getPlainTextFromComposeBody(value: string) {
+  if (!value.trim()) {
+    return '';
+  }
+
+  const container = document.createElement('div');
+  container.innerHTML = value;
+
+  return (container.textContent ?? '').replace(/\u00a0/g, ' ').trim();
+}
+
+function splitRecipientTokens(value: string | undefined) {
+  return (value ?? '')
+    .split(',')
+    .map((recipient) => recipient.trim())
+    .filter(Boolean);
+}
+
+function extractEmailToken(value: string) {
+  const bracketMatch = /<([^>]+)>/.exec(value);
+  const emailMatch = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.exec(bracketMatch?.[1] ?? value);
+
+  return emailMatch?.[0].trim() ?? '';
+}
+
+function isValidEmailAddress(value: string) {
+  return /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(value);
+}
+
+function formatRecipient(contact: ContactSuggestion) {
+  return contact.name && contact.name.toLowerCase() !== contact.email.toLowerCase()
+    ? `${contact.name} <${contact.email}>`
+    : contact.email;
+}
+
+function normalizeRecipientToken(value: string) {
+  const email = extractEmailToken(value);
+
+  if (!isValidEmailAddress(email)) {
+    return null;
+  }
+
+  const nameMatch = /^(.*?)<[^>]+>/.exec(value);
+  const name = nameMatch?.[1]?.trim().replace(/^"|"$/g, '');
+
+  if (name && name.toLowerCase() !== email.toLowerCase()) {
+    return `${name} <${email}>`;
+  }
+
+  return email;
+}
+
+function normalizeRecipientList(value: string | undefined) {
+  const seen = new Set<string>();
+  const recipients: string[] = [];
+
+  splitRecipientTokens(value).forEach((token) => {
+    const normalized = normalizeRecipientToken(token);
+
+    if (!normalized) {
+      return;
+    }
+
+    const email = extractEmailToken(normalized).toLowerCase();
+
+    if (seen.has(email)) {
+      return;
+    }
+
+    seen.add(email);
+    recipients.push(normalized);
+  });
+
+  return recipients.join(', ');
+}
+
+function getRecipientTailQuery(value: string) {
+  return value.split(',').at(-1)?.trim() ?? '';
+}
+
+function replaceRecipientTail(value: string, contact: ContactSuggestion) {
+  const parts = value.split(',');
+  parts[parts.length - 1] = formatRecipient(contact);
+
+  return normalizeRecipientList(parts.join(', '));
+}
+
+function readStoredComposeDraft() {
+  try {
+    const stored = window.localStorage.getItem(composeDraftStorageKey);
+
+    return stored ? { ...emptyComposeForm, ...JSON.parse(stored) } as ComposeForm : emptyComposeForm;
+  } catch {
+    return emptyComposeForm;
+  }
+}
+
+function createScheduledTimeLabel(value: string, language: 'en' | 'ko') {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  return new Intl.DateTimeFormat(language === 'ko' ? 'ko-KR' : 'en-US', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(date);
+}
+
+function createComposeAttachmentId(file: File) {
+  return `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2)}`;
+}
+
+function readFileAsComposeAttachment(file: File) {
+  return new Promise<ComposeAttachment>((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.onerror = () => reject(new Error(`Unable to attach ${file.name}.`));
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      const contentBase64 = result.includes(',') ? result.split(',').at(1) ?? '' : result;
+
+      resolve({
+        contentBase64,
+        fileName: file.name,
+        id: createComposeAttachmentId(file),
+        mimeType: file.type || 'application/octet-stream',
+        sizeBytes: file.size,
+      });
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function createGmailSendRequest(
+  form: ComposeForm,
+  attachments: ComposeAttachment[],
+): SendGoogleGmailMessageRequest | null {
+  const normalizedTo = normalizeRecipientList(form.to);
+  const bodyText = getPlainTextFromComposeBody(form.body);
+
+  if (!normalizedTo || !bodyText) {
+    return null;
+  }
+
+  return {
+    attachments: attachments
+      .filter((attachment) => attachment.contentBase64)
+      .map(({ contentBase64, fileName, mimeType, sizeBytes }) => ({
+        contentBase64,
+        fileName,
+        mimeType,
+        sizeBytes,
+      })),
+    bcc: normalizeRecipientList(form.bcc),
+    body: form.body,
+    cc: normalizeRecipientList(form.cc),
+    subject: form.subject,
+    to: normalizedTo,
+  };
+}
+
 function setMessageUnread(message: GoogleGmailMessage, unread: boolean): GoogleGmailMessage {
   const labels = message.labels.filter((label) => label.toUpperCase() !== 'UNREAD');
 
@@ -347,6 +760,7 @@ export function GoogleEmailView() {
   const [messageDetailError, setMessageDetailError] = useState<string | null>(null);
   const [searchText, setSearchText] = useState('');
   const [submittedSearch, setSubmittedSearch] = useState('');
+  const [mailbox, setMailbox] = useState<GmailMailbox>('inbox');
   const [pageToken, setPageToken] = useState<string>();
   const [previousPageTokens, setPreviousPageTokens] = useState<string[]>([]);
   const [nextPageToken, setNextPageToken] = useState<string>();
@@ -357,13 +771,33 @@ export function GoogleEmailView() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [composeOpen, setComposeOpen] = useState(false);
-  const [composeForm, setComposeForm] = useState<ComposeForm>(emptyComposeForm);
+  const [composeForm, setComposeForm] = useState<ComposeForm>(() => readStoredComposeDraft());
+  const [composeAttachments, setComposeAttachments] = useState<ComposeAttachment[]>([]);
+  const [composeMinimized, setComposeMinimized] = useState(false);
+  const [composeExpanded, setComposeExpanded] = useState(false);
+  const [templateMenuOpen, setTemplateMenuOpen] = useState(false);
+  const [sendMenuOpen, setSendMenuOpen] = useState(false);
+  const [recipientQuery, setRecipientQuery] = useState('');
+  const [activeRecipientField, setActiveRecipientField] = useState<RecipientField>('to');
+  const [advancedSearchOpen, setAdvancedSearchOpen] = useState(false);
+  const [advancedSearchForm, setAdvancedSearchForm] = useState<AdvancedSearchForm>(emptyAdvancedSearchForm);
+  const [selectedMessageIds, setSelectedMessageIds] = useState<Set<string>>(() => new Set());
+  const [selectionMenuOpen, setSelectionMenuOpen] = useState(false);
+  const [moreMailboxesOpen, setMoreMailboxesOpen] = useState(false);
+  const [geminiOpen, setGeminiOpen] = useState(false);
+  const [geminiMessages, setGeminiMessages] = useState<string[]>([]);
+  const [geminiInput, setGeminiInput] = useState('');
+  const [scheduledNotice, setScheduledNotice] = useState<string | null>(null);
+  const [scheduledDrafts, setScheduledDrafts] = useState<ScheduledDraft[]>([]);
   const [showCarbonCopy, setShowCarbonCopy] = useState(false);
   const [composeError, setComposeError] = useState<string | null>(null);
   const [composeNotice, setComposeNotice] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const messageDetailAbortRef = useRef<AbortController | null>(null);
   const unreadOverridesRef = useRef<Record<string, boolean>>({});
+  const bodyEditorRef = useRef<HTMLDivElement>(null);
+  const fileAttachmentInputRef = useRef<HTMLInputElement>(null);
+  const imageAttachmentInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -371,6 +805,7 @@ export function GoogleEmailView() {
 
     workspaceApi
       .getGoogleGmailMessages({
+        label: mailboxLabelIds[mailbox],
         pageSize: gmailPageSize,
         pageToken,
         search: submittedSearch,
@@ -415,7 +850,46 @@ export function GoogleEmailView() {
       isMounted = false;
       controller.abort();
     };
-  }, [pageToken, reloadKey, submittedSearch]);
+  }, [mailbox, pageToken, reloadKey, submittedSearch]);
+
+  useEffect(() => {
+    window.localStorage.setItem(composeDraftStorageKey, JSON.stringify(composeForm));
+  }, [composeForm]);
+
+  useEffect(() => {
+    if (mailbox !== 'scheduled') {
+      return;
+    }
+
+    let isMounted = true;
+
+    workspaceApi
+      .getScheduledGoogleGmailMessages()
+      .then((scheduledMessages) => {
+        if (isMounted) {
+          setScheduledDrafts(scheduledMessages);
+        }
+      })
+      .catch((loadError: unknown) => {
+        if (isMounted) {
+          setScheduledNotice(loadError instanceof Error ? loadError.message : 'Unable to load scheduled email.');
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [mailbox, reloadKey]);
+
+  useEffect(() => {
+    const editor = bodyEditorRef.current;
+
+    if (!editor || document.activeElement === editor || editor.innerHTML === composeForm.body) {
+      return;
+    }
+
+    editor.innerHTML = composeForm.body;
+  }, [composeForm.body, composeMinimized, composeOpen]);
 
   const unreadCount = useMemo(
     () => messages.filter((message) => message.unread).length,
@@ -436,9 +910,36 @@ export function GoogleEmailView() {
   }, [messages]);
 
   const visibleMessages = useMemo(
-    () => messages.filter((message) => classifyMessage(message) === category),
-    [category, messages],
+    () => mailbox === 'inbox' ? messages.filter((message) => classifyMessage(message) === category) : messages,
+    [category, mailbox, messages],
   );
+  const contactSuggestions = useMemo(() => {
+    const contacts = new Map<string, ContactSuggestion>();
+
+    [...baseContactSuggestions, ...messages.flatMap((message) => [
+      getContactFromAddress(message.from),
+      getContactFromAddress(message.to),
+    ])].forEach((contact) => {
+      if (contact?.email) {
+        contacts.set(contact.email.toLowerCase(), contact);
+      }
+    });
+
+    const query = recipientQuery.toLowerCase();
+    const selectedRecipients = new Set(
+      splitRecipientTokens(`${composeForm.to},${composeForm.cc},${composeForm.bcc}`)
+        .map(extractEmailToken)
+        .filter(Boolean)
+        .map((email) => email.toLowerCase()),
+    );
+
+    return Array.from(contacts.values())
+      .filter((contact) =>
+        !selectedRecipients.has(contact.email.toLowerCase()) &&
+        (!query || contact.name.toLowerCase().includes(query) || contact.email.toLowerCase().includes(query)),
+      )
+      .slice(0, 8);
+  }, [composeForm.bcc, composeForm.cc, composeForm.to, messages, recipientQuery]);
   const selectedMessage = useMemo(
     () => messages.find((message) => message.id === selectedId),
     [messages, selectedId],
@@ -453,6 +954,9 @@ export function GoogleEmailView() {
   const rangeLabel = resultSizeEstimate
     ? `${pageStart.toLocaleString()}-${pageEnd.toLocaleString()} / ${resultSizeEstimate.toLocaleString()}`
     : `${pageStart.toLocaleString()}-${pageEnd.toLocaleString()}`;
+  const allVisibleSelected =
+    visibleMessages.length > 0 && visibleMessages.every((message) => selectedMessageIds.has(message.id));
+  const hasLocalScheduledDrafts = mailbox === 'scheduled' && scheduledDrafts.length > 0;
 
   const handleSearch = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -513,20 +1017,286 @@ export function GoogleEmailView() {
     setError(null);
   };
 
+  const switchMailbox = (nextMailbox: GmailMailbox) => {
+    messageDetailAbortRef.current?.abort();
+    setMailbox(nextMailbox);
+    setCategory('primary');
+    setSelectedMessageIds(new Set());
+    setMessageDetailError(null);
+    setLoadedMessageDetailIds(new Set());
+    setIsReadingMessage(false);
+    setPreviousPageTokens([]);
+    setPageToken(undefined);
+    setIsLoading(true);
+    setError(null);
+    setReloadKey((current) => current + 1);
+  };
+
+  const toggleSelectMessage = (messageId: string, selected: boolean) => {
+    setSelectedMessageIds((current) => {
+      const next = new Set(current);
+
+      if (selected) {
+        next.add(messageId);
+      } else {
+        next.delete(messageId);
+      }
+
+      return next;
+    });
+  };
+
+  const setVisibleSelection = (selected: boolean) => {
+    setSelectedMessageIds((current) => {
+      const next = new Set(current);
+
+      visibleMessages.forEach((message) => {
+        if (selected) {
+          next.add(message.id);
+        } else {
+          next.delete(message.id);
+        }
+      });
+
+      return next;
+    });
+  };
+
+  const updateMessageLabelsLocally = (messageIds: string[], addLabelIds: string[], removeLabelIds: string[]) => {
+    setMessages((current) =>
+      current.map((message) => {
+        if (!messageIds.includes(message.id)) {
+          return message;
+        }
+
+        const labels = new Set(message.labels.filter((label) => !removeLabelIds.includes(label.toUpperCase())));
+        addLabelIds.forEach((label) => labels.add(label));
+
+        return {
+          ...message,
+          labels: Array.from(labels),
+          unread: labels.has('UNREAD'),
+        };
+      }),
+    );
+  };
+
+  const modifyMessageLabels = (messageIds: string[], addLabelIds: string[] = [], removeLabelIds: string[] = []) => {
+    if (messageIds.length === 0) {
+      return;
+    }
+
+    updateMessageLabelsLocally(messageIds, addLabelIds, removeLabelIds);
+    void Promise.all(
+      messageIds.map((messageId) =>
+        workspaceApi.modifyGoogleGmailMessageLabels(messageId, { addLabelIds, removeLabelIds }),
+      ),
+    ).catch((labelError: unknown) => {
+      setMessageDetailError(labelError instanceof Error ? labelError.message : 'Unable to update Gmail labels.');
+    });
+  };
+
+  const toggleMessageLabel = (message: GoogleGmailMessage, labelId: string) => {
+    const hasLabel = message.labels.includes(labelId);
+
+    modifyMessageLabels([message.id], hasLabel ? [] : [labelId], hasLabel ? [labelId] : []);
+  };
+
+  const applyTemplate = (template: typeof composeTemplates[number]) => {
+    const templateBody = textToComposeHtml(template.body);
+
+    setComposeForm((current) => ({
+      ...current,
+      body: current.body.trim() ? `${current.body}<br><br>${templateBody}` : templateBody,
+      subject: current.subject.trim() ? current.subject : template.subject,
+    }));
+    setTemplateMenuOpen(false);
+  };
+
+  const applyAdvancedSearch = () => {
+    const query = buildAdvancedSearchQuery(advancedSearchForm);
+
+    setSearchText(query);
+    setSubmittedSearch(query);
+    setAdvancedSearchOpen(false);
+    setPageToken(undefined);
+    setPreviousPageTokens([]);
+    setIsLoading(true);
+    setReloadKey((current) => current + 1);
+  };
+
   const handleComposeChange = (field: keyof ComposeForm, value: string) => {
     setComposeForm((current) => ({ ...current, [field]: value }));
     setComposeError(null);
     setComposeNotice(null);
   };
 
+  const handleRecipientChange = (field: RecipientField, value: string) => {
+    setActiveRecipientField(field);
+    setRecipientQuery(getRecipientTailQuery(value));
+    handleComposeChange(field, value);
+  };
+
+  const syncEditorBody = () => {
+    handleComposeChange('body', bodyEditorRef.current?.innerHTML ?? '');
+  };
+
+  const formatComposeBody = (command: string, value?: string) => {
+    bodyEditorRef.current?.focus();
+    document.execCommand(command, false, value);
+    syncEditorBody();
+  };
+
+  const insertComposeLink = () => {
+    const href = window.prompt('Link URL', 'https://');
+
+    if (!href?.trim()) {
+      return;
+    }
+
+    formatComposeBody('createLink', href.trim());
+  };
+
+  const handleComposeFiles = async (files: FileList | null) => {
+    if (!files?.length) {
+      return;
+    }
+
+    try {
+      const nextAttachments = await Promise.all(Array.from(files).map(readFileAsComposeAttachment));
+      setComposeAttachments((current) => [...current, ...nextAttachments]);
+      setComposeError(null);
+    } catch (attachmentError) {
+      setComposeError(attachmentError instanceof Error ? attachmentError.message : 'Unable to attach file.');
+    }
+  };
+
+  const clearComposeDraft = () => {
+    setComposeForm(emptyComposeForm);
+    setComposeAttachments([]);
+    window.localStorage.removeItem(composeDraftStorageKey);
+    setComposeOpen(false);
+    setComposeMinimized(false);
+    setComposeExpanded(false);
+  };
+
+  const scheduleComposeSend = async (delayMinutes = 60) => {
+    const request = createGmailSendRequest(composeForm, composeAttachments);
+
+    if (!request) {
+      setComposeError(
+        language === 'ko'
+          ? '예약하려면 받는사람과 메시지를 입력하세요.'
+          : 'Add a valid recipient and message body before scheduling.',
+      );
+      setSendMenuOpen(false);
+
+      return;
+    }
+
+    const scheduledFor = new Date(Date.now() + delayMinutes * 60 * 1000).toISOString();
+    setIsSending(true);
+    setComposeError(null);
+    setSendMenuOpen(false);
+
+    try {
+      const scheduledDraft = await workspaceApi.scheduleGoogleGmailMessage({
+        ...request,
+        scheduledFor,
+      });
+
+      setScheduledDrafts((current) => [scheduledDraft, ...current.filter((draft) => draft.id !== scheduledDraft.id)]);
+      setScheduledNotice(`Email scheduled for ${createScheduledTimeLabel(scheduledDraft.scheduledFor, language)}.`);
+      setComposeForm(emptyComposeForm);
+      setComposeAttachments([]);
+      window.localStorage.removeItem(composeDraftStorageKey);
+      setComposeOpen(false);
+      setComposeMinimized(false);
+      switchMailbox('scheduled');
+    } catch (scheduleError) {
+      setComposeError(scheduleError instanceof Error ? scheduleError.message : 'Unable to schedule email.');
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const sendScheduledDraft = async (draftId: string) => {
+    const draft = scheduledDrafts.find((currentDraft) => currentDraft.id === draftId);
+
+    if (!draft || draft.status === 'sending' || draft.status === 'sent') {
+      return;
+    }
+
+    setScheduledDrafts((current) =>
+      current.map((currentDraft) =>
+        currentDraft.id === draftId
+          ? { ...currentDraft, error: undefined, status: 'sending' }
+          : currentDraft,
+      ),
+    );
+
+    try {
+      const updatedDraft = await workspaceApi.sendScheduledGoogleGmailMessageNow(draftId);
+      setScheduledDrafts((current) =>
+        current.map((currentDraft) =>
+          currentDraft.id === draftId
+            ? updatedDraft
+            : currentDraft,
+        ),
+      );
+      setScheduledNotice(
+        updatedDraft.status === 'sent'
+          ? `Scheduled email sent: ${updatedDraft.subject || '(No subject)'}`
+          : updatedDraft.error ?? 'Scheduled email could not be sent.',
+      );
+      setIsLoading(true);
+      setError(null);
+      setReloadKey((current) => current + 1);
+    } catch (sendError) {
+      setScheduledDrafts((current) =>
+        current.map((currentDraft) =>
+          currentDraft.id === draftId
+            ? {
+                ...currentDraft,
+                error: sendError instanceof Error ? sendError.message : 'Unable to send scheduled email.',
+                status: 'failed',
+              }
+            : currentDraft,
+        ),
+      );
+    }
+  };
+
+  const cancelScheduledDraft = async (draftId: string) => {
+    try {
+      await workspaceApi.cancelScheduledGoogleGmailMessage(draftId);
+      setScheduledDrafts((current) => current.filter((currentDraft) => currentDraft.id !== draftId));
+      setScheduledNotice('Scheduled email updated.');
+    } catch (cancelError) {
+      setScheduledNotice(cancelError instanceof Error ? cancelError.message : 'Unable to update scheduled email.');
+    }
+  };
+
+  const addRecipient = (contact: ContactSuggestion) => {
+    setComposeForm((current) => {
+      return {
+        ...current,
+        [activeRecipientField]: replaceRecipientTail(current[activeRecipientField], contact),
+      };
+    });
+    setRecipientQuery('');
+  };
+
   const handleSend = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
-    if (!composeForm.to.trim() || !composeForm.body.trim()) {
+    const request = createGmailSendRequest(composeForm, composeAttachments);
+
+    if (!request) {
       setComposeError(
         language === 'ko'
-          ? '받는사람과 메시지를 입력하세요.'
-          : 'Add a recipient and message body.',
+          ? '올바른 받는사람과 메시지를 입력하세요.'
+          : 'Add a valid recipient and message body.',
       );
 
       return;
@@ -537,15 +1307,12 @@ export function GoogleEmailView() {
     setComposeNotice(null);
 
     try {
-      await workspaceApi.sendGoogleGmailMessage({
-        body: composeForm.body,
-        bcc: composeForm.bcc,
-        cc: composeForm.cc,
-        subject: composeForm.subject,
-        to: composeForm.to,
-      });
+      await workspaceApi.sendGoogleGmailMessage(request);
       setComposeForm(emptyComposeForm);
+      setComposeAttachments([]);
+      window.localStorage.removeItem(composeDraftStorageKey);
       setComposeOpen(false);
+      setComposeMinimized(false);
       setComposeNotice(dictionary.gmailComposeSent);
       setIsLoading(true);
       setError(null);
@@ -655,22 +1422,52 @@ export function GoogleEmailView() {
     setShowCarbonCopy(false);
     setComposeForm({
       bcc: '',
-      body: mode === 'forward' ? quoteForwardBody(message, language) : '',
+      body: mode === 'forward' ? textToComposeHtml(quoteForwardBody(message, language)) : '',
       cc: mode === 'replyAll' ? message.to ?? '' : '',
       subject: mode === 'forward' ? ensureForwardSubject(message.subject) : ensureReplySubject(message.subject),
       to: mode === 'forward' ? '' : senderAddress,
     });
     setComposeOpen(true);
+    setComposeMinimized(false);
   };
 
+  const renderRecipientSuggestions = (field: RecipientField) => (
+    activeRecipientField === field && recipientQuery && contactSuggestions.length > 0 ? (
+      <div className="absolute left-0 top-9 z-40 grid w-[min(420px,calc(100vw-4rem))] gap-1 rounded-lg border bg-popover p-2 shadow-xl">
+        {contactSuggestions.map((contact) => (
+          <button
+            className="flex min-w-0 items-center gap-3 rounded-md px-3 py-2 text-left hover:bg-muted"
+            key={contact.email}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              addRecipient(contact);
+            }}
+            type="button"
+          >
+            <ContactAvatar contact={contact} />
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-bold">{contact.name}</span>
+              <span className="block truncate text-xs text-muted-foreground">{contact.email}</span>
+            </span>
+          </button>
+        ))}
+      </div>
+    ) : null
+  );
+
   const navItems = [
-    { icon: Inbox, label: dictionary.googleCommunicationInbox, count: messages.length, active: true },
-    { icon: Star, label: dictionary.gmailStarred },
-    { icon: Clock3, label: dictionary.gmailSnoozed },
-    { icon: Send, label: dictionary.gmailSent },
-    { icon: FileText, label: dictionary.gmailDrafts },
-    { icon: Tag, label: dictionary.gmailCategories },
-    { icon: ChevronDown, label: dictionary.gmailMore },
+    { icon: Inbox, id: 'inbox' as const, label: dictionary.googleCommunicationInbox, count: mailbox === 'inbox' ? messages.length : undefined },
+    { icon: Star, id: 'starred' as const, label: dictionary.gmailStarred },
+    { icon: Clock3, id: 'snoozed' as const, label: dictionary.gmailSnoozed },
+    { icon: Send, id: 'sent' as const, label: dictionary.gmailSent },
+    { icon: FileText, id: 'drafts' as const, label: dictionary.gmailDrafts },
+    { icon: Tag, id: 'updates' as const, label: dictionary.gmailCategories },
+  ];
+  const moreMailboxes = [
+    { icon: Tag, id: 'important' as const, label: 'Important' },
+    { icon: CalendarPlus, id: 'scheduled' as const, label: 'Scheduled' },
+    { icon: Inbox, id: 'all' as const, label: 'All Mail' },
+    { icon: CircleAlert, id: 'spam' as const, label: 'Spam' },
   ];
 
   return (
@@ -706,7 +1503,10 @@ export function GoogleEmailView() {
                 'h-14 w-full justify-start gap-3 rounded-2xl bg-[#c2e7ff] px-5 text-base font-semibold text-slate-900 hover:bg-[#b6def8] dark:bg-primary/90 dark:text-primary-foreground dark:hover:bg-primary',
                 sidebarCollapsed && 'justify-center px-0',
               )}
-              onClick={() => setComposeOpen(true)}
+              onClick={() => {
+                setComposeOpen(true);
+                setComposeMinimized(false);
+              }}
               type="button"
             >
               <MailPlus className="size-5" />
@@ -725,9 +1525,10 @@ export function GoogleEmailView() {
                   className={cn(
                     'h-9 w-full justify-start rounded-full px-4 text-sm font-semibold max-lg:justify-center max-lg:px-0',
                     sidebarCollapsed && 'justify-center px-0',
-                    item.active && 'bg-[#d3e3fd] text-foreground hover:bg-[#d3e3fd] dark:bg-primary/20',
+                    mailbox === item.id && 'bg-[#d3e3fd] text-foreground hover:bg-[#d3e3fd] dark:bg-primary/20',
                   )}
                   key={item.label}
+                  onClick={() => switchMailbox(item.id)}
                   type="button"
                   variant="ghost"
                 >
@@ -743,6 +1544,57 @@ export function GoogleEmailView() {
                 </Button>
               );
             })}
+            <div className="relative">
+              <Button
+                className={cn(
+                  'h-9 w-full justify-start rounded-full px-4 text-sm font-semibold max-lg:justify-center max-lg:px-0',
+                  sidebarCollapsed && 'justify-center px-0',
+                )}
+                onClick={() => setMoreMailboxesOpen((current) => !current)}
+                type="button"
+                variant="ghost"
+              >
+                <ChevronDown className="size-4" />
+                <span className={cn('min-w-0 flex-1 truncate text-left max-lg:hidden', sidebarCollapsed && 'hidden')}>
+                  {dictionary.gmailMore}
+                </span>
+              </Button>
+              {moreMailboxesOpen && !sidebarCollapsed ? (
+                <div className="absolute left-2 right-2 top-10 z-30 rounded-lg border bg-popover p-1 shadow-xl">
+                  {moreMailboxes.map((item) => {
+                    const Icon = item.icon;
+
+                    return (
+                      <Button
+                        className={cn(
+                          'h-8 w-full justify-start rounded-md px-3 text-sm',
+                          mailbox === item.id && 'bg-muted text-foreground',
+                        )}
+                        key={item.id}
+                        onClick={() => {
+                          switchMailbox(item.id);
+                          setMoreMailboxesOpen(false);
+                        }}
+                        type="button"
+                        variant="ghost"
+                      >
+                        <Icon className="size-4" />
+                        <span>{item.label}</span>
+                      </Button>
+                    );
+                  })}
+                  <Separator className="my-1" />
+                  <Button className="h-8 w-full justify-start rounded-md px-3 text-sm" type="button" variant="ghost">
+                    <Plus className="size-4" />
+                    <span>Create label</span>
+                  </Button>
+                  <Button className="h-8 w-full justify-start rounded-md px-3 text-sm" type="button" variant="ghost">
+                    <Settings className="size-4" />
+                    <span>Manage labels</span>
+                  </Button>
+                </div>
+              ) : null}
+            </div>
 
             <div className={cn('px-4 pt-5 max-lg:hidden', sidebarCollapsed && 'hidden')}>
               <div className="flex items-center justify-between text-sm font-black">
@@ -782,12 +1634,117 @@ export function GoogleEmailView() {
               <Button
                 aria-label={dictionary.googleCommunicationSearchEmail}
                 className="absolute right-1 top-1/2 size-9 -translate-y-1/2"
+                onClick={() => setAdvancedSearchOpen((current) => !current)}
                 size="icon"
-                type="submit"
+                type="button"
                 variant="ghost"
               >
                 <SlidersHorizontal className="size-5" />
               </Button>
+              {advancedSearchOpen ? (
+                <div className="absolute left-0 right-0 top-12 z-40 grid gap-3 rounded-lg border bg-popover p-4 text-sm shadow-2xl md:grid-cols-[120px_minmax(0,1fr)]">
+                  {[
+                    ['from', 'From'],
+                    ['to', 'To'],
+                    ['subject', 'Subject'],
+                    ['includes', 'Includes'],
+                    ['excludes', 'Excludes'],
+                  ].map(([field, label]) => (
+                    <div className="contents" key={field}>
+                      <span className="self-center text-xs font-bold text-muted-foreground">{label}</span>
+                      <Input
+                        className="h-8"
+                        onChange={(event) =>
+                          setAdvancedSearchForm((current) => ({
+                            ...current,
+                            [field]: event.target.value,
+                          }))
+                        }
+                        value={advancedSearchForm[field as keyof Pick<AdvancedSearchForm, 'excludes' | 'from' | 'includes' | 'subject' | 'to'>]}
+                      />
+                    </div>
+                  ))}
+                  <span className="self-center text-xs font-bold text-muted-foreground">Size</span>
+                  <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_80px] gap-2">
+                    <select
+                      className="h-8 rounded-md border bg-background px-2 text-sm"
+                      onChange={(event) =>
+                        setAdvancedSearchForm((current) => ({
+                          ...current,
+                          sizeOperator: event.target.value as AdvancedSearchForm['sizeOperator'],
+                        }))
+                      }
+                      value={advancedSearchForm.sizeOperator}
+                    >
+                      <option value="larger">Larger than</option>
+                      <option value="smaller">Smaller than</option>
+                    </select>
+                    <Input
+                      className="h-8"
+                      onChange={(event) =>
+                        setAdvancedSearchForm((current) => ({ ...current, sizeValue: event.target.value }))
+                      }
+                      value={advancedSearchForm.sizeValue}
+                    />
+                    <select
+                      className="h-8 rounded-md border bg-background px-2 text-sm"
+                      onChange={(event) =>
+                        setAdvancedSearchForm((current) => ({
+                          ...current,
+                          sizeUnit: event.target.value as AdvancedSearchForm['sizeUnit'],
+                        }))
+                      }
+                      value={advancedSearchForm.sizeUnit}
+                    >
+                      <option value="M">MB</option>
+                      <option value="K">KB</option>
+                    </select>
+                  </div>
+                  <span className="self-center text-xs font-bold text-muted-foreground">Date</span>
+                  <Input
+                    className="h-8"
+                    onChange={(event) =>
+                      setAdvancedSearchForm((current) => ({ ...current, newerThan: event.target.value }))
+                    }
+                    placeholder="1d, 7d, 1m"
+                    value={advancedSearchForm.newerThan}
+                  />
+                  <span />
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <label className="flex items-center gap-2 text-xs font-bold">
+                      <Checkbox
+                        checked={advancedSearchForm.hasAttachment}
+                        onCheckedChange={(checked) =>
+                          setAdvancedSearchForm((current) => ({ ...current, hasAttachment: Boolean(checked) }))
+                        }
+                      />
+                      Has attachment
+                    </label>
+                    <label className="flex items-center gap-2 text-xs font-bold">
+                      <Checkbox
+                        checked={advancedSearchForm.anywhere}
+                        onCheckedChange={(checked) =>
+                          setAdvancedSearchForm((current) => ({ ...current, anywhere: Boolean(checked) }))
+                        }
+                      />
+                      Search all mail
+                    </label>
+                    <div className="ml-auto flex gap-2">
+                      <Button
+                        onClick={() => setAdvancedSearchForm(emptyAdvancedSearchForm)}
+                        size="sm"
+                        type="button"
+                        variant="outline"
+                      >
+                        Reset
+                      </Button>
+                      <Button onClick={applyAdvancedSearch} size="sm" type="button">
+                        Search
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
             </form>
             <div className="ml-auto flex shrink-0 items-center gap-2">
               <Badge className="h-9 rounded-full px-3 text-sm" variant="secondary">
@@ -796,7 +1753,14 @@ export function GoogleEmailView() {
               <Button onClick={handleRefresh} size="icon" type="button" variant="ghost">
                 <RefreshCw className={cn('size-5', isLoading && 'animate-spin')} />
               </Button>
-              <Button aria-label="Gemini" className="max-md:hidden" size="icon" type="button" variant="ghost">
+              <Button
+                aria-label="Gemini"
+                className={cn('max-md:hidden', geminiOpen && 'bg-primary/10 text-primary')}
+                onClick={() => setGeminiOpen((current) => !current)}
+                size="icon"
+                type="button"
+                variant="ghost"
+              >
                 <GoogleProductIcon decorative product="gemini" size={21} />
               </Button>
               <Button className="max-md:hidden" size="icon" type="button" variant="ghost">
@@ -941,7 +1905,10 @@ export function GoogleEmailView() {
                   </div>
 
                   <section className="grid grid-cols-[40px_minmax(0,1fr)] gap-4">
-                    <div className="flex size-10 items-center justify-center rounded-full bg-primary/80 text-base font-black text-primary-foreground">
+                    <div className={cn(
+                      'flex size-10 items-center justify-center rounded-full text-base font-black text-white',
+                      getAvatarClass(selectedMessage.from),
+                    )}>
                       {getSenderInitial(selectedMessage.from)}
                     </div>
                     <div className="min-w-0">
@@ -1054,13 +2021,16 @@ export function GoogleEmailView() {
                             </Button>
                           </div>
                           <div className="flex flex-wrap gap-3">
-                            {selectedAttachments.map((attachment) => (
+                            {selectedAttachments.map((attachment) => {
+                              const meta = getAttachmentMeta(attachment.fileName, attachment.mimeType);
+
+                              return (
                               <button
                                 className="flex h-14 min-w-52 max-w-72 items-center gap-3 rounded-md border bg-muted/25 px-3 text-left text-sm font-semibold transition hover:bg-muted/45"
                                 key={attachment.fileName}
                                 type="button"
                               >
-                                <FileText className="size-5 shrink-0 text-primary" />
+                                <AttachmentMetaIcon className="size-5" icon={meta.icon} />
                                 <span className="min-w-0">
                                   <span className="block truncate">{attachment.fileName}</span>
                                   {attachment.sizeBytes ? (
@@ -1070,7 +2040,8 @@ export function GoogleEmailView() {
                                   ) : null}
                                 </span>
                               </button>
-                            ))}
+                              );
+                            })}
                           </div>
                         </div>
                       ) : null}
@@ -1115,11 +2086,45 @@ export function GoogleEmailView() {
           ) : (
             <>
               <div className="flex h-12 shrink-0 items-center justify-between border-b px-4">
-                <div className="flex items-center gap-1">
-                  <Checkbox aria-label={dictionary.gmailSelect} />
-                  <Button size="icon-sm" type="button" variant="ghost">
+                <div className="relative flex items-center gap-1">
+                  <Checkbox
+                    aria-label={dictionary.gmailSelect}
+                    checked={allVisibleSelected}
+                    onCheckedChange={(checked) => setVisibleSelection(Boolean(checked))}
+                  />
+                  <Button
+                    onClick={() => setSelectionMenuOpen((current) => !current)}
+                    size="icon-sm"
+                    type="button"
+                    variant="ghost"
+                  >
                     <ChevronDown className="size-4" />
                   </Button>
+                  {selectionMenuOpen ? (
+                    <div className="absolute left-0 top-9 z-30 grid w-40 gap-1 rounded-lg border bg-popover p-1 text-sm shadow-xl">
+                      {[
+                        ['All', () => setVisibleSelection(true)],
+                        ['None', () => setVisibleSelection(false)],
+                        ['Read', () => modifyMessageLabels(Array.from(selectedMessageIds), [], ['UNREAD'])],
+                        ['Unread', () => modifyMessageLabels(Array.from(selectedMessageIds), ['UNREAD'], [])],
+                        ['Starred', () => modifyMessageLabels(Array.from(selectedMessageIds), ['STARRED'], [])],
+                        ['Unstarred', () => modifyMessageLabels(Array.from(selectedMessageIds), [], ['STARRED'])],
+                      ].map(([label, action]) => (
+                        <Button
+                          className="h-8 justify-start rounded-md px-3"
+                          key={label as string}
+                          onClick={() => {
+                            (action as () => void)();
+                            setSelectionMenuOpen(false);
+                          }}
+                          type="button"
+                          variant="ghost"
+                        >
+                          {label as string}
+                        </Button>
+                      ))}
+                    </div>
+                  ) : null}
                   <Button onClick={handleRefresh} size="icon-sm" type="button" variant="ghost">
                     <RefreshCw className={cn('size-4', isLoading && 'animate-spin')} />
                   </Button>
@@ -1155,9 +2160,19 @@ export function GoogleEmailView() {
                   <Button size="icon-sm" type="button" variant="ghost">
                     <Trash2 className="size-4" />
                   </Button>
+                  <Button
+                    disabled={selectedMessageIds.size === 0}
+                    onClick={() => modifyMessageLabels(Array.from(selectedMessageIds), ['IMPORTANT'], [])}
+                    size="icon-sm"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <Tag className="size-4" />
+                  </Button>
                 </div>
               </div>
 
+              {mailbox === 'inbox' ? (
               <Tabs
                 className="shrink-0 border-b"
                 onValueChange={(value) => setCategory(value as GmailCategory)}
@@ -1214,11 +2229,17 @@ export function GoogleEmailView() {
                   </TabsTrigger>
                 </TabsList>
               </Tabs>
+              ) : null}
 
               <div className="min-h-0 flex-1 overflow-y-auto bg-[#f2f6fc] dark:bg-background">
                 {composeNotice ? (
                   <div className="m-3 rounded-lg border bg-primary/10 px-4 py-2 text-sm font-bold text-primary">
                     {composeNotice}
+                  </div>
+                ) : null}
+                {scheduledNotice ? (
+                  <div className="m-3 rounded-lg border bg-blue-500/10 px-4 py-2 text-sm font-bold text-blue-700 dark:text-blue-300">
+                    {scheduledNotice}
                   </div>
                 ) : null}
                 {isLoading ? (
@@ -1227,7 +2248,102 @@ export function GoogleEmailView() {
                     {dictionary.driveLoading}
                   </div>
                 ) : null}
-                {!isLoading && visibleMessages.length === 0 ? (
+                {hasLocalScheduledDrafts ? (
+                  <div className="m-3 space-y-2 rounded-lg border bg-card p-3">
+                    <div className="flex items-center gap-2 text-sm font-black">
+                      <CalendarPlus className="size-4 text-primary" />
+                      Scheduled send queue
+                    </div>
+                    {scheduledDrafts.map((draft) => (
+                      <div
+                        className="grid gap-2 rounded-md border bg-muted/20 p-3 text-sm md:grid-cols-[minmax(0,1fr)_auto]"
+                        key={draft.id}
+                      >
+                        <button
+                          className="min-w-0 text-left"
+                          onClick={() => {
+                            setComposeForm({
+                              bcc: String(draft.bcc ?? ''),
+                              body: String(draft.body ?? ''),
+                              cc: String(draft.cc ?? ''),
+                              subject: String(draft.subject ?? ''),
+                              to: String(draft.to ?? ''),
+                            });
+                            setComposeAttachments([]);
+                            setComposeOpen(true);
+                            setComposeMinimized(false);
+                          }}
+                          type="button"
+                        >
+                          <span className="block truncate font-black">
+                            {draft.subject || '(No subject)'}
+                          </span>
+                          <span className="block truncate text-xs font-semibold text-muted-foreground">
+                            {draft.to} · {draft.status === 'sent' && draft.sentAt
+                              ? `Sent ${createScheduledTimeLabel(draft.sentAt, language)}`
+                              : `Scheduled ${createScheduledTimeLabel(draft.scheduledFor, language)}`}
+                          </span>
+                          <span
+                            className={cn(
+                              'mt-1 inline-flex rounded-full px-2 py-0.5 text-[11px] font-black uppercase',
+                              draft.status === 'pending' && 'bg-blue-500/10 text-blue-700 dark:text-blue-300',
+                              draft.status === 'sending' && 'bg-yellow-500/15 text-yellow-800 dark:text-yellow-300',
+                              draft.status === 'sent' && 'bg-green-600/10 text-green-700 dark:text-green-300',
+                              draft.status === 'failed' && 'bg-destructive/10 text-destructive',
+                            )}
+                          >
+                            {draft.status}
+                          </span>
+                          {draft.error ? (
+                            <span className="mt-1 block text-xs font-bold text-destructive">
+                              {draft.error}
+                            </span>
+                          ) : null}
+                          {draft.attachments.length > 0 ? (
+                            <span className="mt-2 flex flex-wrap gap-1.5">
+                              {draft.attachments.map((attachment) => {
+                                const meta = getAttachmentMeta(attachment.fileName, attachment.mimeType);
+
+                                return (
+                                  <span
+                                    className={cn(
+                                      'inline-flex max-w-48 items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-semibold',
+                                      meta.color,
+                                    )}
+                                    key={`${draft.id}-${attachment.fileName}`}
+                                  >
+                                    <AttachmentMetaIcon icon={meta.icon} />
+                                    <span className="truncate">{attachment.fileName}</span>
+                                  </span>
+                                );
+                              })}
+                            </span>
+                          ) : null}
+                        </button>
+                        <div className="flex flex-wrap items-center justify-end gap-2 self-center">
+                          {draft.status === 'pending' || draft.status === 'failed' ? (
+                            <Button
+                              onClick={() => void sendScheduledDraft(draft.id)}
+                              size="sm"
+                              type="button"
+                            >
+                              {draft.status === 'failed' ? 'Retry' : 'Send now'}
+                            </Button>
+                          ) : null}
+                          <Button
+                            onClick={() => void cancelScheduledDraft(draft.id)}
+                            size="sm"
+                            type="button"
+                            variant="outline"
+                          >
+                            {draft.status === 'sent' ? 'Clear' : 'Cancel'}
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {!isLoading && visibleMessages.length === 0 && !hasLocalScheduledDrafts ? (
                   <p className="m-3 rounded-lg border bg-card p-4 text-sm font-bold text-muted-foreground">
                     {dictionary.googleCommunicationNoEmail}
                   </p>
@@ -1235,7 +2351,9 @@ export function GoogleEmailView() {
                 <div className="divide-y">
                   {visibleMessages.map((message) => {
                     const active = message.id === selectedId;
-                    const attachmentHints = getAttachmentHints(message);
+                    const attachmentHints = message.attachments.length > 0
+                      ? message.attachments.slice(0, 3)
+                      : getAttachmentHints(message).map((hint) => ({ fileName: hint, mimeType: '', sizeBytes: undefined }));
 
                     return (
                       <button
@@ -1248,16 +2366,44 @@ export function GoogleEmailView() {
                         onClick={() => openMessage(message)}
                         type="button"
                       >
-                        <Checkbox aria-label={dictionary.gmailSelect} className="mt-0.5 max-md:hidden" />
-                        <Star
-                          className={cn(
-                            'mt-0.5 size-4 text-muted-foreground max-md:hidden',
-                            message.labels.includes('STARRED') && 'fill-yellow-400 text-yellow-500',
-                          )}
-                        />
+                        <span
+                          className="mt-0.5 max-md:hidden"
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <Checkbox
+                            aria-label={dictionary.gmailSelect}
+                            checked={selectedMessageIds.has(message.id)}
+                            onCheckedChange={(checked) => toggleSelectMessage(message.id, Boolean(checked))}
+                          />
+                        </span>
+                        <span
+                          className="mt-0.5 max-md:hidden"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            toggleMessageLabel(message, 'STARRED');
+                          }}
+                        >
+                          <Star
+                            className={cn(
+                              'size-4 text-muted-foreground',
+                              message.labels.includes('STARRED') && 'fill-yellow-400 text-yellow-500',
+                            )}
+                          />
+                        </span>
                         <div className="min-w-0 max-md:hidden">
                           <div className="flex min-w-0 items-center gap-2">
-                            <Tag className="size-4 shrink-0 fill-yellow-400 text-yellow-400" />
+                            <Tag
+                              className={cn(
+                                'size-4 shrink-0',
+                                message.labels.includes('IMPORTANT')
+                                  ? 'fill-yellow-400 text-yellow-400'
+                                  : 'text-muted-foreground/50',
+                              )}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                toggleMessageLabel(message, 'IMPORTANT');
+                              }}
+                            />
                             <span className="min-w-0 truncate">{getSenderName(message.from)}</span>
                           </div>
                         </div>
@@ -1270,15 +2416,22 @@ export function GoogleEmailView() {
                           </div>
                           {attachmentHints.length > 0 ? (
                             <div className="mt-2 flex min-w-0 flex-wrap gap-1.5">
-                              {attachmentHints.map((hint) => (
+                              {attachmentHints.map((attachment) => {
+                                const meta = getAttachmentMeta(attachment.fileName, attachment.mimeType);
+
+                                return (
                                 <span
-                                  className="inline-flex max-w-40 items-center gap-1 rounded-full border bg-muted/40 px-2 py-0.5 text-xs font-semibold text-muted-foreground"
-                                  key={hint}
+                                  className={cn(
+                                    'inline-flex max-w-48 items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-semibold',
+                                    meta.color,
+                                  )}
+                                  key={attachment.fileName}
                                 >
-                                  <Paperclip className="size-3" />
-                                  <span className="truncate">{hint}</span>
+                                  <AttachmentMetaIcon icon={meta.icon} />
+                                  <span className="truncate">{attachment.fileName}</span>
                                 </span>
-                              ))}
+                                );
+                              })}
                             </div>
                           ) : null}
                         </div>
@@ -1298,31 +2451,92 @@ export function GoogleEmailView() {
       {composeOpen ? (
         <div
           aria-label={dictionary.gmailComposeTitle}
-          className="absolute bottom-4 right-4 z-20 flex h-[min(680px,calc(100%-2rem))] min-h-[360px] w-[min(720px,calc(100%-2rem))] min-w-[480px] max-w-[calc(100%-2rem)] resize flex-col overflow-auto rounded-xl border bg-popover text-popover-foreground shadow-2xl max-sm:min-w-0"
+          className={cn(
+            'absolute bottom-4 right-4 z-20 flex min-w-[480px] max-w-[calc(100%-2rem)] flex-col overflow-visible rounded-xl border bg-popover text-popover-foreground shadow-2xl max-sm:min-w-0',
+            composeExpanded
+              ? 'left-6 right-6 top-6 h-auto w-auto'
+              : composeMinimized
+                ? 'h-10 min-h-0 w-[330px]'
+                : 'h-[min(680px,calc(100%-2rem))] min-h-[360px] w-[min(720px,calc(100%-2rem))] resize overflow-auto',
+          )}
           role="dialog"
         >
-          <div className="flex h-10 w-full shrink-0 items-center justify-between bg-foreground px-4 text-sm font-black text-background dark:bg-muted dark:text-foreground">
+          <div
+            className={cn(
+              'flex h-10 w-full shrink-0 items-center justify-between bg-foreground px-4 text-sm font-black text-background dark:bg-muted dark:text-foreground',
+              composeMinimized && 'cursor-pointer',
+            )}
+            onClick={() => {
+              if (composeMinimized) {
+                setComposeMinimized(false);
+              }
+            }}
+          >
             <span className="min-w-0 truncate">{dictionary.gmailComposeTitle}</span>
-            <Button
-              className="size-7 shrink-0 text-background hover:bg-background/10 hover:text-background dark:text-foreground dark:hover:bg-foreground/10 dark:hover:text-foreground"
-              onClick={() => setComposeOpen(false)}
-              size="icon-sm"
-              type="button"
-              variant="ghost"
-            >
-              <ChevronDown className="size-4" />
-            </Button>
+            <div className="flex items-center gap-1">
+              <Button
+                aria-label="Minimize compose"
+                className="size-7 shrink-0 text-background hover:bg-background/10 hover:text-background dark:text-foreground dark:hover:bg-foreground/10 dark:hover:text-foreground"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setComposeMinimized(true);
+                  setComposeExpanded(false);
+                }}
+                size="icon-sm"
+                type="button"
+                variant="ghost"
+              >
+                <Minus className="size-4" />
+              </Button>
+              <Button
+                aria-label={composeExpanded ? 'Restore compose size' : 'Expand compose'}
+                className="size-7 shrink-0 text-background hover:bg-background/10 hover:text-background dark:text-foreground dark:hover:bg-foreground/10 dark:hover:text-foreground"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setComposeExpanded((current) => !current);
+                  setComposeMinimized(false);
+                }}
+                size="icon-sm"
+                type="button"
+                variant="ghost"
+              >
+                <Maximize2 className="size-4" />
+              </Button>
+              <Button
+                aria-label="Close compose"
+                className="size-7 shrink-0 text-background hover:bg-background/10 hover:text-background dark:text-foreground dark:hover:bg-foreground/10 dark:hover:text-foreground"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setComposeOpen(false);
+                }}
+                size="icon-sm"
+                type="button"
+                variant="ghost"
+              >
+                <X className="size-4" />
+              </Button>
+            </div>
           </div>
+          {composeMinimized ? null : (
           <form className="flex min-h-0 flex-1 flex-col bg-popover" onSubmit={handleSend}>
             <div className="flex w-full shrink-0 items-center gap-3 border-b bg-popover px-4 py-2">
               <span className="w-[4.5rem] shrink-0 whitespace-nowrap text-xs font-bold text-muted-foreground">
                 {dictionary.gmailComposeTo}
               </span>
-              <Input
-                className="h-8 min-w-0 flex-1 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0 dark:bg-transparent"
-                onChange={(event) => handleComposeChange('to', event.target.value)}
-                value={composeForm.to}
-              />
+              <div className="relative min-w-0 flex-1">
+                <Input
+                  className="h-8 min-w-0 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0 dark:bg-transparent"
+                  onChange={(event) => {
+                    handleRecipientChange('to', event.target.value);
+                  }}
+                  onFocus={() => {
+                    setActiveRecipientField('to');
+                    setRecipientQuery(getRecipientTailQuery(composeForm.to));
+                  }}
+                  value={composeForm.to}
+                />
+                {renderRecipientSuggestions('to')}
+              </div>
               <Button
                 className="h-7 shrink-0 px-2 text-xs"
                 onClick={() => setShowCarbonCopy((current) => !current)}
@@ -1338,21 +2552,35 @@ export function GoogleEmailView() {
                   <span className="w-[4.5rem] shrink-0 whitespace-nowrap text-xs font-bold text-muted-foreground">
                     {dictionary.gmailComposeCc}
                   </span>
-                  <Input
-                    className="h-8 min-w-0 flex-1 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0 dark:bg-transparent"
-                    onChange={(event) => handleComposeChange('cc', event.target.value)}
-                    value={composeForm.cc}
-                  />
+                  <div className="relative min-w-0 flex-1">
+                    <Input
+                      className="h-8 min-w-0 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0 dark:bg-transparent"
+                      onChange={(event) => handleRecipientChange('cc', event.target.value)}
+                      onFocus={() => {
+                        setActiveRecipientField('cc');
+                        setRecipientQuery(getRecipientTailQuery(composeForm.cc));
+                      }}
+                      value={composeForm.cc}
+                    />
+                    {renderRecipientSuggestions('cc')}
+                  </div>
                 </div>
                 <div className="flex w-full shrink-0 items-center gap-3 border-b bg-popover px-4 py-2">
                   <span className="w-[4.5rem] shrink-0 whitespace-nowrap text-xs font-bold text-muted-foreground">
                     {dictionary.gmailComposeBcc}
                   </span>
-                  <Input
-                    className="h-8 min-w-0 flex-1 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0 dark:bg-transparent"
-                    onChange={(event) => handleComposeChange('bcc', event.target.value)}
-                    value={composeForm.bcc}
-                  />
+                  <div className="relative min-w-0 flex-1">
+                    <Input
+                      className="h-8 min-w-0 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0 dark:bg-transparent"
+                      onChange={(event) => handleRecipientChange('bcc', event.target.value)}
+                      onFocus={() => {
+                        setActiveRecipientField('bcc');
+                        setRecipientQuery(getRecipientTailQuery(composeForm.bcc));
+                      }}
+                      value={composeForm.bcc}
+                    />
+                    {renderRecipientSuggestions('bcc')}
+                  </div>
                 </div>
               </>
             ) : null}
@@ -1362,33 +2590,265 @@ export function GoogleEmailView() {
               placeholder={dictionary.gmailComposeSubject}
               value={composeForm.subject}
             />
-            <Textarea
-              className="min-h-[180px] flex-1 resize-none rounded-none border-0 bg-popover p-4 shadow-none focus-visible:ring-0 dark:bg-popover"
-              onChange={(event) => handleComposeChange('body', event.target.value)}
-              placeholder={dictionary.gmailComposeBody}
-              value={composeForm.body}
-            />
+            <div className="flex shrink-0 flex-wrap items-center gap-1 border-b bg-[#f6f8fc] px-3 py-2 dark:bg-muted/35">
+              {[
+                [Bold, 'bold'],
+                [Italic, 'italic'],
+                [Underline, 'underline'],
+                [List, 'insertUnorderedList'],
+                [ListOrdered, 'insertOrderedList'],
+              ].map(([Icon, command]) => {
+                const ToolbarIcon = Icon as typeof Bold;
+
+                return (
+                  <Button
+                    className="size-8"
+                    key={command as string}
+                    onClick={() => formatComposeBody(command as string)}
+                    size="icon-sm"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <ToolbarIcon className="size-4" />
+                  </Button>
+                );
+              })}
+              <Button className="size-8" onClick={insertComposeLink} size="icon-sm" type="button" variant="ghost">
+                <Link2 className="size-4" />
+              </Button>
+              <Separator className="mx-1 h-6" orientation="vertical" />
+              <Button
+                className="h-8 gap-1 px-2 text-xs"
+                onClick={() => fileAttachmentInputRef.current?.click()}
+                type="button"
+                variant="ghost"
+              >
+                <Paperclip className="size-4" />
+                Attach
+              </Button>
+              <Button
+                className="h-8 gap-1 px-2 text-xs"
+                onClick={() => imageAttachmentInputRef.current?.click()}
+                type="button"
+                variant="ghost"
+              >
+                <ImageIcon className="size-4" />
+                Image
+              </Button>
+              <input
+                className="hidden"
+                multiple
+                onChange={(event) => {
+                  void handleComposeFiles(event.target.files);
+                  event.target.value = '';
+                }}
+                ref={fileAttachmentInputRef}
+                type="file"
+              />
+              <input
+                accept="image/*"
+                className="hidden"
+                multiple
+                onChange={(event) => {
+                  void handleComposeFiles(event.target.files);
+                  event.target.value = '';
+                }}
+                ref={imageAttachmentInputRef}
+                type="file"
+              />
+            </div>
+            <div className="relative min-h-[180px] flex-1 bg-popover dark:bg-popover">
+              {!getPlainTextFromComposeBody(composeForm.body) ? (
+                <span className="pointer-events-none absolute left-4 top-4 text-sm text-muted-foreground">
+                  {dictionary.gmailComposeBody}
+                </span>
+              ) : null}
+              <div
+                className="h-full min-h-[180px] overflow-auto whitespace-pre-wrap break-words p-4 text-sm leading-6 outline-none"
+                contentEditable
+                onInput={syncEditorBody}
+                ref={bodyEditorRef}
+                suppressContentEditableWarning
+              />
+            </div>
+            {composeAttachments.length > 0 ? (
+              <div className="flex shrink-0 flex-wrap gap-2 border-t bg-popover px-4 py-3">
+                {composeAttachments.map((attachment) => {
+                  const meta = getAttachmentMeta(attachment.fileName, attachment.mimeType);
+
+                  return (
+                    <span
+                      className={cn(
+                        'inline-flex max-w-64 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold',
+                        meta.color,
+                      )}
+                      key={attachment.id}
+                      title={`${attachment.fileName}${attachment.sizeBytes ? ` · ${formatFileSize(attachment.sizeBytes, language)}` : ''}`}
+                    >
+                      <AttachmentMetaIcon icon={meta.icon} />
+                      <span className="truncate">{attachment.fileName}</span>
+                      <button
+                        aria-label={`Remove ${attachment.fileName}`}
+                        className="ml-0.5 rounded-full p-0.5 hover:bg-background/70"
+                        onClick={() =>
+                          setComposeAttachments((current) =>
+                            current.filter((currentAttachment) => currentAttachment.id !== attachment.id),
+                          )
+                        }
+                        type="button"
+                      >
+                        <X className="size-3" />
+                      </button>
+                    </span>
+                  );
+                })}
+              </div>
+            ) : null}
             {composeError ? (
               <p className="px-4 pb-2 text-sm font-bold text-destructive">{composeError}</p>
             ) : null}
             <Separator />
             <div className="flex shrink-0 items-center justify-between p-3">
-              <Button disabled={isSending} type="submit">
-                <Send className="size-4" />
-                <span>{isSending ? dictionary.gmailComposeSending : dictionary.gmailComposeSend}</span>
-              </Button>
-              <Button
-                disabled={isSending}
-                onClick={() => setComposeOpen(false)}
-                size="icon"
-                type="button"
-                variant="ghost"
-              >
+              <div className="flex items-center gap-2">
+                <div className="relative flex">
+                  <Button className="rounded-r-none" disabled={isSending} type="submit">
+                    <Send className="size-4" />
+                    <span>{isSending ? dictionary.gmailComposeSending : dictionary.gmailComposeSend}</span>
+                  </Button>
+                  <Button
+                    className="rounded-l-none border-l border-primary-foreground/30 px-2"
+                    onClick={() => setSendMenuOpen((current) => !current)}
+                    type="button"
+                  >
+                    <ChevronDown className="size-4" />
+                  </Button>
+                  {sendMenuOpen ? (
+                    <div className="absolute bottom-10 left-0 z-40 w-52 rounded-lg border bg-popover p-1 shadow-xl">
+                      {[
+                        ['In 1 minute', 1],
+                        ['In 1 hour', 60],
+                        ['In 16 hours', 16 * 60],
+                      ].map(([label, minutes]) => (
+                        <Button
+                          className="h-9 w-full justify-start"
+                          disabled={isSending}
+                          key={label as string}
+                          onClick={() => void scheduleComposeSend(minutes as number)}
+                          type="button"
+                          variant="ghost"
+                        >
+                          <CalendarPlus className="size-4" />
+                          {label as string}
+                        </Button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+                <Button className="size-9 rounded-full" type="button" variant="secondary">
+                  <Type className="size-4" />
+                </Button>
+                <Button
+                  className="size-9 rounded-full"
+                  onClick={() => fileAttachmentInputRef.current?.click()}
+                  type="button"
+                  variant="ghost"
+                >
+                  <Paperclip className="size-4" />
+                </Button>
+                <Button className="size-9 rounded-full" type="button" variant="ghost">
+                  <Smile className="size-4" />
+                </Button>
+                <div className="relative">
+                  <Button
+                    className="size-9 rounded-full"
+                    onClick={() => setTemplateMenuOpen((current) => !current)}
+                    type="button"
+                    variant="ghost"
+                  >
+                    <FileText className="size-4" />
+                  </Button>
+                  {templateMenuOpen ? (
+                    <div className="absolute bottom-10 left-0 z-40 w-64 rounded-lg border bg-popover p-1 shadow-xl">
+                      <div className="px-3 py-2 text-xs font-black uppercase text-muted-foreground">Templates</div>
+                      {composeTemplates.map((template) => (
+                        <Button
+                          className="h-9 w-full justify-start rounded-md px-3"
+                          key={template.id}
+                          onClick={() => applyTemplate(template)}
+                          type="button"
+                          variant="ghost"
+                        >
+                          {template.label}
+                        </Button>
+                      ))}
+                      <Separator className="my-1" />
+                      <Button className="h-9 w-full justify-start rounded-md px-3" type="button" variant="ghost">
+                        Save draft as template
+                      </Button>
+                      <Button className="h-9 w-full justify-start rounded-md px-3" type="button" variant="ghost">
+                        Delete template
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+              <Button disabled={isSending} onClick={clearComposeDraft} size="icon" type="button" variant="ghost">
                 <Trash2 className="size-4" />
               </Button>
             </div>
           </form>
+          )}
         </div>
+      ) : null}
+      {geminiOpen ? (
+        <aside className="absolute right-4 top-16 z-20 flex h-[min(560px,calc(100%-5rem))] w-[340px] flex-col rounded-xl border bg-popover shadow-2xl">
+          <div className="flex h-11 items-center justify-between border-b px-4">
+            <div className="flex items-center gap-2 text-sm font-black">
+              <GoogleProductIcon decorative product="gemini" size={18} />
+              Gemini
+            </div>
+            <Button onClick={() => setGeminiOpen(false)} size="icon-sm" type="button" variant="ghost">
+              <X className="size-4" />
+            </Button>
+          </div>
+          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3 text-sm">
+            <div className="rounded-lg bg-muted/60 p-3 font-semibold text-muted-foreground">
+              Ask for a summary, reply draft, or action items from the selected email.
+            </div>
+            {geminiMessages.map((message, index) => (
+              <div className="rounded-lg border bg-card p-3" key={`${message}-${index}`}>
+                {message}
+              </div>
+            ))}
+          </div>
+          <form
+            className="flex gap-2 border-t p-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!geminiInput.trim()) {
+                return;
+              }
+
+              const subject = selectedMessage?.subject ?? 'this inbox';
+              setGeminiMessages((current) => [
+                ...current,
+                `You asked about "${subject}": ${geminiInput.trim()}`,
+                'Gemini integration is ready for a model-backed endpoint; this panel is wired into the mail context.',
+              ]);
+              setGeminiInput('');
+            }}
+          >
+            <Input
+              className="h-9"
+              onChange={(event) => setGeminiInput(event.target.value)}
+              placeholder="Ask Gemini..."
+              value={geminiInput}
+            />
+            <Button size="icon" type="submit">
+              <Sparkles className="size-4" />
+            </Button>
+          </form>
+        </aside>
       ) : null}
     </Card>
   );

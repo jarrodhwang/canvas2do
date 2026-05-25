@@ -143,7 +143,48 @@ public sealed record GoogleGmailSendRequestDto(
     string? Cc,
     string? Bcc,
     string Subject,
-    string Body);
+    string Body,
+    GoogleGmailSendAttachmentDto[]? Attachments = null);
+
+public sealed record GoogleGmailSendAttachmentDto(
+    string FileName,
+    string MimeType,
+    string ContentBase64,
+    long? SizeBytes = null);
+
+public sealed record GoogleGmailScheduleRequestDto(
+    string To,
+    string? Cc,
+    string? Bcc,
+    string Subject,
+    string Body,
+    DateTimeOffset ScheduledFor,
+    GoogleGmailSendAttachmentDto[]? Attachments = null);
+
+public sealed record GoogleGmailScheduledMessageDto(
+    Guid Id,
+    string To,
+    string? Cc,
+    string? Bcc,
+    string Subject,
+    string Body,
+    DateTimeOffset ScheduledFor,
+    DateTimeOffset CreatedAt,
+    string Status,
+    GoogleGmailScheduledAttachmentDto[] Attachments,
+    string? Error = null,
+    DateTimeOffset? SentAt = null,
+    string? GmailMessageId = null,
+    string? GmailThreadId = null);
+
+public sealed record GoogleGmailScheduledAttachmentDto(
+    string FileName,
+    string MimeType,
+    long? SizeBytes = null);
+
+public sealed record GoogleGmailModifyLabelsRequestDto(
+    string[]? AddLabelIds,
+    string[]? RemoveLabelIds);
 
 public sealed record GoogleGmailSendResponseDto(
     string Id,

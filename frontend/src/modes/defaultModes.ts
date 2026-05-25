@@ -44,7 +44,7 @@ export const defaultModeConfigs: WorkspaceModeConfig[] = [
     dashboardCards: [
       {
         id: 'semester-lectures',
-        title: 'Lectures',
+        title: 'Courses',
         pill: 'Summer 2026',
         color: 'green',
         layout: 'agenda',
@@ -61,9 +61,9 @@ export const defaultModeConfigs: WorkspaceModeConfig[] = [
         color: 'blue',
         layout: 'agenda',
         rows: [
-          { id: 'assignment-a', label: 'Due May 27', value: 'CS101 Assignment A' },
-          { id: 'eng-discussion', label: 'Due May 28', value: 'ENG110 Discussion post' },
-          { id: 'math-activity', label: 'Due May 29', value: 'MATH202 Activity set' },
+          { id: 'assignment-a', label: 'CMPT225', value: 'Assignment 1', description: 'May 27, 11:59 PM' },
+          { id: 'eng-discussion', label: 'ENGL110', value: 'Discussion post', description: 'May 28, 5:00 PM' },
+          { id: 'math-activity', label: 'MATH202', value: 'Activity set', description: 'May 29, 10:00 AM' },
         ],
       },
       {
@@ -72,9 +72,9 @@ export const defaultModeConfigs: WorkspaceModeConfig[] = [
         color: 'orange',
         layout: 'agenda',
         rows: [
-          { id: 'math-quiz', label: 'May 27', value: 'MATH202 Quiz' },
-          { id: 'cs-midterm', label: 'June 5', value: 'CS101 Midterm' },
-          { id: 'eng-final', label: 'June 18', value: 'ENG110 Final Exam' },
+          { id: 'math-quiz', label: 'MATH202', value: 'Quiz 1', description: 'May 27, 2:30 PM' },
+          { id: 'cs-midterm', label: 'CMPT225', value: 'Midterm Exam', description: 'June 5, 10:30 AM' },
+          { id: 'eng-final', label: 'ENGL110', value: 'Final Exam', description: 'June 18, 9:00 AM' },
         ],
       },
     ],

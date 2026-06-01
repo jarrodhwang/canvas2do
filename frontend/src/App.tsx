@@ -310,15 +310,15 @@ function getCalendarMonthFromLabel(data: WorkspaceModeMockData) {
 }
 
 function getInitialCalendarMonth(data: WorkspaceModeMockData) {
-  const monthFromLabel = getCalendarMonthFromLabel(data);
-
-  if (monthFromLabel) {
-    return monthFromLabel;
-  }
-
   const now = new Date();
 
-  return new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1));
+  if (!Number.isNaN(now.getTime())) {
+    return new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1));
+  }
+
+  const monthFromLabel = getCalendarMonthFromLabel(data);
+
+  return monthFromLabel ?? new Date(Date.UTC(2026, 5, 1));
 }
 
 function getCalendarMonthRange(monthDate: Date) {
@@ -1565,6 +1565,7 @@ function App() {
   const [canvasCalendarPages, setCanvasCalendarPages] = useState<Record<string, CanvasCalendarPage>>({});
   const [authRedirectMessage] = useState(getInitialAuthRedirectMessage);
   const [academyPreferenceVersion, setAcademyPreferenceVersion] = useState(0);
+  const [selectedCourseOverviewRowId, setSelectedCourseOverviewRowId] = useState<string | null>(null);
   const isApplyingHistoryRef = useRef(false);
   const hasAppliedUrlNavigationRef = useRef(false);
   const activeSidebarItem = navigation.modeId === activeMode.id ? navigation.sidebarItemId : 'dashboard';
@@ -2583,7 +2584,7 @@ function App() {
           ) : isCanvasInboxView ? (
             <CanvasInboxView />
           ) : isCoursesView ? (
-            <CourseOverviewView />
+            <CourseOverviewView initialSelectedCourseRowId={selectedCourseOverviewRowId} />
           ) : isAcademySettingsView ? (
             <AcademySettingsView
               onSettingsChange={handleAcademyCalendarSettingsChange}
@@ -2595,7 +2596,8 @@ function App() {
                 <div className="dashboard-summary-cards overflow-hidden transition-all duration-300 ease-out max-lg:hidden">
                   <DashboardCards
                     onOpenAddItem={openAcademyCourseworkDialog}
-                    onOpenCourses={() => {
+                    onOpenCourse={(courseRowId) => {
+                      setSelectedCourseOverviewRowId(courseRowId ?? null);
                       navigateWorkspace({
                         modeId: activeMode.id,
                         sidebarItemId: 'courses',

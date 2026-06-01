@@ -213,6 +213,9 @@ export interface CanvasCourseModuleItem {
   id: string;
   title: string;
   type?: string;
+  contentId?: string;
+  pageUrl?: string;
+  url?: string;
   htmlUrl?: string;
   externalUrl?: string;
   completionRequirementCompletedAt?: string;
@@ -243,6 +246,42 @@ export interface CanvasCourseAssignment {
   htmlUrl?: string;
   submissionTypes: string[];
   isSubmitted: boolean;
+  score?: number;
+  grade?: string;
+  submittedAt?: string;
+  workflowState?: string;
+}
+
+export interface CanvasCourseQuiz {
+  id: string;
+  title: string;
+  description?: string;
+  dueAt?: string;
+  pointsPossible?: number;
+  htmlUrl?: string;
+  quizType?: string;
+  questionCount?: number;
+  allowedAttempts?: number;
+  assignmentId?: string;
+}
+
+export interface CanvasCourseDiscussion {
+  id: string;
+  title: string;
+  message?: string;
+  postedAt?: string;
+  htmlUrl?: string;
+  authorName?: string;
+  isAnnouncement: boolean;
+}
+
+export interface CanvasCourseUser {
+  id: string;
+  name: string;
+  shortName?: string;
+  sortableName?: string;
+  avatarUrl?: string;
+  roles: string[];
 }
 
 export interface CanvasCourseContent {
@@ -251,7 +290,33 @@ export interface CanvasCourseContent {
   modules: CanvasCourseModule[];
   announcements: CanvasCourseAnnouncement[];
   assignments: CanvasCourseAssignment[];
+  quizzes: CanvasCourseQuiz[];
+  discussions: CanvasCourseDiscussion[];
+  pages: CanvasCoursePage[];
+  people: CanvasCourseUser[];
+  frontPage?: CanvasCoursePage;
   syllabusBody?: string;
+}
+
+export interface CanvasCoursePage {
+  id: string;
+  title: string;
+  pageUrl?: string;
+  body?: string;
+  htmlUrl?: string;
+  updatedAt?: string;
+}
+
+export interface CanvasCourseFile {
+  id: string;
+  displayName: string;
+  fileName?: string;
+  contentType?: string;
+  url?: string;
+  previewUrl?: string;
+  htmlUrl?: string;
+  size?: number;
+  updatedAt?: string;
 }
 
 export interface CanvasCalendarItem {
@@ -633,6 +698,91 @@ export const workspaceApi = {
     }
 
     return response.json() as Promise<CanvasCourseContent>;
+  },
+
+  async getCanvasCoursePage(courseId: string, pageUrl: string) {
+    const params = new URLSearchParams({ pageUrl });
+    const response = await fetch(`${apiBaseUrl}/canvas/courses/${encodeURIComponent(courseId)}/pages?${params.toString()}`, {
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to load Canvas page.');
+
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<CanvasCoursePage>;
+  },
+
+  async getCanvasCourseAssignment(courseId: string, assignmentId: string) {
+    const response = await fetch(`${apiBaseUrl}/canvas/courses/${encodeURIComponent(courseId)}/assignments/${encodeURIComponent(assignmentId)}`, {
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to load Canvas assignment.');
+
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<CanvasCourseAssignment>;
+  },
+
+  async getCanvasCourseQuiz(courseId: string, quizId: string) {
+    const response = await fetch(`${apiBaseUrl}/canvas/courses/${encodeURIComponent(courseId)}/quizzes/${encodeURIComponent(quizId)}`, {
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to load Canvas quiz.');
+
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<CanvasCourseQuiz>;
+  },
+
+  async getCanvasCourseDiscussion(courseId: string, topicId: string) {
+    const response = await fetch(`${apiBaseUrl}/canvas/courses/${encodeURIComponent(courseId)}/discussion-topics/${encodeURIComponent(topicId)}`, {
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to load Canvas discussion.');
+
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<CanvasCourseDiscussion>;
+  },
+
+  async getCanvasCourseFile(courseId: string, fileId: string) {
+    const response = await fetch(`${apiBaseUrl}/canvas/courses/${encodeURIComponent(courseId)}/files/${encodeURIComponent(fileId)}`, {
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to load Canvas file.');
+
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<CanvasCourseFile>;
+  },
+
+  async getCanvasCourseModuleItem(courseId: string, moduleItemId: string) {
+    const response = await fetch(`${apiBaseUrl}/canvas/courses/${encodeURIComponent(courseId)}/module-items/${encodeURIComponent(moduleItemId)}`, {
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to load Canvas module item.');
+
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<CanvasCourseModuleItem>;
   },
 
   async getCanvasCalendarItems(options: { startDate?: string; endDate?: string; pageSize?: number } = {}) {

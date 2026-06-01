@@ -1,24 +1,35 @@
 import {
   ArrowLeft,
+  ArrowRight,
   BookOpen,
   ExternalLink,
   FileText,
   GraduationCap,
   Home,
+  Image,
   Layers,
   Link2,
   ListChecks,
   LoaderCircle,
   Megaphone,
+  Users,
+  Video,
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent } from 'react';
 
 import { workspaceApi } from '../api/workspaceApi';
 import type {
   CanvasCalendarItem,
   CanvasCourse,
   CanvasCourseContent,
+  CanvasCourseAssignment,
+  CanvasCourseDiscussion,
+  CanvasCourseFile,
+  CanvasCourseModuleItem,
+  CanvasCoursePage,
+  CanvasCourseQuiz,
   CanvasCourseTab,
+  CanvasCourseUser,
 } from '../api/workspaceApi';
 import { useLanguage } from '../context/LanguageContext';
 import { badgeColorClasses, dotColorClasses } from '../lib/colorStyles';
@@ -46,14 +57,20 @@ import {
 type LoadStatus = 'idle' | 'loading' | 'loaded' | 'failed';
 
 interface CanvasLecturePreference {
+  archivedAsManualLectureId?: string;
+  assessments?: ManualLecture['assessments'];
   chipColor?: ColorToken;
+  courseName?: string;
   credits?: string;
   friendlyCourseCode?: string;
   friendlyName?: string;
   hidden?: boolean;
+  htmlUrl?: string;
   labSection?: string;
   lectureSection?: string;
+  links?: ManualLecture['links'];
   originalCourseCode?: string;
+  schedule?: ManualLectureSchedule;
   semester?: string;
   starred?: boolean;
   termName?: string;
@@ -82,7 +99,7 @@ interface CourseOverviewRow {
   manualLecture?: ManualLecture;
 }
 
-type CourseDetailSection = 'home' | 'modules' | 'announcements' | 'syllabus' | 'assignments' | 'grades' | 'links' | 'external';
+type CourseDetailSection = 'home' | 'modules' | 'announcements' | 'syllabus' | 'assignments' | 'pages' | 'people' | 'grades' | 'links' | 'external';
 
 interface CourseNavigationItem {
   id: string;
@@ -91,11 +108,66 @@ interface CourseNavigationItem {
   htmlUrl?: string;
 }
 
+type IntegratedCourseResource =
+  | {
+      kind: 'canvas-page';
+      pageUrl: string;
+      title: string;
+      url: string;
+    }
+  | {
+      assignmentId: string;
+      kind: 'canvas-assignment';
+      title: string;
+      url: string;
+    }
+  | {
+      kind: 'canvas-quiz';
+      quizId: string;
+      title: string;
+      url: string;
+    }
+  | {
+      kind: 'canvas-discussion';
+      topicId: string;
+      title: string;
+      url: string;
+    }
+  | {
+      fileId: string;
+      kind: 'canvas-file';
+      title: string;
+      url: string;
+    }
+  | {
+      kind: 'canvas-module-item';
+      moduleItemId: string;
+      title: string;
+      url: string;
+    }
+  | {
+      kind: 'external';
+      title: string;
+      url: string;
+    }
+  | {
+      kind: 'canvas-assignments-index' | 'canvas-grades-index' | 'canvas-pages-index' | 'canvas-people-index';
+      title: string;
+      url: string;
+    };
+
 const manualLecturesStorageKey = 'incos-academy-manual-lectures';
 const canvasLecturePreferencesStorageKey = 'incos-academy-canvas-lecture-preferences';
 const academyCalendarSettingsStorageKey = 'incos-academy-calendar-settings';
 const academyPreferencesUpdatedEvent = 'incos-academy-preferences-updated';
-const defaultAcademySemester = 'Summer 2026';
+const defaultAcademySemester = getDateBasedAcademySemester();
+
+function getDateBasedAcademySemester(date = new Date()) {
+  const month = date.getMonth();
+  const term = month <= 3 ? 'Spring' : month <= 7 ? 'Summer' : 'Fall';
+
+  return `${term} ${date.getFullYear()}`;
+}
 
 function readStoredJson<T>(key: string, fallback: T): T {
   if (typeof window === 'undefined') {
@@ -310,6 +382,96 @@ function createManualRows(lectures: ManualLecture[]): CourseOverviewRow[] {
   }));
 }
 
+function getArchivedCanvasLectureId(courseId: string) {
+  const safeCourseId = courseId.replace(/[^A-Za-z0-9_-]+/g, '-');
+
+  return `archived-canvas-${safeCourseId}`;
+}
+
+function createManualLectureFromStoredCanvasPreference(
+  courseId: string,
+  preference: CanvasLecturePreference,
+): ManualLecture | null {
+  const courseCode = preference.friendlyCourseCode?.trim() ||
+    preference.originalCourseCode?.trim() ||
+    courseId;
+  const courseName = preference.friendlyName?.trim() ||
+    preference.courseName?.trim() ||
+    courseCode;
+
+  if (!courseCode && !courseName) {
+    return null;
+  }
+
+  const archivedLectureId = preference.archivedAsManualLectureId || getArchivedCanvasLectureId(courseId);
+  const links = [...(preference.links ?? [])];
+
+  if (preference.htmlUrl && !links.some((link) => link.url === preference.htmlUrl)) {
+    links.unshift({
+      id: `${archivedLectureId}-canvas-link`,
+      label: 'Canvas course',
+      url: preference.htmlUrl,
+    });
+  }
+
+  return {
+    id: archivedLectureId,
+    name: courseName,
+    code: courseCode,
+    lectureSection: preference.lectureSection ?? '',
+    labSection: preference.labSection ?? '',
+    tutorialSection: preference.tutorialSection ?? '',
+    credits: preference.credits ?? '',
+    assessments: preference.assessments ?? [],
+    schedule: preference.schedule ?? {
+      deliveryMode: 'inPerson',
+      day: '',
+      time: '',
+      location: '',
+      entries: [],
+    },
+    links,
+    chipColor: preference.chipColor ?? 'green',
+    friendlyCourseCode: preference.friendlyCourseCode,
+    friendlyName: preference.friendlyName,
+    hidden: preference.hidden,
+    semester: normalizeSemesterName(preference.semester ?? preference.termName),
+    starred: preference.starred,
+  };
+}
+
+function createStoredCanvasManualRows(
+  preferences: CanvasLecturePreferences,
+  liveCourses: CanvasCourse[],
+  manualLectures: ManualLecture[],
+): CourseOverviewRow[] {
+  const liveCourseIds = new Set(liveCourses.map((course) => course.id));
+
+  return Object.entries(preferences)
+    .filter(([courseId, preference]) => (
+      !liveCourseIds.has(courseId) &&
+      Boolean(
+        preference.friendlyCourseCode?.trim() ||
+        preference.originalCourseCode?.trim() ||
+        preference.friendlyName?.trim() ||
+        preference.courseName?.trim()
+      )
+    ))
+    .map(([courseId, preference]) => createManualLectureFromStoredCanvasPreference(courseId, preference))
+    .filter((lecture): lecture is ManualLecture => Boolean(lecture))
+    .filter((lecture) => !manualLectures.some((manualLecture) => (
+      manualLecture.id === lecture.id ||
+      (
+        normalizeSemesterName(manualLecture.semester) === normalizeSemesterName(lecture.semester) &&
+        manualLecture.code.replace(/\s+/g, '').toLowerCase() === lecture.code.replace(/\s+/g, '').toLowerCase()
+      )
+    )))
+    .map((lecture) => ({
+      ...createManualRows([lecture])[0]!,
+      id: `manual:${lecture.id}`,
+    }));
+}
+
 function sortRows(firstRow: CourseOverviewRow, secondRow: CourseOverviewRow) {
   return Number(secondRow.notificationCount > 0) - Number(firstRow.notificationCount > 0) ||
     Number(firstRow.hidden) - Number(secondRow.hidden) ||
@@ -362,6 +524,14 @@ function getCourseDetailItems(
 function getCanvasTabSection(tab: CanvasCourseTab): CourseDetailSection {
   const searchable = `${tab.id} ${tab.label} ${tab.type ?? ''}`.toLowerCase();
 
+  if (searchable.includes('people') || searchable.includes('user')) {
+    return 'people';
+  }
+
+  if (searchable.includes('page') || searchable.includes('wiki')) {
+    return 'pages';
+  }
+
   if (searchable.includes('module')) {
     return 'modules';
   }
@@ -382,7 +552,7 @@ function getCanvasTabSection(tab: CanvasCourseTab): CourseDetailSection {
     return 'grades';
   }
 
-  if (searchable.includes('home') || searchable.includes('course-home') || searchable.includes('wiki')) {
+  if (searchable.includes('home') || searchable.includes('course-home')) {
     return 'home';
   }
 
@@ -410,6 +580,14 @@ function getSectionIcon(section: CourseDetailSection) {
     return GraduationCap;
   }
 
+  if (section === 'people') {
+    return Users;
+  }
+
+  if (section === 'pages') {
+    return FileText;
+  }
+
   if (section === 'links' || section === 'external') {
     return Link2;
   }
@@ -434,6 +612,450 @@ function stripHtml(value?: string) {
     .replace(/&#39;/g, "'")
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function decodeBasicEntities(value: string) {
+  return value
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+function hasHtmlMarkup(value?: string) {
+  return Boolean(value && /<\/?[a-z][\s\S]*>/i.test(value));
+}
+
+function sanitizeCanvasHtml(value?: string) {
+  if (!value) {
+    return '';
+  }
+
+  if (typeof window === 'undefined' || typeof DOMParser === 'undefined') {
+    return escapeHtml(stripHtml(value));
+  }
+
+  const document = new DOMParser().parseFromString(value, 'text/html');
+
+  document
+    .querySelectorAll('script, style, iframe, object, embed, link, meta')
+    .forEach((element) => element.remove());
+  document.querySelectorAll('*').forEach((element) => {
+    Array.from(element.attributes).forEach((attribute) => {
+      const attributeName = attribute.name.toLowerCase();
+      const attributeValue = attribute.value.trim().toLowerCase();
+
+      if (attributeName.startsWith('on') || attributeValue.startsWith('javascript:')) {
+        element.removeAttribute(attribute.name);
+      }
+    });
+
+    if (element.tagName.toLowerCase() === 'a') {
+      element.setAttribute('target', '_blank');
+      element.setAttribute('rel', 'noreferrer');
+    }
+  });
+
+  return document.body.innerHTML;
+}
+
+function createIntegratedLinkUrl(value: string, baseUrl?: string) {
+  const trimmedValue = value.trim();
+
+  if (!trimmedValue || /^(mailto|tel|javascript):/i.test(trimmedValue)) {
+    return null;
+  }
+
+  try {
+    if (/^https?:\/\//i.test(trimmedValue)) {
+      return new URL(trimmedValue);
+    }
+
+    if (trimmedValue.startsWith('/') && baseUrl) {
+      return new URL(trimmedValue, baseUrl);
+    }
+
+    if (trimmedValue.startsWith('/')) {
+      const fallbackBase = typeof window === 'undefined'
+        ? 'https://canvas.local'
+        : window.location.origin;
+
+      return new URL(trimmedValue, fallbackBase);
+    }
+
+    if (/^[\w.-]+\.[a-z]{2,}/i.test(trimmedValue)) {
+      return new URL(`https://${trimmedValue}`);
+    }
+
+    return new URL(trimmedValue, baseUrl ?? (typeof window === 'undefined' ? 'https://canvas.local' : window.location.origin));
+  } catch {
+    return null;
+  }
+}
+
+function getIntegratedCourseResourceFromLink(
+  value?: string | null,
+  options: {
+    baseUrl?: string;
+    courseId?: string;
+    label?: string;
+  } = {},
+): IntegratedCourseResource | null {
+  if (!value) {
+    return null;
+  }
+
+  const url = createIntegratedLinkUrl(value, options.baseUrl);
+
+  if (!url) {
+    return null;
+  }
+
+  const moduleItemMatch = url.pathname.match(/\/courses\/([^/]+)\/modules\/items\/([^/?#]+)/i);
+  const resourceMatch = url.pathname.match(/\/courses\/([^/]+)\/(pages|assignments|files|quizzes|discussion_topics|announcements)\/([^/?#]+)/i);
+  const courseSectionMatch = url.pathname.match(/\/courses\/([^/]+)\/(wiki|pages|assignments|grades|users|people)(?:\/)?$/i);
+  const title = options.label?.trim() || decodeURIComponent(url.pathname.split('/').filter(Boolean).pop() ?? url.hostname);
+
+  if (!resourceMatch && !courseSectionMatch && !moduleItemMatch) {
+    return {
+      kind: 'external',
+      title,
+      url: url.href,
+    };
+  }
+
+  const linkedCourseId = decodeURIComponent((resourceMatch ?? courseSectionMatch ?? moduleItemMatch)![1]);
+
+  if (options.courseId && linkedCourseId !== options.courseId) {
+    return {
+      kind: 'external',
+      title,
+      url: url.href,
+    };
+  }
+
+  if (courseSectionMatch && !resourceMatch) {
+    const section = courseSectionMatch[2].toLowerCase();
+
+    if (section === 'assignments') {
+      return { kind: 'canvas-assignments-index', title, url: url.href };
+    }
+
+    if (section === 'grades') {
+      return { kind: 'canvas-grades-index', title, url: url.href };
+    }
+
+    if (section === 'users' || section === 'people') {
+      return { kind: 'canvas-people-index', title, url: url.href };
+    }
+
+    return { kind: 'canvas-pages-index', title, url: url.href };
+  }
+
+  if (moduleItemMatch && !resourceMatch) {
+    return {
+      kind: 'canvas-module-item',
+      moduleItemId: decodeURIComponent(moduleItemMatch[2]),
+      title,
+      url: url.href,
+    };
+  }
+
+  if (!resourceMatch) {
+    return null;
+  }
+
+  const resourceId = decodeURIComponent(resourceMatch[3]);
+
+  if (resourceMatch[2].toLowerCase() === 'pages') {
+    return {
+      kind: 'canvas-page',
+      pageUrl: resourceId,
+      title,
+      url: url.href,
+    };
+  }
+
+  if (resourceMatch[2].toLowerCase() === 'assignments') {
+    return {
+      assignmentId: resourceId,
+      kind: 'canvas-assignment',
+      title,
+      url: url.href,
+    };
+  }
+
+  if (resourceMatch[2].toLowerCase() === 'quizzes') {
+    return {
+      kind: 'canvas-quiz',
+      quizId: resourceId,
+      title,
+      url: url.href,
+    };
+  }
+
+  if (resourceMatch[2].toLowerCase() === 'discussion_topics' || resourceMatch[2].toLowerCase() === 'announcements') {
+    return {
+      kind: 'canvas-discussion',
+      topicId: resourceId,
+      title,
+      url: url.href,
+    };
+  }
+
+  return {
+    fileId: resourceId,
+    kind: 'canvas-file',
+    title,
+    url: url.href,
+  };
+}
+
+function getManualLectureLinkUrl(links: ManualLecture['links'], linkId: string) {
+  return links.find((link) => link.id === linkId)?.url.trim() || '';
+}
+
+function normalizeEmbedUrl(value: string) {
+  const trimmedValue = value.trim();
+
+  if (!trimmedValue) {
+    return '';
+  }
+
+  return /^https?:\/\//i.test(trimmedValue)
+    ? trimmedValue
+    : `https://${trimmedValue}`;
+}
+
+function clampManualEmbedHeight(value: number) {
+  return Math.min(Math.max(value, 320), 1400);
+}
+
+function splitPlainCourseSections(value: string) {
+  const normalized = decodeBasicEntities(value)
+    .replace(/\r/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\s*-{6,}\s*/g, '\n---\n')
+    .trim();
+  const coarseSections = normalized
+    .split(/\n---\n/g)
+    .map((section) => section.trim())
+    .filter(Boolean);
+  const sectionHeadings = [
+    'Course Outline',
+    'Questions & Discussion Forum',
+    'Evaluation Scheme',
+    'Late Policy',
+    'Exam Dates',
+    'Missed Exams',
+    'Final Grading',
+    'Important Dates for Assignments',
+    'Important Dates for Project',
+    'Academic Integrity',
+    'Prerequisite',
+    'Textbook',
+  ];
+  const expandedSections = coarseSections.flatMap((section) => {
+    let nextSection = section;
+
+    sectionHeadings.forEach((heading) => {
+      nextSection = nextSection.replace(new RegExp(`\\s+(${heading}:?)`, 'gi'), '\n---\n$1');
+    });
+
+    return nextSection
+      .split(/\n---\n/g)
+      .map((part) => part.trim())
+      .filter(Boolean);
+  });
+
+  return expandedSections.map((section, index) => {
+    const headingMatch = section.match(/^([^:]{3,90}):\s+([\s\S]+)$/);
+    const welcomeMatch = section.match(/^(Welcome to [\s\S]+?)(?=\s+Instructor:|\s+Contact:|$)([\s\S]*)$/i);
+    const title = welcomeMatch?.[1] ?? headingMatch?.[1] ?? (index === 0 ? 'Overview' : 'Details');
+    const body = (welcomeMatch?.[2] ?? headingMatch?.[2] ?? section).trim();
+
+    return { title: title.trim(), body };
+  });
+}
+
+function splitPlainCourseLines(value: string) {
+  return value
+    .replace(/\s+(Instructor|Contact|Email|Lectures|Office Hours|Course Website|TAs & Office Hours|Canvas|Piazza|Release Date|Due Date|Midterm|Final Exam|Makeup exams|Health care statement|Average|Students must|Review|Guidelines on collaborations):/g, '\n$1:')
+    .replace(/\s+(Assignment\s+\d+)\s+/g, '\n$1 ')
+    .replace(/\s+(Milestone\s+\d+)\s+/g, '\n$1 ')
+    .replace(/\s+(Weekly Online Activities|Quizzes|Assignments|Project|Midterm Exam|Final Exam)\s+(\d+%)/g, '\n$1 $2')
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function linkifyPlainText(
+  value: string,
+  options: {
+    baseUrl?: string;
+    canvasCourseId?: string;
+    onIntegratedLink?: (resource: IntegratedCourseResource) => void;
+  } = {},
+) {
+  const parts = value.split(/(https?:\/\/[^\s)]+)/g);
+
+  return parts.map((part, index) => {
+    if (!/^https?:\/\//.test(part)) {
+      return <span key={`${part}-${index}`}>{part}</span>;
+    }
+
+    const integratedResource = getIntegratedCourseResourceFromLink(part, {
+      baseUrl: options.baseUrl,
+      courseId: options.canvasCourseId,
+      label: part,
+    });
+
+    return (
+      <a
+        className="font-semibold text-primary underline-offset-4 hover:underline"
+        href={part}
+        key={`${part}-${index}`}
+        onClick={integratedResource && options.onIntegratedLink
+          ? (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              options.onIntegratedLink?.(integratedResource);
+            }
+          : undefined}
+        rel="noreferrer"
+        target={integratedResource ? undefined : '_blank'}
+      >
+        {part}
+      </a>
+    );
+  });
+}
+
+function RichCourseContent({
+  baseUrl,
+  canvasCourseId,
+  className,
+  compact = false,
+  html,
+  onIntegratedLink,
+}: {
+  baseUrl?: string;
+  canvasCourseId?: string;
+  className?: string;
+  compact?: boolean;
+  html?: string;
+  onIntegratedLink?: (resource: IntegratedCourseResource) => void;
+}) {
+  const plainText = stripHtml(html);
+  const handleRichContentClick = (event: MouseEvent<HTMLDivElement>) => {
+    if (!onIntegratedLink) {
+      return;
+    }
+
+    const target = event.target;
+
+    const targetElement = target instanceof Element
+      ? target
+      : target instanceof Node
+        ? target.parentElement
+        : null;
+
+    if (!targetElement) {
+      return;
+    }
+
+    const anchor = targetElement.closest('a');
+    const integratedResource = getIntegratedCourseResourceFromLink(anchor?.getAttribute('href') ?? anchor?.href, {
+      baseUrl,
+      courseId: canvasCourseId,
+      label: anchor?.textContent?.trim() || undefined,
+    });
+
+    if (!integratedResource) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    onIntegratedLink(integratedResource);
+  };
+
+  if (!plainText) {
+    return null;
+  }
+
+  if (hasHtmlMarkup(html)) {
+    return (
+      <div
+        className={cn(
+          'course-rich-content rounded-lg border bg-background p-4 text-sm leading-6 text-foreground',
+          '[&_a]:font-semibold [&_a]:text-primary [&_a]:underline-offset-4 hover:[&_a]:underline',
+          '[&_h1]:mb-3 [&_h1]:text-2xl [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-5 [&_h2]:text-xl [&_h2]:font-semibold',
+          '[&_h3]:mb-2 [&_h3]:mt-4 [&_h3]:text-base [&_h3]:font-semibold [&_p]:my-2',
+          '[&_ul]:my-3 [&_ul]:list-disc [&_ul]:space-y-1 [&_ul]:pl-5 [&_ol]:my-3 [&_ol]:list-decimal [&_ol]:space-y-1 [&_ol]:pl-5',
+          '[&_table]:my-3 [&_table]:w-full [&_table]:overflow-hidden [&_table]:rounded-lg [&_table]:border [&_td]:border [&_td]:p-2 [&_th]:border [&_th]:bg-muted/50 [&_th]:p-2 [&_th]:text-left',
+          compact && 'max-h-28 overflow-hidden p-3 [mask-image:linear-gradient(180deg,#000_70%,transparent)]',
+          className,
+        )}
+        dangerouslySetInnerHTML={{ __html: sanitizeCanvasHtml(html) }}
+        onClick={handleRichContentClick}
+      />
+    );
+  }
+
+  const sections = splitPlainCourseSections(plainText);
+  const visibleSections = compact ? sections.slice(0, 1) : sections;
+
+  return (
+    <div className={cn('space-y-3', compact && 'max-h-32 overflow-hidden [mask-image:linear-gradient(180deg,#000_72%,transparent)]', className)}>
+      {visibleSections.map((section, sectionIndex) => {
+        const lines = splitPlainCourseLines(section.body);
+
+        return (
+          <section className="rounded-lg border bg-background p-4" key={`${section.title}-${sectionIndex}`}>
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <Badge className="rounded-md" variant={sectionIndex === 0 ? 'default' : 'secondary'}>
+                {section.title}
+              </Badge>
+            </div>
+            <div className="space-y-2">
+              {lines.length > 0 ? lines.map((line, lineIndex) => {
+                const [label, ...rest] = line.split(':');
+                const hasLabel = rest.length > 0 && label.length < 42;
+                const content = hasLabel ? rest.join(':').trim() : line;
+
+                return (
+                  <div className="rounded-md bg-muted/25 px-3 py-2 text-sm leading-6" key={`${section.title}-${lineIndex}`}>
+                    {hasLabel ? (
+                      <span className="mr-2 font-semibold text-foreground">{label}:</span>
+                    ) : null}
+                    <span className="text-muted-foreground">
+                      {linkifyPlainText(content, { baseUrl, canvasCourseId, onIntegratedLink })}
+                    </span>
+                  </div>
+                );
+              }) : (
+                <p className="text-sm leading-6 text-muted-foreground">
+                  {linkifyPlainText(section.body, { baseUrl, canvasCourseId, onIntegratedLink })}
+                </p>
+              )}
+            </div>
+          </section>
+        );
+      })}
+    </div>
+  );
 }
 
 function formatCourseDate(value?: string) {
@@ -467,6 +1089,117 @@ function formatSubmissionType(value?: string) {
     .join(' ');
 }
 
+function getFileExtension(fileName?: string) {
+  const extensionMatch = fileName?.toLowerCase().match(/\.([a-z0-9]+)(?:$|\?)/);
+
+  return extensionMatch?.[1] ?? '';
+}
+
+function getFilePreviewKind(file: CanvasCourseFile) {
+  const contentType = file.contentType?.toLowerCase() ?? '';
+  const extension = getFileExtension(file.fileName ?? file.displayName);
+
+  if (contentType.startsWith('image/') || ['apng', 'avif', 'gif', 'jpg', 'jpeg', 'png', 'svg', 'webp'].includes(extension)) {
+    return 'image';
+  }
+
+  if (contentType.startsWith('video/') || ['m4v', 'mov', 'mp4', 'ogg', 'webm'].includes(extension)) {
+    return 'video';
+  }
+
+  if (contentType.startsWith('audio/') || ['aac', 'm4a', 'mp3', 'oga', 'wav'].includes(extension)) {
+    return 'audio';
+  }
+
+  if (contentType.includes('pdf') || extension === 'pdf') {
+    return 'pdf';
+  }
+
+  if (contentType.startsWith('text/') || ['csv', 'json', 'md', 'rtf', 'txt', 'xml'].includes(extension)) {
+    return 'text';
+  }
+
+  if (['doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx'].includes(extension)) {
+    return 'office';
+  }
+
+  return 'embed';
+}
+
+function getPreviewKindFromUrl(url: string) {
+  return getFilePreviewKind({
+    displayName: url,
+    fileName: url,
+    id: url,
+  });
+}
+
+function getOfficePreviewUrl(url: string) {
+  return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(url)}`;
+}
+
+function getIntegratedResourceFromModuleItem(
+  item: CanvasCourseModuleItem,
+  options: {
+    baseUrl?: string;
+    courseId?: string;
+  },
+): IntegratedCourseResource | null {
+  const itemType = item.type?.toLowerCase() ?? '';
+  const title = item.title;
+
+  if (itemType === 'page' && item.pageUrl) {
+    return {
+      kind: 'canvas-page',
+      pageUrl: item.pageUrl,
+      title,
+      url: item.htmlUrl ?? item.url ?? '',
+    };
+  }
+
+  if (itemType === 'assignment' && item.contentId) {
+    return {
+      assignmentId: item.contentId,
+      kind: 'canvas-assignment',
+      title,
+      url: item.htmlUrl ?? item.url ?? '',
+    };
+  }
+
+  if (itemType === 'quiz' && item.contentId) {
+    return {
+      kind: 'canvas-quiz',
+      quizId: item.contentId,
+      title,
+      url: item.htmlUrl ?? item.url ?? '',
+    };
+  }
+
+  if ((itemType === 'discussion' || itemType === 'discussion_topic' || itemType === 'announcement') && item.contentId) {
+    return {
+      kind: 'canvas-discussion',
+      topicId: item.contentId,
+      title,
+      url: item.htmlUrl ?? item.url ?? '',
+    };
+  }
+
+  if (itemType === 'file' && item.contentId) {
+    return {
+      fileId: item.contentId,
+      kind: 'canvas-file',
+      title,
+      url: item.htmlUrl ?? item.url ?? '',
+    };
+  }
+
+  return getIntegratedCourseResourceFromLink(item.url ?? item.htmlUrl ?? item.externalUrl, {
+    baseUrl: options.baseUrl,
+    courseId: options.courseId,
+    label: title,
+  });
+}
+
 function getCanvasNavigationItems(
   content: CanvasCourseContent | null,
   dictionary: ReturnType<typeof useLanguage>['dictionary'],
@@ -477,6 +1210,8 @@ function getCanvasNavigationItems(
     { id: 'announcements', label: dictionary.courseDetailAnnouncements, section: 'announcements' },
     { id: 'syllabus', label: dictionary.courseDetailSyllabus, section: 'syllabus' },
     { id: 'assignments', label: dictionary.courseDetailAssignments, section: 'assignments' },
+    { id: 'pages', label: dictionary.courseDetailPages, section: 'pages' },
+    { id: 'people', label: dictionary.courseDetailPeople, section: 'people' },
     { id: 'grades', label: dictionary.courseDetailGrades, section: 'grades' },
   ];
 
@@ -493,10 +1228,21 @@ function getCanvasNavigationItems(
       htmlUrl: tab.htmlUrl,
     }));
   const hasHome = items.some((item) => item.section === 'home');
+  const hasPages = items.some((item) => item.section === 'pages');
+  const hasPeople = items.some((item) => item.section === 'people');
+  const enrichedItems = [
+    ...items,
+    !hasPages && content.pages.length > 0
+      ? { id: 'pages', label: dictionary.courseDetailPages, section: 'pages' as const }
+      : null,
+    !hasPeople && content.people.length > 0
+      ? { id: 'people', label: dictionary.courseDetailPeople, section: 'people' as const }
+      : null,
+  ].filter(Boolean) as CourseNavigationItem[];
 
   return hasHome
-    ? items
-    : [{ id: 'home', label: dictionary.courseDetailHome, section: 'home' }, ...items];
+    ? enrichedItems
+    : [{ id: 'home', label: dictionary.courseDetailHome, section: 'home' }, ...enrichedItems];
 }
 
 function getManualNavigationItems(dictionary: ReturnType<typeof useLanguage>['dictionary']): CourseNavigationItem[] {
@@ -533,8 +1279,220 @@ function CourseDetailView({
   const enabledAssessments = row.manualLecture?.assessments.filter((assessment) => assessment.enabled) ?? [];
   const scheduleEntries = getScheduleEntriesFromSchedule(row.manualLecture?.schedule);
   const links = row.manualLecture?.links ?? [];
+  const manualLectureWebsiteUrl = normalizeEmbedUrl(getManualLectureLinkUrl(links, 'lecture-website'));
+  const manualSubmissionUrl = normalizeEmbedUrl(getManualLectureLinkUrl(links, 'submission-link'));
   const isCanvasLoading = row.source === 'canvas' && contentLoadStatus === 'loading';
   const isCanvasFailed = row.source === 'canvas' && contentLoadStatus === 'failed';
+  const canvasBaseUrl = content?.course.htmlUrl ?? row.htmlUrl;
+  const [activeIntegratedResource, setActiveIntegratedResource] = useState<IntegratedCourseResource | null>(null);
+  const [integratedCanvasPage, setIntegratedCanvasPage] = useState<CanvasCoursePage | null>(null);
+  const [integratedAssignment, setIntegratedAssignment] = useState<CanvasCourseAssignment | null>(null);
+  const [integratedQuiz, setIntegratedQuiz] = useState<CanvasCourseQuiz | null>(null);
+  const [integratedDiscussion, setIntegratedDiscussion] = useState<CanvasCourseDiscussion | null>(null);
+  const [integratedFile, setIntegratedFile] = useState<CanvasCourseFile | null>(null);
+  const [integratedModuleItem, setIntegratedModuleItem] = useState<CanvasCourseModuleItem | null>(null);
+  const [integratedResourceStatus, setIntegratedResourceStatus] = useState<LoadStatus>('idle');
+  const [integratedHistory, setIntegratedHistory] = useState<IntegratedCourseResource[]>([]);
+  const [integratedHistoryIndex, setIntegratedHistoryIndex] = useState(-1);
+  const [manualEmbedHeight, setManualEmbedHeight] = useState(640);
+  const manualEmbedResizeRef = useRef({ startHeight: 640, startY: 0 });
+  const integratedRequestRef = useRef(0);
+
+  const resetIntegratedResource = () => {
+    integratedRequestRef.current += 1;
+    setActiveIntegratedResource(null);
+    setIntegratedCanvasPage(null);
+    setIntegratedAssignment(null);
+    setIntegratedQuiz(null);
+    setIntegratedDiscussion(null);
+    setIntegratedFile(null);
+    setIntegratedModuleItem(null);
+    setIntegratedResourceStatus('idle');
+    setIntegratedHistory([]);
+    setIntegratedHistoryIndex(-1);
+  };
+  const loadIntegratedResource = (resource: IntegratedCourseResource, historyIndex?: number) => {
+    const requestId = integratedRequestRef.current + 1;
+
+    integratedRequestRef.current = requestId;
+    setActiveIntegratedResource(resource);
+    setIntegratedCanvasPage(null);
+    setIntegratedAssignment(null);
+    setIntegratedQuiz(null);
+    setIntegratedDiscussion(null);
+    setIntegratedFile(null);
+    setIntegratedModuleItem(null);
+    setIntegratedResourceStatus(
+      resource.kind === 'external' ||
+      resource.kind === 'canvas-assignments-index' ||
+      resource.kind === 'canvas-grades-index' ||
+      resource.kind === 'canvas-pages-index' ||
+      resource.kind === 'canvas-people-index'
+        ? 'loaded'
+        : 'loading',
+    );
+
+    if (
+      resource.kind === 'external' ||
+      resource.kind === 'canvas-assignments-index' ||
+      resource.kind === 'canvas-grades-index' ||
+      resource.kind === 'canvas-pages-index' ||
+      resource.kind === 'canvas-people-index'
+    ) {
+      return;
+    }
+
+    if (!row.canvasCourseId) {
+      setIntegratedResourceStatus('failed');
+      return;
+    }
+
+    let request: Promise<void>;
+
+    if (resource.kind === 'canvas-page') {
+      request = workspaceApi.getCanvasCoursePage(row.canvasCourseId, resource.pageUrl).then((page) => {
+        if (integratedRequestRef.current === requestId) {
+          setIntegratedCanvasPage(page);
+        }
+      });
+    } else if (resource.kind === 'canvas-assignment') {
+      request = workspaceApi.getCanvasCourseAssignment(row.canvasCourseId, resource.assignmentId).then((assignment) => {
+        if (integratedRequestRef.current === requestId) {
+          setIntegratedAssignment(assignment);
+        }
+      });
+    } else if (resource.kind === 'canvas-quiz') {
+      request = workspaceApi.getCanvasCourseQuiz(row.canvasCourseId, resource.quizId).then((quiz) => {
+        if (integratedRequestRef.current === requestId) {
+          setIntegratedQuiz(quiz);
+        }
+      });
+    } else if (resource.kind === 'canvas-discussion') {
+      request = workspaceApi.getCanvasCourseDiscussion(row.canvasCourseId, resource.topicId).then((discussion) => {
+        if (integratedRequestRef.current === requestId) {
+          setIntegratedDiscussion(discussion);
+        }
+      });
+    } else if (resource.kind === 'canvas-file') {
+      request = workspaceApi.getCanvasCourseFile(row.canvasCourseId, resource.fileId).then((file) => {
+        if (integratedRequestRef.current === requestId) {
+          setIntegratedFile(file);
+        }
+      });
+    } else if (resource.kind === 'canvas-module-item') {
+      request = workspaceApi.getCanvasCourseModuleItem(row.canvasCourseId, resource.moduleItemId).then((item) => {
+        if (integratedRequestRef.current === requestId) {
+          const resolvedResource = getIntegratedResourceFromModuleItem(item, {
+            baseUrl: canvasBaseUrl,
+            courseId: row.canvasCourseId,
+          });
+
+          if (resolvedResource && resolvedResource.kind !== 'canvas-module-item') {
+            if (typeof historyIndex === 'number') {
+              setIntegratedHistory((currentHistory) => {
+                if (!currentHistory[historyIndex]) {
+                  return currentHistory;
+                }
+
+                const nextHistory = [...currentHistory];
+                nextHistory[historyIndex] = resolvedResource;
+
+                return nextHistory;
+              });
+            }
+
+            loadIntegratedResource(resolvedResource, historyIndex);
+            return;
+          }
+
+          setIntegratedModuleItem(item);
+        }
+      });
+    } else {
+      setIntegratedResourceStatus('failed');
+      return;
+    }
+
+    request
+      .then(() => {
+        if (integratedRequestRef.current === requestId) {
+          setIntegratedResourceStatus('loaded');
+        }
+      })
+      .catch(() => {
+        if (integratedRequestRef.current === requestId) {
+          setIntegratedResourceStatus('failed');
+        }
+      });
+  };
+  const openIntegratedResource = (resource: IntegratedCourseResource) => {
+    const nextIndex = integratedHistoryIndex + 1;
+
+    setIntegratedHistory((currentHistory) => {
+      const nextHistory = currentHistory.slice(0, nextIndex);
+
+      nextHistory.push(resource);
+      setIntegratedHistoryIndex(nextHistory.length - 1);
+
+      return nextHistory;
+    });
+    loadIntegratedResource(resource, nextIndex);
+  };
+  const navigateIntegratedHistory = (nextIndex: number) => {
+    const nextResource = integratedHistory[nextIndex];
+
+    if (!nextResource) {
+      return;
+    }
+
+    setIntegratedHistoryIndex(nextIndex);
+    loadIntegratedResource(nextResource, nextIndex);
+  };
+  const richCanvasPageProps = row.source === 'canvas'
+    ? {
+        baseUrl: canvasBaseUrl,
+        canvasCourseId: row.canvasCourseId,
+        onIntegratedLink: openIntegratedResource,
+      }
+    : {};
+
+  useEffect(() => {
+    resetIntegratedResource();
+  }, [row.id]);
+
+  const handleManualEmbedResizePointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    manualEmbedResizeRef.current = {
+      startHeight: manualEmbedHeight,
+      startY: event.clientY,
+    };
+
+    const handlePointerMove = (moveEvent: globalThis.PointerEvent) => {
+      const nextHeight = manualEmbedResizeRef.current.startHeight +
+        moveEvent.clientY -
+        manualEmbedResizeRef.current.startY;
+
+      setManualEmbedHeight(clampManualEmbedHeight(nextHeight));
+    };
+    const handlePointerUp = () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp, { once: true });
+  };
+  const handleManualEmbedResizeKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') {
+      return;
+    }
+
+    event.preventDefault();
+    setManualEmbedHeight((currentHeight) => clampManualEmbedHeight(
+      currentHeight + (event.key === 'ArrowDown' ? 40 : -40),
+    ));
+  };
 
   const renderEmpty = (message: string = dictionary.courseDetailEmpty) => (
     <div className="rounded-lg border border-dashed bg-muted/25 p-5 text-sm font-medium text-muted-foreground">
@@ -542,8 +1500,78 @@ function CourseDetailView({
     </div>
   );
 
+  const renderEmbeddedManualLink = (url: string, label: string, forcedPreviewKind?: ReturnType<typeof getFilePreviewKind>) => {
+    const previewKind = forcedPreviewKind ?? getPreviewKindFromUrl(url);
+    const previewUrl = previewKind === 'office' ? getOfficePreviewUrl(url) : url;
+    const PreviewIcon = previewKind === 'image'
+      ? Image
+      : previewKind === 'video' || previewKind === 'audio'
+        ? Video
+        : previewKind === 'pdf' || previewKind === 'office' || previewKind === 'text'
+          ? FileText
+          : ExternalLink;
+
+    return (
+      <div className="flex flex-col overflow-hidden rounded-lg border bg-background">
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b px-3 py-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="grid size-8 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
+              <PreviewIcon className="size-4" />
+            </span>
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold text-foreground">{label}</div>
+              <div className="truncate text-xs font-medium text-muted-foreground">{url}</div>
+            </div>
+          </div>
+          <Button asChild className="h-8 shrink-0 rounded-md" size="sm" variant="outline">
+            <a href={url} rel="noreferrer" target="_blank">
+              <ExternalLink className="size-4" />
+              {dictionary.courseOverviewOpenCanvas}
+            </a>
+          </Button>
+        </div>
+        <div className="min-h-[320px] bg-background" style={{ height: manualEmbedHeight }}>
+          {previewKind === 'image' ? (
+            <div className="grid h-full place-items-center overflow-auto bg-muted/15 p-3">
+              <img alt={label} className="max-h-full max-w-full rounded-md object-contain" src={url} />
+            </div>
+          ) : previewKind === 'video' ? (
+            <video className="h-full w-full bg-black" controls src={url} />
+          ) : previewKind === 'audio' ? (
+            <div className="grid h-full place-items-center bg-muted/20 p-6">
+              <audio className="w-full max-w-2xl" controls src={url} />
+            </div>
+          ) : (
+            <iframe
+              className="h-full w-full bg-background"
+              referrerPolicy="no-referrer"
+              sandbox="allow-downloads allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts"
+              src={previewUrl}
+              title={label}
+            />
+          )}
+        </div>
+        <div
+          aria-label="Resize website window"
+          aria-orientation="horizontal"
+          className="group flex h-5 shrink-0 cursor-row-resize touch-none items-center justify-center border-t bg-muted/35 transition-colors hover:bg-muted/60"
+          onKeyDown={handleManualEmbedResizeKeyDown}
+          onPointerDown={handleManualEmbedResizePointerDown}
+          role="separator"
+          tabIndex={0}
+          title="Resize website window"
+        >
+          <span className="h-1 w-16 rounded-full bg-muted-foreground/35 transition-colors group-hover:bg-primary/55" />
+        </div>
+      </div>
+    );
+  };
+
   const renderHome = () => (
     <div className="space-y-3">
+      {row.source === 'canvas' && content?.frontPage && stripHtml(content.frontPage.body) ? (
+        <RichCourseContent html={content.frontPage.body} {...richCanvasPageProps} />
+      ) : null}
       <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         {detailItems.map(([label, value]) => (
           <div className="rounded-lg border bg-background p-3" key={`${row.id}-home-${label}`}>
@@ -577,9 +1605,7 @@ function CourseDetailView({
             {dictionary.courseDetailLatestAnnouncement}
           </div>
           <div className="text-sm font-semibold text-foreground">{content.announcements[0].title}</div>
-          <p className="mt-1 line-clamp-3 text-sm text-muted-foreground">
-            {stripHtml(content.announcements[0].message)}
-          </p>
+          <RichCourseContent className="mt-2" compact html={content.announcements[0].message} {...richCanvasPageProps} />
         </div>
       ) : null}
     </div>
@@ -602,20 +1628,114 @@ function CourseDetailView({
             </div>
             {module.items.length > 0 ? (
               <div className="mt-3 divide-y rounded-md border">
-                {module.items.map((item) => (
-                  <a
-                    className="flex min-w-0 items-center justify-between gap-2 px-3 py-2 text-sm hover:bg-muted/35"
-                    href={item.htmlUrl ?? item.externalUrl ?? '#'}
-                    key={item.id}
-                    rel="noreferrer"
-                    target="_blank"
-                  >
-                    <span className="truncate font-medium text-foreground">{item.title}</span>
-                    <Badge className="rounded-md" variant="secondary">{item.type ?? 'Item'}</Badge>
-                  </a>
-                ))}
+                {module.items.map((item) => {
+                  const itemUrl = item.htmlUrl ?? item.url ?? item.externalUrl ?? '#';
+                  const integratedResource = getIntegratedResourceFromModuleItem(item, {
+                    baseUrl: canvasBaseUrl,
+                    courseId: row.canvasCourseId,
+                  }) ?? getIntegratedCourseResourceFromLink(itemUrl, {
+                    baseUrl: canvasBaseUrl,
+                    courseId: row.canvasCourseId,
+                    label: item.title,
+                  });
+
+                  return (
+                    <a
+                      className="flex min-w-0 items-center justify-between gap-2 px-3 py-2 text-sm hover:bg-muted/35"
+                      href={itemUrl}
+                      key={item.id}
+                      onClick={integratedResource
+                        ? (event) => {
+                            event.preventDefault();
+                            openIntegratedResource(integratedResource);
+                          }
+                        : undefined}
+                      rel="noreferrer"
+                      target={integratedResource ? undefined : '_blank'}
+                    >
+                      <span className="truncate font-medium text-foreground">{item.title}</span>
+                      <Badge className="rounded-md" variant="secondary">{item.type ?? 'Item'}</Badge>
+                    </a>
+                  );
+                })}
               </div>
             ) : null}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  const renderPages = () => {
+    if (!content || content.pages.length === 0) {
+      return renderEmpty(dictionary.courseDetailNoPages);
+    }
+
+    return (
+      <div className="grid gap-2 sm:grid-cols-2">
+        {content.pages.map((page) => (
+          <button
+            className="flex min-w-0 items-center justify-between gap-3 rounded-lg border bg-background p-3 text-left transition-colors hover:bg-muted/35"
+            key={page.id}
+            onClick={() => openIntegratedResource({
+              kind: 'canvas-page',
+              pageUrl: page.pageUrl ?? page.id,
+              title: page.title,
+              url: page.htmlUrl ?? '',
+            })}
+            type="button"
+          >
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-semibold text-foreground">{page.title}</span>
+              {page.updatedAt ? (
+                <span className="mt-1 block truncate text-xs font-medium text-muted-foreground">
+                  {formatCourseDate(page.updatedAt)}
+                </span>
+              ) : null}
+            </span>
+            <FileText className="size-4 shrink-0 text-muted-foreground" />
+          </button>
+        ))}
+      </div>
+    );
+  };
+
+  const renderPeople = () => {
+    const people = content?.people ?? [];
+
+    if (people.length === 0) {
+      return renderEmpty(dictionary.courseDetailNoPeople);
+    }
+
+    const sortedPeople = [...people].sort((firstPerson: CanvasCourseUser, secondPerson: CanvasCourseUser) => (
+      (firstPerson.sortableName ?? firstPerson.name).localeCompare(secondPerson.sortableName ?? secondPerson.name)
+    ));
+
+    return (
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+        {sortedPeople.map((person) => (
+          <div className="flex min-w-0 items-center gap-3 rounded-lg border bg-background p-3" key={person.id}>
+            {person.avatarUrl ? (
+              <img
+                alt=""
+                className="size-10 shrink-0 rounded-full border object-cover"
+                src={person.avatarUrl}
+              />
+            ) : (
+              <span className="grid size-10 shrink-0 place-items-center rounded-full border bg-muted text-sm font-semibold text-muted-foreground">
+                {(person.shortName ?? person.name).slice(0, 1).toUpperCase()}
+              </span>
+            )}
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold text-foreground">{person.name}</div>
+              <div className="mt-1 flex flex-wrap gap-1">
+                {(person.roles.length > 0 ? person.roles : ['Student']).slice(0, 2).map((role) => (
+                  <Badge className="rounded-md" key={`${person.id}-${role}`} variant="outline">
+                    {formatStatus(role)}
+                  </Badge>
+                ))}
+              </div>
+            </div>
           </div>
         ))}
       </div>
@@ -630,12 +1750,9 @@ function CourseDetailView({
     return (
       <div className="space-y-2">
         {content.announcements.map((announcement) => (
-          <a
-            className="block rounded-lg border bg-background p-3 transition-colors hover:bg-muted/35"
-            href={announcement.htmlUrl ?? '#'}
+          <div
+            className="rounded-lg border bg-background p-3 transition-colors hover:bg-muted/35"
             key={announcement.id}
-            rel="noreferrer"
-            target="_blank"
           >
             <div className="flex items-start justify-between gap-3">
               <h3 className="text-sm font-semibold text-foreground">{announcement.title}</h3>
@@ -643,8 +1760,35 @@ function CourseDetailView({
                 <Badge className="rounded-md" variant="outline">{formatCourseDate(announcement.postedAt)}</Badge>
               ) : null}
             </div>
-            <p className="mt-2 line-clamp-3 text-sm text-muted-foreground">{stripHtml(announcement.message)}</p>
-          </a>
+            <RichCourseContent className="mt-2" compact html={announcement.message} {...richCanvasPageProps} />
+            {announcement.htmlUrl ? (() => {
+              const integratedResource = getIntegratedCourseResourceFromLink(announcement.htmlUrl, {
+                baseUrl: canvasBaseUrl,
+                courseId: row.canvasCourseId,
+                label: announcement.title,
+              });
+
+              return integratedResource ? (
+                <Button
+                  className="mt-3 h-8 rounded-md"
+                  onClick={() => openIntegratedResource(integratedResource)}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <ExternalLink className="size-4" />
+                  {dictionary.courseOverviewOpenCanvas}
+                </Button>
+              ) : (
+                <Button asChild className="mt-3 h-8 rounded-md" size="sm" variant="outline">
+                  <a href={announcement.htmlUrl} rel="noreferrer" target="_blank">
+                    <ExternalLink className="size-4" />
+                    {dictionary.courseOverviewOpenCanvas}
+                  </a>
+                </Button>
+              );
+            })() : null}
+          </div>
         ))}
       </div>
     );
@@ -675,19 +1819,62 @@ function CourseDetailView({
       ) : renderEmpty(dictionary.courseDetailNoAssignments);
     }
 
-    if (!content || content.assignments.length === 0) {
+    if (!content || (content.assignments.length === 0 && content.quizzes.length === 0)) {
       return renderEmpty(dictionary.courseDetailNoAssignments);
     }
 
     return (
       <div className="space-y-2">
+        {content.quizzes.map((quiz) => (
+          <div
+            className="rounded-lg border bg-background p-3 transition-colors hover:bg-muted/35"
+            key={`quiz-${quiz.id}`}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="truncate text-sm font-semibold text-foreground">{quiz.title}</h3>
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  <Badge className="rounded-md" variant="secondary">{formatSubmissionType(quiz.quizType ?? 'quiz')}</Badge>
+                  {quiz.dueAt ? (
+                    <Badge className="rounded-md" variant="outline">
+                      {dictionary.courseDetailDue}: {formatCourseDate(quiz.dueAt)}
+                    </Badge>
+                  ) : null}
+                  {quiz.pointsPossible !== undefined && quiz.pointsPossible !== null ? (
+                    <Badge className="rounded-md" variant="secondary">
+                      {quiz.pointsPossible} {dictionary.courseDetailPoints}
+                    </Badge>
+                  ) : null}
+                  {quiz.questionCount !== undefined && quiz.questionCount !== null ? (
+                    <Badge className="rounded-md" variant="outline">{quiz.questionCount} questions</Badge>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+            {quiz.description ? (
+              <RichCourseContent className="mt-2" compact html={quiz.description} {...richCanvasPageProps} />
+            ) : null}
+            <Button
+              className="mt-3 h-8 rounded-md"
+              onClick={() => openIntegratedResource({
+                kind: 'canvas-quiz',
+                quizId: quiz.id,
+                title: quiz.title,
+                url: quiz.htmlUrl ?? '',
+              })}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              <ExternalLink className="size-4" />
+              {dictionary.courseOverviewOpenCanvas}
+            </Button>
+          </div>
+        ))}
         {content.assignments.map((assignment) => (
-          <a
-            className="block rounded-lg border bg-background p-3 transition-colors hover:bg-muted/35"
-            href={assignment.htmlUrl ?? '#'}
+          <div
+            className="rounded-lg border bg-background p-3 transition-colors hover:bg-muted/35"
             key={assignment.id}
-            rel="noreferrer"
-            target="_blank"
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
@@ -715,27 +1902,80 @@ function CourseDetailView({
               </div>
             </div>
             {assignment.description ? (
-              <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">{stripHtml(assignment.description)}</p>
+              <RichCourseContent className="mt-2" compact html={assignment.description} {...richCanvasPageProps} />
             ) : null}
-          </a>
+            {assignment.htmlUrl ? (
+              <Button
+                className="mt-3 h-8 rounded-md"
+                onClick={() => openIntegratedResource({
+                  assignmentId: assignment.id,
+                  kind: 'canvas-assignment',
+                  title: assignment.name,
+                  url: assignment.htmlUrl ?? '',
+                })}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                <ExternalLink className="size-4" />
+                {dictionary.courseOverviewOpenCanvas}
+              </Button>
+            ) : null}
+          </div>
         ))}
       </div>
     );
   };
 
   const renderGrades = () => (
-    <div className="grid gap-2 sm:grid-cols-2">
-      <div className="rounded-lg border bg-background p-3">
-        <div className="text-[10px] font-semibold uppercase text-muted-foreground">{dictionary.courseOverviewGrade}</div>
-        <div className="mt-1 text-lg font-semibold text-foreground">{row.grade}</div>
-      </div>
-      {enabledAssessments.length > 0 ? (
+    <div className="space-y-3">
+      <div className="grid gap-2 sm:grid-cols-2">
         <div className="rounded-lg border bg-background p-3">
-          <div className="text-[10px] font-semibold uppercase text-muted-foreground">
-            {dictionary.manualLectureAssessmentTotal}
+          <div className="text-[10px] font-semibold uppercase text-muted-foreground">{dictionary.courseOverviewGrade}</div>
+          <div className="mt-1 text-lg font-semibold text-foreground">{row.grade}</div>
+        </div>
+        {enabledAssessments.length > 0 ? (
+          <div className="rounded-lg border bg-background p-3">
+            <div className="text-[10px] font-semibold uppercase text-muted-foreground">
+              {dictionary.manualLectureAssessmentTotal}
+            </div>
+            <div className="mt-1 text-lg font-semibold text-foreground">
+              {enabledAssessments.reduce((total, assessment) => total + (Number.parseFloat(assessment.gradePortion) || 0), 0)}%
+            </div>
           </div>
-          <div className="mt-1 text-lg font-semibold text-foreground">
-            {enabledAssessments.reduce((total, assessment) => total + (Number.parseFloat(assessment.gradePortion) || 0), 0)}%
+        ) : null}
+      </div>
+      {row.source === 'canvas' && content?.assignments?.length ? (
+        <div className="rounded-lg border bg-background">
+          <div className="border-b px-3 py-2 text-xs font-semibold uppercase text-muted-foreground">Assignment grades</div>
+          <div className="divide-y">
+            {content.assignments.map((assignment) => (
+              <button
+                className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-2 text-left text-sm hover:bg-muted/35"
+                key={`grade-${assignment.id}`}
+                onClick={() => openIntegratedResource({
+                  assignmentId: assignment.id,
+                  kind: 'canvas-assignment',
+                  title: assignment.name,
+                  url: assignment.htmlUrl ?? '',
+                })}
+                type="button"
+              >
+                <span className="min-w-0">
+                  <span className="block truncate font-semibold text-foreground">{assignment.name}</span>
+                  <span className="mt-1 block truncate text-xs text-muted-foreground">
+                    {[assignment.dueAt ? formatCourseDate(assignment.dueAt) : '', assignment.workflowState ? formatStatus(assignment.workflowState) : '']
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </span>
+                </span>
+                <Badge className="rounded-md" variant={assignment.score !== undefined && assignment.score !== null ? 'secondary' : 'outline'}>
+                  {assignment.score !== undefined && assignment.score !== null
+                    ? `${assignment.score}${assignment.pointsPossible ? ` / ${assignment.pointsPossible}` : ''}`
+                    : assignment.grade || '--'}
+                </Badge>
+              </button>
+            ))}
           </div>
         </div>
       ) : null}
@@ -761,7 +2001,193 @@ function CourseDetailView({
     ) : renderEmpty(dictionary.courseDetailNoLinks)
   );
 
+  const renderIntegratedAssignment = (assignment: CanvasCourseAssignment) => (
+    <div className="space-y-3">
+      <div className="rounded-lg border bg-background p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="text-lg font-semibold text-foreground">{assignment.name}</h2>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {assignment.dueAt ? (
+                <Badge className="rounded-md" variant="outline">
+                  {dictionary.courseDetailDue}: {formatCourseDate(assignment.dueAt)}
+                </Badge>
+              ) : null}
+              {assignment.pointsPossible !== undefined && assignment.pointsPossible !== null ? (
+                <Badge className="rounded-md" variant="secondary">
+                  {assignment.pointsPossible} {dictionary.courseDetailPoints}
+                </Badge>
+              ) : null}
+              <Badge className="rounded-md" variant={assignment.isSubmitted ? 'default' : 'outline'}>
+                {assignment.isSubmitted ? dictionary.courseDetailSubmitted : dictionary.courseDetailNotSubmitted}
+              </Badge>
+              {assignment.submissionTypes.map((submissionType) => (
+                <Badge className="rounded-md" key={`${assignment.id}-${submissionType}`} variant="outline">
+                  {formatSubmissionType(submissionType)}
+                </Badge>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+      {assignment.description && stripHtml(assignment.description) ? (
+        <RichCourseContent html={assignment.description} {...richCanvasPageProps} />
+      ) : renderEmpty(dictionary.courseDetailEmpty)}
+    </div>
+  );
+
+  const renderIntegratedQuiz = (quiz: CanvasCourseQuiz) => (
+    <div className="space-y-3">
+      <div className="rounded-lg border bg-background p-4">
+        <h2 className="text-lg font-semibold text-foreground">{quiz.title}</h2>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          <Badge className="rounded-md" variant="secondary">{formatSubmissionType(quiz.quizType ?? 'quiz')}</Badge>
+          {quiz.dueAt ? (
+            <Badge className="rounded-md" variant="outline">
+              {dictionary.courseDetailDue}: {formatCourseDate(quiz.dueAt)}
+            </Badge>
+          ) : null}
+          {quiz.pointsPossible !== undefined && quiz.pointsPossible !== null ? (
+            <Badge className="rounded-md" variant="secondary">
+              {quiz.pointsPossible} {dictionary.courseDetailPoints}
+            </Badge>
+          ) : null}
+          {quiz.questionCount !== undefined && quiz.questionCount !== null ? (
+            <Badge className="rounded-md" variant="outline">{quiz.questionCount} questions</Badge>
+          ) : null}
+          {quiz.allowedAttempts !== undefined && quiz.allowedAttempts !== null ? (
+            <Badge className="rounded-md" variant="outline">{quiz.allowedAttempts === -1 ? 'Unlimited attempts' : `${quiz.allowedAttempts} attempts`}</Badge>
+          ) : null}
+        </div>
+      </div>
+      {quiz.description && stripHtml(quiz.description) ? (
+        <RichCourseContent html={quiz.description} {...richCanvasPageProps} />
+      ) : renderEmpty(dictionary.courseDetailEmpty)}
+    </div>
+  );
+
+  const renderIntegratedDiscussion = (discussion: CanvasCourseDiscussion) => (
+    <div className="space-y-3">
+      <div className="rounded-lg border bg-background p-4">
+        <h2 className="text-lg font-semibold text-foreground">{discussion.title}</h2>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          <Badge className="rounded-md" variant={discussion.isAnnouncement ? 'default' : 'secondary'}>
+            {discussion.isAnnouncement ? dictionary.courseDetailAnnouncements : 'Discussion'}
+          </Badge>
+          {discussion.authorName ? (
+            <Badge className="rounded-md" variant="outline">{discussion.authorName}</Badge>
+          ) : null}
+          {discussion.postedAt ? (
+            <Badge className="rounded-md" variant="outline">{formatCourseDate(discussion.postedAt)}</Badge>
+          ) : null}
+        </div>
+      </div>
+      {discussion.message && stripHtml(discussion.message) ? (
+        <RichCourseContent html={discussion.message} {...richCanvasPageProps} />
+      ) : renderEmpty(dictionary.courseDetailEmpty)}
+    </div>
+  );
+
+  const renderIntegratedFile = (file: CanvasCourseFile) => {
+    const fileUrl = file.previewUrl ?? file.url ?? file.htmlUrl ?? activeIntegratedResource?.url ?? '';
+
+    return fileUrl
+      ? renderEmbeddedManualLink(fileUrl, file.displayName, getFilePreviewKind(file))
+      : renderEmpty(dictionary.courseDetailUnavailable);
+  };
+
+  const renderIntegratedModuleItem = (item: CanvasCourseModuleItem) => {
+    const resolvedResource = getIntegratedResourceFromModuleItem(item, {
+      baseUrl: canvasBaseUrl,
+      courseId: row.canvasCourseId,
+    });
+
+    return (
+      <div className="space-y-3">
+        <div className="rounded-lg border bg-background p-4">
+          <div className="text-sm font-semibold text-foreground">{item.title}</div>
+          <div className="mt-1 text-xs font-medium text-muted-foreground">{item.type ?? 'Module item'}</div>
+        </div>
+        {resolvedResource ? (
+          <Button
+            className="rounded-md"
+            onClick={() => openIntegratedResource(resolvedResource)}
+            type="button"
+            variant="outline"
+          >
+            <ExternalLink className="size-4" />
+            {dictionary.courseOverviewOpenCanvas}
+          </Button>
+        ) : renderEmpty(dictionary.courseDetailUnavailable)}
+      </div>
+    );
+  };
+
   const renderActiveSection = () => {
+    if (integratedResourceStatus === 'loading') {
+      return (
+        <div className="flex items-center gap-2 rounded-lg border bg-muted/30 p-4 text-sm font-semibold text-muted-foreground">
+          <LoaderCircle className="size-4 animate-spin text-primary" />
+          {dictionary.courseDetailLoading}
+        </div>
+      );
+    }
+
+    if (integratedResourceStatus === 'failed') {
+      return renderEmpty(dictionary.courseDetailUnavailable);
+    }
+
+    if (activeIntegratedResource?.kind === 'external') {
+      return renderEmbeddedManualLink(activeIntegratedResource.url, activeIntegratedResource.title);
+    }
+
+    if (activeIntegratedResource?.kind === 'canvas-pages-index') {
+      return renderPages();
+    }
+
+    if (activeIntegratedResource?.kind === 'canvas-people-index') {
+      return renderPeople();
+    }
+
+    if (activeIntegratedResource?.kind === 'canvas-assignments-index') {
+      return renderAssignments();
+    }
+
+    if (activeIntegratedResource?.kind === 'canvas-grades-index') {
+      return renderGrades();
+    }
+
+    if (activeIntegratedResource?.kind === 'canvas-page' && integratedCanvasPage) {
+      return stripHtml(integratedCanvasPage.body)
+        ? (
+            <RichCourseContent
+              html={integratedCanvasPage.body}
+              {...richCanvasPageProps}
+            />
+          )
+        : renderEmpty(dictionary.courseDetailEmpty);
+    }
+
+    if (activeIntegratedResource?.kind === 'canvas-assignment' && integratedAssignment) {
+      return renderIntegratedAssignment(integratedAssignment);
+    }
+
+    if (activeIntegratedResource?.kind === 'canvas-quiz' && integratedQuiz) {
+      return renderIntegratedQuiz(integratedQuiz);
+    }
+
+    if (activeIntegratedResource?.kind === 'canvas-discussion' && integratedDiscussion) {
+      return renderIntegratedDiscussion(integratedDiscussion);
+    }
+
+    if (activeIntegratedResource?.kind === 'canvas-file' && integratedFile) {
+      return renderIntegratedFile(integratedFile);
+    }
+
+    if (activeIntegratedResource?.kind === 'canvas-module-item' && integratedModuleItem) {
+      return renderIntegratedModuleItem(integratedModuleItem);
+    }
+
     if (isCanvasLoading) {
       return (
         <div className="flex items-center gap-2 rounded-lg border bg-muted/30 p-4 text-sm font-semibold text-muted-foreground">
@@ -775,6 +2201,14 @@ function CourseDetailView({
       return renderEmpty(dictionary.courseDetailUnavailable);
     }
 
+    if (row.source === 'manual' && activeSection === 'home' && manualLectureWebsiteUrl) {
+      return renderEmbeddedManualLink(manualLectureWebsiteUrl, dictionary.manualLectureWebsiteLink);
+    }
+
+    if (row.source === 'manual' && activeSection === 'assignments' && manualSubmissionUrl) {
+      return renderEmbeddedManualLink(manualSubmissionUrl, dictionary.manualLectureSubmissionLink);
+    }
+
     if (activeSection === 'modules') {
       return renderModules();
     }
@@ -784,15 +2218,21 @@ function CourseDetailView({
     }
 
     if (activeSection === 'syllabus') {
-      const syllabusText = stripHtml(content?.syllabusBody);
-
-      return syllabusText ? (
-        <div className="rounded-lg border bg-background p-4 text-sm leading-6 text-foreground">{syllabusText}</div>
-      ) : renderEmpty(dictionary.courseDetailEmpty);
+      return stripHtml(content?.syllabusBody)
+        ? <RichCourseContent html={content?.syllabusBody} {...richCanvasPageProps} />
+        : renderEmpty(dictionary.courseDetailEmpty);
     }
 
     if (activeSection === 'assignments') {
       return renderAssignments();
+    }
+
+    if (activeSection === 'pages') {
+      return renderPages();
+    }
+
+    if (activeSection === 'people') {
+      return renderPeople();
     }
 
     if (activeSection === 'grades') {
@@ -820,9 +2260,42 @@ function CourseDetailView({
     return renderHome();
   };
 
+  const activeTitle = integratedCanvasPage?.title ||
+    integratedAssignment?.name ||
+    integratedQuiz?.title ||
+    integratedDiscussion?.title ||
+    integratedFile?.displayName ||
+    activeIntegratedResource?.title ||
+    activeItem.label;
+  const activeManualUrl = row.source === 'manual' && activeSection === 'home'
+    ? manualLectureWebsiteUrl
+    : row.source === 'manual' && activeSection === 'assignments'
+      ? manualSubmissionUrl
+      : '';
+  const activeCanvasUrl = integratedCanvasPage?.htmlUrl ??
+    integratedAssignment?.htmlUrl ??
+    integratedQuiz?.htmlUrl ??
+    integratedDiscussion?.htmlUrl ??
+    integratedFile?.htmlUrl ??
+    activeIntegratedResource?.url ??
+    (activeManualUrl || row.htmlUrl);
+  const canGoBackInIntegratedContent = integratedHistoryIndex > 0;
+  const canGoForwardInIntegratedContent = integratedHistoryIndex >= 0 && integratedHistoryIndex < integratedHistory.length - 1;
+  const handleIntegratedContentAuxClick = (event: MouseEvent<HTMLDivElement>) => {
+    if (event.button === 3 && canGoBackInIntegratedContent) {
+      event.preventDefault();
+      navigateIntegratedHistory(integratedHistoryIndex - 1);
+    }
+
+    if (event.button === 4 && canGoForwardInIntegratedContent) {
+      event.preventDefault();
+      navigateIntegratedHistory(integratedHistoryIndex + 1);
+    }
+  };
+
   return (
-    <div className="grid min-h-[520px] gap-3 lg:grid-cols-[220px_minmax(0,1fr)]">
-      <aside className="rounded-xl border bg-card p-3">
+    <div className="grid min-h-[520px] gap-3 lg:h-full lg:min-h-0 lg:grid-cols-[220px_minmax(0,1fr)] lg:overflow-hidden">
+      <aside className="rounded-xl border bg-card p-3 lg:h-full lg:min-h-0 lg:overflow-y-auto">
         <Button className="mb-3 h-8 w-full justify-start rounded-md" onClick={onBack} size="sm" variant="ghost">
           <ArrowLeft className="size-4" />
           {dictionary.courseDetailBack}
@@ -850,7 +2323,23 @@ function CourseDetailView({
                   isActive && 'bg-muted text-foreground',
                 )}
                 key={item.id}
-                onClick={() => onSelectItem(item)}
+                onClick={() => {
+                  resetIntegratedResource();
+                  onSelectItem(item);
+                  if (item.section === 'external' && item.htmlUrl) {
+                    const integratedResource = getIntegratedCourseResourceFromLink(item.htmlUrl, {
+                      baseUrl: canvasBaseUrl,
+                      courseId: row.canvasCourseId,
+                      label: item.label,
+                    });
+
+                    if (integratedResource) {
+                      setIntegratedHistory([integratedResource]);
+                      setIntegratedHistoryIndex(0);
+                      loadIntegratedResource(integratedResource);
+                    }
+                  }
+                }}
                 type="button"
               >
                 <Icon className="size-4 shrink-0" />
@@ -861,8 +2350,11 @@ function CourseDetailView({
         </nav>
       </aside>
 
-      <section className="min-w-0 rounded-xl border bg-card">
-        <div className="flex min-w-0 items-start justify-between gap-3 border-b p-4">
+      <section
+        className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border bg-card"
+        onAuxClick={handleIntegratedContentAuxClick}
+      >
+        <div className="shrink-0 flex min-w-0 items-start justify-between gap-3 border-b p-4">
           <div className="min-w-0">
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <Badge className="rounded-md" variant="outline">
@@ -870,24 +2362,50 @@ function CourseDetailView({
               </Badge>
               <Badge className="rounded-md" variant="secondary">{row.semester}</Badge>
             </div>
-            <h1 className="truncate text-xl font-semibold text-foreground">{activeItem.label}</h1>
+            <h1 className="truncate text-xl font-semibold text-foreground">{activeTitle}</h1>
           </div>
-          {row.htmlUrl ? (
-            <Button asChild className="shrink-0 rounded-md" size="sm" variant="outline">
-              <a href={row.htmlUrl} rel="noreferrer" target="_blank">
-                <ExternalLink className="size-4" />
-                {dictionary.courseOverviewOpenCanvas}
-              </a>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Button
+              aria-label={dictionary.courseDetailPrevious}
+              className="size-8 rounded-md"
+              disabled={!canGoBackInIntegratedContent}
+              onClick={() => navigateIntegratedHistory(integratedHistoryIndex - 1)}
+              size="icon-sm"
+              title={dictionary.courseDetailPrevious}
+              type="button"
+              variant="outline"
+            >
+              <ArrowLeft className="size-4" />
             </Button>
-          ) : null}
+            <Button
+              aria-label={dictionary.courseDetailNext}
+              className="size-8 rounded-md"
+              disabled={!canGoForwardInIntegratedContent}
+              onClick={() => navigateIntegratedHistory(integratedHistoryIndex + 1)}
+              size="icon-sm"
+              title={dictionary.courseDetailNext}
+              type="button"
+              variant="outline"
+            >
+              <ArrowRight className="size-4" />
+            </Button>
+            {activeCanvasUrl ? (
+              <Button asChild className="rounded-md" size="sm" variant="outline">
+                <a href={activeCanvasUrl} rel="noreferrer" target="_blank">
+                  <ExternalLink className="size-4" />
+                  {dictionary.courseOverviewOpenCanvas}
+                </a>
+              </Button>
+            ) : null}
+          </div>
         </div>
-        <div className="p-4">{renderActiveSection()}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">{renderActiveSection()}</div>
       </section>
     </div>
   );
 }
 
-export function CourseOverviewView() {
+export function CourseOverviewView({ initialSelectedCourseRowId }: { initialSelectedCourseRowId?: string | null } = {}) {
   const { dictionary } = useLanguage();
   const [canvasCourses, setCanvasCourses] = useState<CanvasCourse[]>([]);
   const [canvasLecturePreferences, setCanvasLecturePreferences] = useState<CanvasLecturePreferences>(() => getStoredCanvasLecturePreferences());
@@ -895,7 +2413,7 @@ export function CourseOverviewView() {
   const [manualLectures, setManualLectures] = useState<ManualLecture[]>(() => getStoredManualLectures());
   const [notificationCounts, setNotificationCounts] = useState<Record<string, number>>({});
   const [selectedSemester, setSelectedSemester] = useState(getStoredSelectedAcademySemester);
-  const [selectedCourseRowId, setSelectedCourseRowId] = useState<string | null>(null);
+  const [selectedCourseRowId, setSelectedCourseRowId] = useState<string | null>(initialSelectedCourseRowId ?? null);
   const [activeCourseItem, setActiveCourseItem] = useState<CourseNavigationItem | null>(null);
   const [canvasCourseContent, setCanvasCourseContent] = useState<CanvasCourseContent | null>(null);
   const [canvasCourseContentStatus, setCanvasCourseContentStatus] = useState<LoadStatus>('idle');
@@ -913,6 +2431,12 @@ export function CourseOverviewView() {
       window.removeEventListener(academyPreferencesUpdatedEvent, handleAcademyPreferencesUpdated);
     };
   }, []);
+
+  useEffect(() => {
+    if (initialSelectedCourseRowId !== undefined) {
+      setSelectedCourseRowId(initialSelectedCourseRowId);
+    }
+  }, [initialSelectedCourseRowId]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -988,6 +2512,7 @@ export function CourseOverviewView() {
   const allRows = useMemo(
     () => [
       ...createCanvasRows(canvasCourses, canvasLecturePreferences, notificationCounts),
+      ...createStoredCanvasManualRows(canvasLecturePreferences, canvasCourses, manualLectures),
       ...createManualRows(manualLectures),
     ].sort(sortRows),
     [canvasCourses, canvasLecturePreferences, manualLectures, notificationCounts],
@@ -1020,7 +2545,7 @@ export function CourseOverviewView() {
   };
 
   useEffect(() => {
-    if (selectedCourseRowId && !rows.some((row) => row.id === selectedCourseRowId)) {
+    if (selectedCourseRowId && rows.length > 0 && !rows.some((row) => row.id === selectedCourseRowId)) {
       setSelectedCourseRowId(null);
       setActiveCourseItem(null);
     }

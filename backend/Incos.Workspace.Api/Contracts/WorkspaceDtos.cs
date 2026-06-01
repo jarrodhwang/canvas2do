@@ -321,6 +321,9 @@ public sealed record CanvasCourseModuleItemDto(
     string Id,
     string Title,
     string? Type,
+    string? ContentId,
+    string? PageUrl,
+    string? Url,
     string? HtmlUrl,
     string? ExternalUrl,
     DateTimeOffset? CompletionRequirementCompletedAt);
@@ -347,7 +350,40 @@ public sealed record CanvasCourseAssignmentDto(
     double? PointsPossible,
     string? HtmlUrl,
     string[] SubmissionTypes,
-    bool IsSubmitted);
+    bool IsSubmitted,
+    double? Score,
+    string? Grade,
+    DateTimeOffset? SubmittedAt,
+    string? WorkflowState);
+
+public sealed record CanvasCourseQuizDto(
+    string Id,
+    string Title,
+    string? Description,
+    DateTimeOffset? DueAt,
+    double? PointsPossible,
+    string? HtmlUrl,
+    string? QuizType,
+    int? QuestionCount,
+    int? AllowedAttempts,
+    string? AssignmentId);
+
+public sealed record CanvasCourseDiscussionDto(
+    string Id,
+    string Title,
+    string? Message,
+    DateTimeOffset? PostedAt,
+    string? HtmlUrl,
+    string? AuthorName,
+    bool IsAnnouncement);
+
+public sealed record CanvasCourseUserDto(
+    string Id,
+    string Name,
+    string? ShortName,
+    string? SortableName,
+    string? AvatarUrl,
+    string[] Roles);
 
 public sealed record CanvasCourseContentDto(
     CanvasCourseDto Course,
@@ -355,7 +391,31 @@ public sealed record CanvasCourseContentDto(
     CanvasCourseModuleDto[] Modules,
     CanvasCourseAnnouncementDto[] Announcements,
     CanvasCourseAssignmentDto[] Assignments,
+    CanvasCourseQuizDto[] Quizzes,
+    CanvasCourseDiscussionDto[] Discussions,
+    CanvasCoursePageDto[] Pages,
+    CanvasCourseUserDto[] People,
+    CanvasCoursePageDto? FrontPage,
     string? SyllabusBody);
+
+public sealed record CanvasCoursePageDto(
+    string Id,
+    string Title,
+    string? PageUrl,
+    string? Body,
+    string? HtmlUrl,
+    DateTimeOffset? UpdatedAt);
+
+public sealed record CanvasCourseFileDto(
+    string Id,
+    string DisplayName,
+    string? FileName,
+    string? ContentType,
+    string? Url,
+    string? PreviewUrl,
+    string? HtmlUrl,
+    int? Size,
+    DateTimeOffset? UpdatedAt);
 
 public sealed record CanvasCalendarItemDto(
     string Id,

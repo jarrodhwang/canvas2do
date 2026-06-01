@@ -3,7 +3,7 @@ import { useState } from 'react';
 
 import { cn } from '../lib/utils';
 
-export type GoogleProduct = 'gmail' | 'chat' | 'meet' | 'docs' | 'sheets' | 'slides' | 'drive' | 'gemini';
+export type GoogleProduct = 'gmail' | 'chat' | 'meet' | 'docs' | 'sheets' | 'slides' | 'drive' | 'gemini' | 'figma';
 
 const googleProductIcons: Record<
   GoogleProduct,
@@ -26,6 +26,12 @@ const googleProductIcons: Record<
     fallback: 'D',
     label: 'Google Drive',
     src: 'https://ssl.gstatic.com/docs/doclist/images/drive_2022q3_32dp.png',
+  },
+  figma: {
+    color: '#1E1E1E',
+    fallback: 'F',
+    label: 'Figma',
+    src: 'https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/figma.svg',
   },
   gmail: {
     color: '#EA4335',

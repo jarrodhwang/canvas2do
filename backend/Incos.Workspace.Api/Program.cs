@@ -67,7 +67,7 @@ var authenticationBuilder = builder.Services
                 return context.Response.WriteAsJsonAsync(new
                 {
                     title = "Google Workspace sign-in required.",
-                    detail = "Your workspace session expired. Sign in again; Gmail permissions remain connected.",
+                    detail = "Your workspace session expired. Sign in again, then refresh this view.",
                     status = StatusCodes.Status401Unauthorized,
                 });
             }
@@ -136,6 +136,20 @@ if (isGoogleAuthenticationConfigured)
             }
 
             context.Response.Redirect(redirectUri);
+            return Task.CompletedTask;
+        };
+
+        options.Events.OnRemoteFailure = context =>
+        {
+            context.HandleResponse();
+
+            var returnUrl = ExtractReturnUrlFromOAuthRedirect(context.Properties?.RedirectUri);
+            var redirectUrl = QueryHelpers.AddQueryString(
+                returnUrl,
+                "authError",
+                "Google sign-in could not be completed. Please sign in again.");
+
+            context.Response.Redirect(redirectUrl);
             return Task.CompletedTask;
         };
 
@@ -253,6 +267,7 @@ if (app.Configuration.GetValue("Database:EnsureCreated", false))
     await db.Database.EnsureCreatedAsync();
     await GoogleIntegrationEndpoints.EnsureGoogleOAuthTokensTableAsync(db);
     await GoogleIntegrationEndpoints.EnsureScheduledGmailMessagesTableAsync(db);
+    await WorkspaceEndpoints.EnsureUserSettingsTableAsync(db);
     await SeedData.SeedAsync(db);
 }
 
@@ -264,4 +279,34 @@ static string? TryGetJsonString(JsonElement element, string propertyName)
            property.ValueKind == JsonValueKind.String
         ? property.GetString()
         : null;
+}
+
+static string ExtractReturnUrlFromOAuthRedirect(string? redirectUri)
+{
+    if (string.IsNullOrWhiteSpace(redirectUri))
+    {
+        return "/";
+    }
+
+    var queryIndex = redirectUri.IndexOf("?", StringComparison.Ordinal);
+
+    if (queryIndex < 0 || queryIndex == redirectUri.Length - 1)
+    {
+        return "/";
+    }
+
+    var query = QueryHelpers.ParseQuery(redirectUri[queryIndex..]);
+
+    return query.TryGetValue("returnUrl", out var returnUrl)
+        ? NormalizeLocalReturnUrl(returnUrl.ToString())
+        : "/";
+}
+
+static string NormalizeLocalReturnUrl(string? returnUrl)
+{
+    return !string.IsNullOrWhiteSpace(returnUrl) &&
+           returnUrl.StartsWith("/", StringComparison.Ordinal) &&
+           !returnUrl.StartsWith("//", StringComparison.Ordinal)
+        ? returnUrl
+        : "/";
 }

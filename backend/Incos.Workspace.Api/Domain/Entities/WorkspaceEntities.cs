@@ -19,6 +19,13 @@ public sealed class User : AuditableEntity
     public List<CalendarItem> OwnedCalendarItems { get; set; } = [];
 }
 
+public sealed class UserSetting : AuditableEntity
+{
+    public string UserKey { get; set; } = string.Empty;
+    public string SettingKey { get; set; } = string.Empty;
+    public string SettingJson { get; set; } = "{}";
+}
+
 public sealed class WorkspaceMode : AuditableEntity
 {
     public string ModeKey { get; set; } = string.Empty;

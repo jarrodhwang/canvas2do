@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { ChevronDown, ChevronRight, Link, Plus, Save, Trash2 } from 'lucide-react';
 
 import { useLanguage } from '../context/LanguageContext';
@@ -75,12 +75,20 @@ export interface ManualLecture {
   starred?: boolean;
   hidden?: boolean;
   chipColor?: ColorToken;
+  semester?: string;
 }
 
 interface ManualLectureDialogProps {
   open: boolean;
-  onAddLecture: (lecture: ManualLecture) => void;
+  description?: string;
+  initialLecture?: ManualLecture;
+  onAddLecture?: (lecture: ManualLecture) => void;
   onOpenChange: (open: boolean) => void;
+  onSaveLecture?: (lecture: ManualLecture) => void;
+  selectedSemester?: string;
+  semesterOptions?: string[];
+  submitLabel?: string;
+  title?: string;
 }
 
 type AssessmentKey =
@@ -136,6 +144,7 @@ const assessmentOptions: Array<{ id: AssessmentKey; labelKey: AssessmentLabelKey
   { id: 'attendanceMandatory', labelKey: 'manualLectureAssessmentAttendanceMandatory' },
   { id: 'officeHours', labelKey: 'manualLectureAssessmentOfficeHours' },
 ];
+const assessmentKeys = new Set<string>(assessmentOptions.map((option) => option.id));
 const assessmentCountOptions = Array.from({ length: 20 }, (_, index) => `${index + 1}`);
 const classTypeOptions: Array<{ id: ManualLectureClassType; labelKey: ClassTypeLabelKey }> = [
   { id: 'lecture', labelKey: 'manualLectureClassTypeLecture' },
@@ -151,17 +160,32 @@ type AssessmentFormState = Record<AssessmentKey, {
   gradePortion: string;
 }>;
 
-function createAssessmentState(): AssessmentFormState {
-  return assessmentOptions.reduce((nextState, option) => {
-    nextState[option.id] = {
+function createAssessmentState(storedAssessments: ManualLectureAssessment[] = []): AssessmentFormState {
+  const nextState = assessmentOptions.reduce((state, option) => {
+    state[option.id] = {
       count: '',
       details: '',
       enabled: false,
       gradePortion: '',
     };
 
-    return nextState;
+    return state;
   }, {} as AssessmentFormState);
+
+  storedAssessments.forEach((assessment) => {
+    if (!assessmentKeys.has(assessment.id)) {
+      return;
+    }
+
+    nextState[assessment.id as AssessmentKey] = {
+      count: assessment.count,
+      details: assessment.details,
+      enabled: assessment.enabled,
+      gradePortion: assessment.gradePortion,
+    };
+  });
+
+  return nextState;
 }
 
 function createManualLectureId() {
@@ -221,14 +245,59 @@ function parseUsefulLinks(value: string): ManualLectureLink[] {
     });
 }
 
+function getKnownLinkUrl(lecture: ManualLecture | undefined, linkId: string) {
+  return lecture?.links.find((link) => link.id === linkId)?.url ?? '';
+}
+
+function createUsefulLinksValue(lecture: ManualLecture | undefined) {
+  const knownLinkIds = new Set([
+    'lecture-website',
+    'submission-link',
+    'online-lecture-link',
+    'online-office-hour-link',
+  ]);
+
+  return (lecture?.links ?? [])
+    .filter((link) => !knownLinkIds.has(link.id))
+    .map((link) => `${link.label} | ${link.url}`)
+    .join('\n');
+}
+
+function createScheduleEntriesFromLecture(lecture: ManualLecture | undefined) {
+  if (lecture?.schedule.entries?.length) {
+    return lecture.schedule.entries.map((entry) => ({ ...entry }));
+  }
+
+  if (lecture?.schedule.day || lecture?.schedule.time || lecture?.schedule.location) {
+    return [
+      createScheduleEntry({
+        deliveryMode: lecture.schedule.deliveryMode,
+        day: lecture.schedule.day,
+        time: lecture.schedule.time,
+        location: lecture.schedule.location,
+      }),
+    ];
+  }
+
+  return [createScheduleEntry()];
+}
+
 export function ManualLectureDialog({
+  description,
+  initialLecture,
   open,
   onAddLecture,
   onOpenChange,
+  onSaveLecture,
+  selectedSemester,
+  semesterOptions = [],
+  submitLabel,
+  title,
 }: ManualLectureDialogProps) {
   const { dictionary } = useLanguage();
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
+  const [semester, setSemester] = useState(selectedSemester ?? '');
   const [lectureSection, setLectureSection] = useState('');
   const [labSection, setLabSection] = useState('');
   const [tutorialSection, setTutorialSection] = useState('');
@@ -258,10 +327,18 @@ export function ManualLectureDialog({
   const formattedAssessmentTotal = Number.isInteger(assessmentTotal)
     ? assessmentTotal.toString()
     : assessmentTotal.toFixed(1);
+  const dialogTitle = title ?? (initialLecture ? dictionary.manualLectureEditTitle : dictionary.manualLectureTitle);
+  const dialogDescription = description ?? (
+    initialLecture ? dictionary.manualLectureEditDescription : dictionary.manualLectureDescription
+  );
+  const saveLabel = submitLabel ?? (
+    initialLecture ? dictionary.manualLectureUpdate : dictionary.manualLectureSave
+  );
 
   const resetForm = () => {
     setName('');
     setCode('');
+    setSemester(selectedSemester ?? '');
     setLectureSection('');
     setLabSection('');
     setTutorialSection('');
@@ -275,6 +352,37 @@ export function ManualLectureDialog({
     setAssessments(createAssessmentState());
     setAreAssessmentsExpanded(true);
   };
+
+  const loadLecture = (lecture: ManualLecture) => {
+    setName(lecture.name);
+    setCode(lecture.code);
+    setSemester(lecture.semester ?? selectedSemester ?? '');
+    setLectureSection(lecture.lectureSection);
+    setLabSection(lecture.labSection);
+    setTutorialSection(lecture.tutorialSection);
+    setCredits(lecture.credits);
+    setLectureWebsiteLink(getKnownLinkUrl(lecture, 'lecture-website'));
+    setSubmissionLink(getKnownLinkUrl(lecture, 'submission-link'));
+    setOnlineLectureLink(getKnownLinkUrl(lecture, 'online-lecture-link'));
+    setOnlineOfficeHourLink(getKnownLinkUrl(lecture, 'online-office-hour-link'));
+    setUsefulLinks(createUsefulLinksValue(lecture));
+    setScheduleEntries(createScheduleEntriesFromLecture(lecture));
+    setAssessments(createAssessmentState(lecture.assessments));
+    setAreAssessmentsExpanded(true);
+  };
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    if (initialLecture) {
+      loadLecture(initialLecture);
+      return;
+    }
+
+    resetForm();
+  }, [initialLecture?.id, open]);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -305,10 +413,12 @@ export function ManualLectureDialog({
       ...parseUsefulLinks(usefulLinks),
     ].filter((link): link is ManualLectureLink => Boolean(link));
 
-    onAddLecture({
-      id: createManualLectureId(),
+    const nextLecture: ManualLecture = {
+      ...initialLecture,
+      id: initialLecture?.id ?? createManualLectureId(),
       name: name.trim(),
       code: code.trim().toUpperCase(),
+      semester: semester.trim() || selectedSemester,
       lectureSection: lectureSection.trim().toUpperCase(),
       labSection: labSection.trim().toUpperCase(),
       tutorialSection: tutorialSection.trim().toUpperCase(),
@@ -326,9 +436,16 @@ export function ManualLectureDialog({
         entries: normalizedScheduleEntries,
       },
       links,
-      chipColor: 'green',
-    });
-    resetForm();
+      chipColor: initialLecture?.chipColor ?? 'green',
+    };
+
+    if (initialLecture) {
+      onSaveLecture?.(nextLecture);
+    } else {
+      onAddLecture?.(nextLecture);
+      resetForm();
+    }
+
     onOpenChange(false);
   };
 
@@ -370,8 +487,8 @@ export function ManualLectureDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[calc(100vh-2rem)] overflow-auto rounded-xl p-5 sm:max-w-5xl">
         <DialogHeader>
-          <DialogTitle className="text-2xl font-black">{dictionary.manualLectureTitle}</DialogTitle>
-          <DialogDescription>{dictionary.manualLectureDescription}</DialogDescription>
+          <DialogTitle className="text-2xl font-black">{dialogTitle}</DialogTitle>
+          <DialogDescription>{dialogDescription}</DialogDescription>
         </DialogHeader>
 
         <form className="grid gap-5" onSubmit={handleSubmit}>
@@ -398,6 +515,23 @@ export function ManualLectureDialog({
                 required
                 value={code}
               />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs font-black uppercase text-muted-foreground" htmlFor="manual-lecture-semester">
+                {dictionary.manualLectureSemester}
+              </Label>
+              <Select onValueChange={setSemester} value={semester || selectedSemester}>
+                <SelectTrigger id="manual-lecture-semester">
+                  <SelectValue placeholder={dictionary.manualLectureSelectSemester} />
+                </SelectTrigger>
+                <SelectContent>
+                  {semesterOptions.map((semesterOption) => (
+                    <SelectItem key={semesterOption} value={semesterOption}>
+                      {semesterOption}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-2">
               <Label className="text-xs font-black uppercase text-muted-foreground" htmlFor="manual-lecture-section">
@@ -714,7 +848,7 @@ export function ManualLectureDialog({
             </Button>
             <Button type="submit">
               <Save className="size-4" />
-              {dictionary.manualLectureSave}
+              {saveLabel}
             </Button>
           </DialogFooter>
         </form>

@@ -85,12 +85,10 @@ function formatDateTime(value: string | undefined, language: 'en' | 'ko') {
   }).format(date);
 }
 
-function getSenderSeed(message: GoogleChatMessage | undefined) {
-  return message?.senderEmail ?? message?.senderName ?? message?.sender ?? message?.name;
-}
-
 function isBotMessage(message: GoogleChatMessage | undefined) {
-  return message?.senderType === 'BOT' || message?.senderName === 'users/app';
+  return message?.senderType === 'BOT' ||
+    message?.senderName === 'users/app' ||
+    message?.sender === 'Google Chat';
 }
 
 function inferProductFromMessage(message: GoogleChatMessage | undefined) {
@@ -100,7 +98,40 @@ function inferProductFromMessage(message: GoogleChatMessage | undefined) {
     return 'drive' as const;
   }
 
+  if (text.includes('figma')) {
+    return 'figma' as const;
+  }
+
   return undefined;
+}
+
+function getAvatarInitial(label: string | undefined) {
+  const cleanedLabel = (label ?? '').trim();
+
+  if (!cleanedLabel ||
+    cleanedLabel === 'Unknown user' ||
+    cleanedLabel === 'Google Chat' ||
+    cleanedLabel === 'Google Chat user') {
+    return '';
+  }
+
+  return Array.from(cleanedLabel)[0]?.toUpperCase() ?? '';
+}
+
+function getChatAvatarSrc(avatarUrl: string | undefined) {
+  if (!avatarUrl) {
+    return undefined;
+  }
+
+  if (/^(?:data|blob):/i.test(avatarUrl)) {
+    return avatarUrl;
+  }
+
+  if (/^https?:\/\//i.test(avatarUrl)) {
+    return `${workspaceApi.apiBaseUrl}/google/chat/avatar?url=${encodeURIComponent(avatarUrl)}`;
+  }
+
+  return avatarUrl;
 }
 
 function getSpaceTypeLabel(spaceType: string, language: 'en' | 'ko') {
@@ -146,7 +177,51 @@ function getChatPreview(space: GoogleChatSpace, language: 'en' | 'ko') {
   return getSpaceTypeLabel(space.spaceType, language);
 }
 
+function getChatSpaceTitle(space: GoogleChatSpace) {
+  if (
+    space.spaceType === 'DIRECT_MESSAGE' &&
+    space.primaryMember?.displayName &&
+    !space.primaryMember.displayName.startsWith('users/')
+  ) {
+    return space.primaryMember.displayName;
+  }
+
+  return space.displayName;
+}
+
+function getChatSpaceAvatarUrl(space: GoogleChatSpace) {
+  if (space.spaceType !== 'DIRECT_MESSAGE') {
+    return undefined;
+  }
+
+  if (space.primaryMember?.avatarUrl) {
+    return space.primaryMember.avatarUrl;
+  }
+
+  for (let index = space.messages.length - 1; index >= 0; index -= 1) {
+    const message = space.messages[index];
+
+    if (!isBotMessage(message) && message.senderAvatarUrl) {
+      return message.senderAvatarUrl;
+    }
+  }
+
+  return undefined;
+}
+
+function getChatSpaceAvatarProduct(space: GoogleChatSpace) {
+  const latestMessage = space.messages.at(-1);
+
+  return isBotMessage(latestMessage)
+    ? inferProductFromMessage(latestMessage) ?? 'chat'
+    : undefined;
+}
+
 function getAttachmentLink(attachment: GoogleChatAttachment) {
+  if (attachment.webViewLink) {
+    return attachment.webViewLink;
+  }
+
   if (attachment.downloadUri) {
     return attachment.downloadUri;
   }
@@ -161,12 +236,23 @@ function getAttachmentLink(attachment: GoogleChatAttachment) {
 function getAttachmentKind(attachment: GoogleChatAttachment) {
   const value = `${attachment.contentType} ${attachment.fileName}`.toLowerCase();
 
-  if (value.includes('spreadsheet') || /\.(csv|xls|xlsx)$/i.test(attachment.fileName)) {
+  if (value.includes('google-apps.spreadsheet') ||
+    value.includes('spreadsheet') ||
+    /\.(csv|xls|xlsx)$/i.test(attachment.fileName)) {
     return 'sheet';
   }
 
-  if (value.includes('presentation') || /\.(ppt|pptx)$/i.test(attachment.fileName)) {
+  if (value.includes('google-apps.presentation') ||
+    value.includes('presentation') ||
+    /\.(ppt|pptx)$/i.test(attachment.fileName)) {
     return 'slides';
+  }
+
+  if (value.includes('google-apps.document') ||
+    value.includes('wordprocessingml') ||
+    value.includes('msword') ||
+    /\.(doc|docx)$/i.test(attachment.fileName)) {
+    return 'doc';
   }
 
   if (value.includes('zip') || /\.(zip|7z|rar)$/i.test(attachment.fileName)) {
@@ -184,29 +270,190 @@ function getAttachmentKind(attachment: GoogleChatAttachment) {
   return 'file';
 }
 
+function getAttachmentPreviewSrc(attachment: GoogleChatAttachment) {
+  const previewUri = attachment.thumbnailUri;
+  const uploadedPreviewSrc = getAttachmentUploadedPreviewSrc(attachment);
+  const kind = getAttachmentKind(attachment);
+
+  if (!previewUri) {
+    if (kind === 'image' || kind === 'slides' || kind === 'doc' || kind === 'sheet') {
+      return uploadedPreviewSrc;
+    }
+
+    return undefined;
+  }
+
+  if (/^(?:data|blob):/i.test(previewUri)) {
+    return previewUri;
+  }
+
+  if (/^https?:\/\//i.test(previewUri)) {
+    return `${workspaceApi.apiBaseUrl}/google/chat/attachment-preview?url=${encodeURIComponent(previewUri)}`;
+  }
+
+  return previewUri;
+}
+
+function getAttachmentUploadedPreviewSrc(attachment: GoogleChatAttachment) {
+  if (!attachment.attachmentResourceName) {
+    return undefined;
+  }
+
+  const token = [
+    encodeURIComponent(attachment.attachmentResourceName),
+    encodeURIComponent(attachment.fileName),
+    encodeURIComponent(attachment.contentType),
+  ].join('|');
+  const params = new URLSearchParams({ url: `chat-media:${token}` });
+
+  return `${workspaceApi.apiBaseUrl}/google/chat/attachment-preview?${params.toString()}`;
+}
+
+function getAttachmentEmbedSrc(attachment: GoogleChatAttachment) {
+  const uploadedPreviewSrc = getAttachmentUploadedPreviewSrc(attachment);
+  const kind = getAttachmentKind(attachment);
+
+  if (uploadedPreviewSrc && (kind === 'pdf' || kind === 'image')) {
+    return uploadedPreviewSrc;
+  }
+
+  if (!attachment.driveFileId) {
+    return undefined;
+  }
+
+  const fileId = encodeURIComponent(attachment.driveFileId);
+  const value = `${attachment.contentType} ${attachment.fileName}`.toLowerCase();
+
+  if (value.includes('google-apps.presentation')) {
+    return `https://docs.google.com/presentation/d/${fileId}/embed?start=false&loop=false&delayms=3000`;
+  }
+
+  if (value.includes('google-apps.spreadsheet')) {
+    return `https://docs.google.com/spreadsheets/d/${fileId}/preview`;
+  }
+
+  if (value.includes('google-apps.document')) {
+    return `https://docs.google.com/document/d/${fileId}/preview`;
+  }
+
+  return `https://drive.google.com/file/d/${fileId}/preview`;
+}
+
+function getAttachmentTypeLabel(attachment: GoogleChatAttachment) {
+  const kind = getAttachmentKind(attachment);
+
+  if (kind === 'sheet') {
+    return 'Sheet';
+  }
+
+  if (kind === 'slides') {
+    return 'Slides';
+  }
+
+  if (kind === 'doc') {
+    return 'Doc';
+  }
+
+  if (kind === 'image') {
+    return 'Image';
+  }
+
+  if (kind === 'pdf') {
+    return 'PDF';
+  }
+
+  if (kind === 'archive') {
+    return 'ZIP';
+  }
+
+  return 'File';
+}
+
+function getAttachmentTone(attachment: GoogleChatAttachment) {
+  const kind = getAttachmentKind(attachment);
+
+  if (kind === 'sheet') {
+    return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
+  }
+
+  if (kind === 'slides') {
+    return 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300';
+  }
+
+  if (kind === 'image' || kind === 'pdf') {
+    return 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300';
+  }
+
+  if (kind === 'archive') {
+    return 'border-purple-500/30 bg-purple-500/10 text-purple-700 dark:text-purple-300';
+  }
+
+  return 'border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300';
+}
+
+function formatAttachmentSize(sizeBytes: number | undefined) {
+  if (!sizeBytes || sizeBytes <= 0) {
+    return undefined;
+  }
+
+  if (sizeBytes < 1024) {
+    return `${sizeBytes} B`;
+  }
+
+  if (sizeBytes < 1024 * 1024) {
+    return `${(sizeBytes / 1024).toFixed(sizeBytes < 10 * 1024 ? 1 : 0)} KB`;
+  }
+
+  return `${(sizeBytes / (1024 * 1024)).toFixed(sizeBytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
 function ChatAvatar({
   avatarUrl,
   className,
+  label,
   product,
+  variant = 'person',
 }: {
   avatarUrl?: string;
   className?: string;
   label?: string;
-  product?: 'chat' | 'drive';
-  seed?: string;
+  product?: 'chat' | 'drive' | 'figma';
+  variant?: 'person' | 'space';
 }) {
-  if (avatarUrl) {
+  const avatarSrc = getChatAvatarSrc(avatarUrl);
+
+  if (avatarSrc) {
     return (
       <span className={cn('block shrink-0 overflow-hidden rounded-full bg-muted', className)}>
-        <img alt="" className="size-full object-cover" referrerPolicy="no-referrer" src={avatarUrl} />
+        <img alt="" className="size-full object-cover" referrerPolicy="no-referrer" src={avatarSrc} />
       </span>
     );
   }
 
   if (product) {
     return (
-      <span className={cn('grid shrink-0 place-items-center rounded-full bg-muted', className)}>
-        <GoogleProductIcon decorative product={product} size={22} />
+      <span className={cn('grid shrink-0 place-items-center overflow-hidden rounded-[10px] bg-transparent', className)}>
+        <GoogleProductIcon decorative product={product} size={product === 'drive' ? 46 : 36} />
+      </span>
+    );
+  }
+
+  if (variant === 'space') {
+    return (
+      <span
+        className={cn(
+          'grid shrink-0 place-items-center rounded-[10px] bg-[#30284C] text-[#8B7CFF]',
+          className,
+        )}
+        aria-label={label}
+      >
+        <span className="grid w-[58%] gap-[12%]">
+          <span className="grid grid-cols-2 gap-[12%]">
+            <span className="aspect-square rounded-[2px] border-[3px] border-current" />
+            <span className="aspect-square rounded-[2px] border-[3px] border-current" />
+          </span>
+          <span className="h-[3px] rounded-full bg-current" />
+        </span>
       </span>
     );
   }
@@ -214,11 +461,11 @@ function ChatAvatar({
   return (
     <span
       className={cn(
-        'grid shrink-0 place-items-center rounded-full border bg-muted text-muted-foreground',
+        'grid shrink-0 place-items-center rounded-full border bg-[#1f2937] text-lg font-bold text-[#93c5fd]',
         className,
       )}
     >
-      <UserRound className="size-[54%]" />
+      {getAvatarInitial(label) || <UserRound className="size-[54%] text-muted-foreground" />}
     </span>
   );
 }
@@ -235,6 +482,10 @@ function ChatAttachmentIcon({ attachment }: { attachment: GoogleChatAttachment }
     return <Presentation className={cn(className, 'text-amber-600')} />;
   }
 
+  if (kind === 'doc') {
+    return <FileText className={cn(className, 'text-blue-600')} />;
+  }
+
   if (kind === 'archive') {
     return <FileArchive className={cn(className, 'text-purple-600')} />;
   }
@@ -249,49 +500,87 @@ function ChatAttachmentIcon({ attachment }: { attachment: GoogleChatAttachment }
 function ChatAttachmentCard({ attachment }: { attachment: GoogleChatAttachment }) {
   const [thumbnailFailed, setThumbnailFailed] = useState(false);
   const link = getAttachmentLink(attachment);
-  const hasThumbnail = Boolean(attachment.thumbnailUri && !thumbnailFailed);
-  const content = (
-    <>
-      <div className="grid aspect-[16/9] place-items-center overflow-hidden bg-muted/55">
-        {hasThumbnail ? (
-          <img
-            alt=""
-            className="size-full object-cover"
-            onError={() => setThumbnailFailed(true)}
-            src={attachment.thumbnailUri}
-          />
-        ) : (
-          <div className="grid size-16 place-items-center rounded-xl bg-background/80 shadow-sm">
-            <ChatAttachmentIcon attachment={attachment} />
-          </div>
-        )}
-      </div>
-      <div className="flex min-w-0 items-center gap-2.5 border-t bg-background/80 px-3.5 py-2.5">
-        <ChatAttachmentIcon attachment={attachment} />
-        <span className="min-w-0 flex-1 truncate text-sm font-black">{attachment.fileName}</span>
-        {link ? <ExternalLink className="size-4 shrink-0 text-muted-foreground" /> : null}
-      </div>
-    </>
-  );
-
-  if (!link) {
-    return (
-      <div className="w-full max-w-md overflow-hidden rounded-xl border bg-background shadow-sm">
-        {content}
-      </div>
-    );
-  }
+  const previewSrc = getAttachmentPreviewSrc(attachment);
+  const embedSrc = getAttachmentEmbedSrc(attachment);
+  const hasThumbnail = Boolean(previewSrc && !thumbnailFailed);
+  const sizeLabel = formatAttachmentSize(attachment.sizeBytes);
+  const typeLabel = getAttachmentTypeLabel(attachment);
+  const showEmbed = Boolean(embedSrc && !hasThumbnail);
 
   return (
-    <a
-      className="block w-full max-w-md overflow-hidden rounded-xl border bg-background shadow-sm transition hover:border-primary/45 hover:bg-muted/40"
-      href={link}
-      rel="noreferrer"
-      target="_blank"
+    <div
+      className="w-full max-w-[360px] overflow-hidden rounded-xl border bg-background shadow-sm transition hover:border-primary/45"
       title={attachment.fileName}
     >
-      {content}
-    </a>
+      <div className="relative grid aspect-[16/9] overflow-hidden bg-muted/55">
+        {showEmbed ? (
+          <iframe
+            className="size-full border-0 bg-background"
+            loading="lazy"
+            referrerPolicy="no-referrer-when-downgrade"
+            src={embedSrc}
+            title={`${attachment.fileName} preview`}
+          />
+        ) : hasThumbnail ? (
+          link ? (
+            <a href={link} rel="noreferrer" target="_blank">
+              <img
+                alt=""
+                className="size-full object-cover"
+                onError={() => setThumbnailFailed(true)}
+                src={previewSrc}
+              />
+            </a>
+          ) : (
+            <img
+              alt=""
+              className="size-full object-cover"
+              onError={() => setThumbnailFailed(true)}
+              src={previewSrc}
+            />
+          )
+        ) : (
+          <div className="grid size-full place-items-center">
+            <div className={cn('grid size-20 place-items-center rounded-2xl border shadow-sm', getAttachmentTone(attachment))}>
+              {attachment.iconLink ? (
+                <img alt="" className="size-9 object-contain" src={attachment.iconLink} />
+              ) : (
+                <ChatAttachmentIcon attachment={attachment} />
+              )}
+            </div>
+          </div>
+        )}
+        <span className={cn('absolute left-2 top-2 rounded-md border px-2 py-1 text-[11px] font-black uppercase tracking-normal backdrop-blur', getAttachmentTone(attachment))}>
+          {typeLabel}
+        </span>
+      </div>
+      <div className="grid min-w-0 gap-1 border-t bg-background/85 px-3.5 py-2.5">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <ChatAttachmentIcon attachment={attachment} />
+          <span className="min-w-0 flex-1 truncate text-sm font-black">{attachment.fileName}</span>
+          {link ? (
+            <a
+              aria-label={`Open ${attachment.fileName}`}
+              className="rounded-md p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+              href={link}
+              rel="noreferrer"
+              target="_blank"
+            >
+              <ExternalLink className="size-4 shrink-0" />
+            </a>
+          ) : null}
+        </div>
+        <div className="flex min-w-0 items-center gap-2 pl-7 text-xs font-semibold text-muted-foreground">
+          <span>{typeLabel}</span>
+          {sizeLabel ? (
+            <>
+              <span aria-hidden="true">·</span>
+              <span>{sizeLabel}</span>
+            </>
+          ) : null}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -301,32 +590,31 @@ function ChatMessageBubble({ language, message }: { language: 'en' | 'ko'; messa
   const hasText = Boolean(message.text.trim());
 
   return (
-    <div className="flex min-w-0 items-start gap-3.5">
+    <div className="flex min-w-0 items-start gap-3">
       <ChatAvatar
         avatarUrl={message.senderAvatarUrl}
-        className="size-11"
+        className="size-10"
         label={message.sender}
         product={product}
-        seed={getSenderSeed(message)}
       />
       <div className="min-w-0 flex-1">
-        <div className="mb-1.5 flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
-          <strong className="min-w-0 truncate text-base font-black">{message.sender}</strong>
+        <div className="mb-1 flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+          <strong className="min-w-0 truncate text-sm font-black">{message.sender}</strong>
           {message.senderEmail && message.senderEmail !== message.sender ? (
-            <span className="truncate text-sm font-semibold text-muted-foreground">{message.senderEmail}</span>
+            <span className="truncate text-xs font-semibold text-muted-foreground">{message.senderEmail}</span>
           ) : null}
-          <span className="text-sm font-bold text-muted-foreground">
+          <span className="text-xs font-bold text-muted-foreground">
             {formatDateTime(message.createdAt, language)}
           </span>
         </div>
-        <div className="space-y-2.5">
+        <div className="space-y-2">
           {hasText ? (
-            <div className="max-w-3xl rounded-2xl rounded-tl-sm bg-muted/55 px-4 py-3 text-base font-semibold leading-7">
+            <div className="max-w-3xl rounded-2xl rounded-tl-sm bg-muted/55 px-3.5 py-2.5 text-sm font-semibold leading-6">
               <p className="whitespace-pre-line break-words">{message.text}</p>
             </div>
           ) : null}
           {attachments.length > 0 ? (
-            <div className="grid gap-2">
+            <div className="grid max-w-3xl gap-2 sm:grid-cols-[repeat(auto-fit,minmax(260px,360px))]">
               {attachments.map((attachment) => (
                 <ChatAttachmentCard attachment={attachment} key={attachment.name || attachment.fileName} />
               ))}
@@ -356,12 +644,18 @@ function GoogleChatView() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const selectedChat = chatSpaces.find((item) => item.name === selectedId) ?? chatSpaces[0];
+  const needsPeopleApiSetup = error?.toLowerCase().includes('people api') ?? false;
+  const needsWorkspaceSignIn =
+    error?.toLowerCase().includes('session expired') ||
+    error?.toLowerCase().includes('sign-in required') ||
+    error?.toLowerCase().includes('sign in again') ||
+    false;
 
   useEffect(() => {
     let isMounted = true;
 
     workspaceApi
-      .getGoogleChatSpaces({ search: submittedSearch, pageSize: 30 })
+      .getGoogleChatSpaces({ search: submittedSearch, pageSize: 150 })
       .then((response) => {
         if (!isMounted) {
           return;
@@ -408,16 +702,16 @@ function GoogleChatView() {
   };
 
   return (
-    <Card className="flex min-h-[620px] flex-col gap-0 overflow-hidden rounded-xl bg-card py-0 shadow-none xl:h-full xl:min-h-0">
-      <CardHeader className="border-b px-3 py-2">
+    <Card className="flex min-h-[580px] flex-col gap-0 overflow-hidden rounded-xl bg-card py-0 shadow-none xl:h-full xl:min-h-0">
+      <CardHeader className="border-b px-3 py-1.5">
         <form className="flex min-w-0 items-center gap-2" onSubmit={handleSearch}>
-          <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-muted">
-            <GoogleProductIcon decorative product="chat" size={20} />
+          <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-muted">
+            <GoogleProductIcon decorative product="chat" size={18} />
           </span>
           <div className="relative min-w-0 flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
-              className="h-8 pl-9 font-semibold"
+              className="h-7 pl-8 text-sm font-semibold"
               onChange={(event) => setSearchText(event.target.value)}
               placeholder={dictionary.googleCommunicationSearchChat}
               value={searchText}
@@ -425,27 +719,27 @@ function GoogleChatView() {
           </div>
           <Button
             aria-label={dictionary.googleCommunicationSearchChat}
-            className="size-8 shrink-0"
+            className="size-7 shrink-0"
             size="icon"
             type="submit"
             variant="outline"
           >
-            <Search className="size-4" />
+            <Search className="size-3.5" />
           </Button>
           <Button
-            className="size-8 shrink-0"
+            className="size-7 shrink-0"
             onClick={handleRefresh}
             size="icon"
             type="button"
             variant="outline"
           >
-            <RefreshCw className={cn('size-4', isLoading && 'animate-spin')} />
+            <RefreshCw className={cn('size-3.5', isLoading && 'animate-spin')} />
           </Button>
-          <Badge className="h-8 shrink-0 rounded-lg px-2.5 text-xs" variant="outline">
+          <Badge className="h-7 shrink-0 rounded-lg px-2 text-xs" variant="outline">
             {chatSpaces.length} {dictionary.googleCommunicationSpacesUnit}
           </Badge>
-          <Button className="h-8 shrink-0 px-3" disabled size="sm" type="button">
-            <MessageSquarePlus className="size-4" />
+          <Button className="h-7 shrink-0 px-2.5 text-xs" disabled size="sm" type="button">
+            <MessageSquarePlus className="size-3.5" />
             <span>{dictionary.googleCommunicationNewChat}</span>
           </Button>
         </form>
@@ -460,22 +754,36 @@ function GoogleChatView() {
             <Button
               className="mt-4"
               onClick={() => {
+                if (needsPeopleApiSetup) {
+                  window.open('https://console.cloud.google.com/apis/library/people.googleapis.com', '_blank', 'noopener,noreferrer');
+                  return;
+                }
+
+                if (needsWorkspaceSignIn) {
+                  window.location.href = workspaceApi.getGoogleLoginUrl(window.location.pathname);
+                  return;
+                }
+
                 window.location.href = `${workspaceApi.apiBaseUrl}/google/integrations/google_chat/connect`;
               }}
               type="button"
             >
-              {dictionary.reconnectGoogle}
+              {needsPeopleApiSetup
+                ? 'Open People API setup'
+                : needsWorkspaceSignIn
+                  ? 'Sign in again'
+                  : dictionary.reconnectGoogle}
             </Button>
           </div>
         </CardContent>
       ) : (
         <CardContent className="grid min-h-0 flex-1 gap-0 p-0 xl:grid-cols-[minmax(320px,420px)_minmax(0,1fr)]">
-          <div className="min-h-0 border-r max-xl:border-b max-xl:border-r-0">
-            <div className="flex items-center justify-between px-4 py-3">
-              <h3 className="text-base font-black">{dictionary.googleCommunicationSpaces}</h3>
+          <div className="flex min-h-0 flex-col border-r max-xl:border-b max-xl:border-r-0">
+            <div className="flex items-center justify-between px-3.5 py-2.5">
+              <h3 className="text-sm font-black">{dictionary.googleCommunicationSpaces}</h3>
             </div>
             <Separator />
-            <div className="grid max-h-[360px] gap-1 overflow-y-auto p-2 xl:max-h-none">
+            <div className="grid min-h-0 flex-1 content-start gap-0 overflow-y-auto max-xl:max-h-[440px]">
               {isLoading ? (
                 <div className="flex items-center gap-2 rounded-lg border bg-muted/35 p-4 text-sm font-bold text-muted-foreground">
                   <RefreshCw className="size-4 animate-spin" />
@@ -491,41 +799,43 @@ function GoogleChatView() {
                 const active = space.name === selectedId;
                 const latestMessage = space.messages.at(-1);
                 const attachments = latestMessage?.attachments ?? [];
-                const product = isBotMessage(latestMessage)
-                  ? inferProductFromMessage(latestMessage) ?? 'chat'
-                  : undefined;
+                const title = getChatSpaceTitle(space);
+                const avatarUrl = getChatSpaceAvatarUrl(space);
+                const product = avatarUrl ? undefined : getChatSpaceAvatarProduct(space);
 
                 return (
                   <Button
                     className={cn(
-                      'h-auto min-w-0 justify-start rounded-lg p-3 text-left hover:bg-muted',
-                      active && 'bg-muted text-foreground',
+                      'h-auto min-w-0 justify-start rounded-none border-b border-border/80 px-3.5 py-2.5 text-left hover:bg-muted/70',
+                      active && 'bg-muted text-foreground hover:bg-muted',
                     )}
                     key={space.name}
                     onClick={() => setSelectedId(space.name)}
                     type="button"
                     variant="ghost"
                   >
-                    <div className="grid min-w-0 flex-1 grid-cols-[48px_minmax(0,1fr)_auto] items-center gap-3.5">
+                    <div className="grid min-w-0 flex-1 grid-cols-[56px_minmax(0,1fr)_auto] items-center gap-2.5">
                       <ChatAvatar
-                        avatarUrl={latestMessage?.senderAvatarUrl}
+                        avatarUrl={avatarUrl}
                         className="size-12"
-                        label={space.displayName}
+                        label={title}
                         product={product}
-                        seed={getSenderSeed(latestMessage) ?? space.name}
+                        variant={space.spaceType === 'DIRECT_MESSAGE' ? 'person' : 'space'}
                       />
                       <div className="min-w-0">
-                        <div className="flex min-w-0 items-center gap-1.5">
-                          <strong className="min-w-0 truncate text-base">{space.displayName}</strong>
+                        <div className="flex min-w-0 items-center gap-2">
+                          <strong className="min-w-0 truncate text-[17px] font-semibold leading-tight text-foreground/80">
+                            {title}
+                          </strong>
                           {attachments.length > 0 ? (
                             <Paperclip className="size-4 shrink-0 text-muted-foreground" />
                           ) : null}
                         </div>
-                        <p className="mt-1 line-clamp-1 text-sm font-semibold text-muted-foreground">
+                        <p className="mt-1 line-clamp-1 text-[14px] font-semibold leading-tight text-muted-foreground">
                           {getChatPreview(space, language)}
                         </p>
                       </div>
-                      <span className="shrink-0 self-start pt-0.5 text-sm font-black text-muted-foreground">
+                      <span className="shrink-0 self-start pt-0.5 text-xs font-bold text-muted-foreground">
                         {formatRelativeTime(space.lastActiveTime, language)}
                       </span>
                     </div>
@@ -538,21 +848,19 @@ function GoogleChatView() {
           <div className="flex min-h-0 flex-col">
             {selectedChat ? (
               <>
-                <div className="border-b p-5">
+                <div className="border-b p-4">
                   <div className="flex min-w-0 items-center justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-3">
                       <ChatAvatar
-                        avatarUrl={selectedChat.messages.at(-1)?.senderAvatarUrl}
-                        className="size-14"
-                        label={selectedChat.displayName}
-                        product={isBotMessage(selectedChat.messages.at(-1))
-                          ? inferProductFromMessage(selectedChat.messages.at(-1)) ?? 'chat'
-                          : undefined}
-                        seed={getSenderSeed(selectedChat.messages.at(-1)) ?? selectedChat.name}
+                        avatarUrl={getChatSpaceAvatarUrl(selectedChat)}
+                        className="size-12"
+                        label={getChatSpaceTitle(selectedChat)}
+                        product={getChatSpaceAvatarUrl(selectedChat) ? undefined : getChatSpaceAvatarProduct(selectedChat)}
+                        variant={selectedChat.spaceType === 'DIRECT_MESSAGE' ? 'person' : 'space'}
                       />
                       <div className="min-w-0">
-                        <h3 className="truncate text-2xl font-black">{selectedChat.displayName}</h3>
-                        <p className="mt-1 truncate text-base font-semibold text-muted-foreground">
+                        <h3 className="truncate text-xl font-semibold text-foreground/85">{getChatSpaceTitle(selectedChat)}</h3>
+                        <p className="mt-1 truncate text-sm font-semibold text-muted-foreground">
                           {getSpaceTypeLabel(selectedChat.spaceType, language)}
                           {selectedChat.messages.length > 0
                             ? ` · ${selectedChat.messages.length} ${language === 'ko' ? '메시지' : 'messages'}`
@@ -566,7 +874,7 @@ function GoogleChatView() {
                     </Badge>
                   </div>
                 </div>
-                <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
+                <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
                   {selectedChat.messages.length === 0 ? (
                     <p className="rounded-lg border bg-muted/35 p-4 text-sm font-bold text-muted-foreground">
                       {dictionary.googleCommunicationNoChatMessages}
@@ -576,9 +884,9 @@ function GoogleChatView() {
                     <ChatMessageBubble key={message.name} language={language} message={message} />
                   ))}
                 </div>
-                <div className="flex gap-2 border-t p-4">
+                <div className="flex gap-2 border-t p-3.5">
                   <Input
-                    className="h-10 font-semibold"
+                    className="h-9 text-sm font-semibold"
                     disabled
                     placeholder={dictionary.googleCommunicationSendMessage}
                   />

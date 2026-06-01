@@ -3,33 +3,29 @@ import { useLanguage } from '../context/LanguageContext';
 import { getHolidayForDate } from '../i18n';
 import { badgeColorClasses, timelineTextClasses } from '@/lib/colorStyles';
 import { cn } from '@/lib/utils';
-import { Button } from './ui/button';
-import { Progress } from './ui/progress';
+import {
+  CalendarProgressIndicator,
+  defaultCalendarProgressThresholds,
+  type CalendarProgressDisplay,
+  type CalendarProgressThresholds,
+} from './CalendarProgressIndicator';
 
 interface DayCellProps {
   day: CalendarDay;
+  isExpanded?: boolean;
+  isSelected?: boolean;
   onSelect: () => void;
+  progressDisplay?: CalendarProgressDisplay;
+  progressThresholds?: CalendarProgressThresholds;
 }
 
-const fallbackEventTimes: Record<string, string> = {
-  assignment: '11:59',
-  bug: '13:30',
-  customer: '15:00',
-  discussion: '14:30',
-  exam: '10:00',
-  feature: '10:00',
-  lecture: '09:00',
-  meeting: '15:00',
-  milestone: '17:00',
-  note: '16:00',
-  quiz: '14:00',
-  release: '17:00',
-  routine: '07:30',
-  study: '13:00',
-  todo: '11:00',
-};
-
 function getDateIsoFromDayId(dayId: string) {
+  const isoDateMatch = dayId.match(/\d{4}-\d{2}-\d{2}$/);
+
+  if (isoDateMatch) {
+    return isoDateMatch[0];
+  }
+
   const [, monthDay] = dayId.split('-');
 
   if (!monthDay || monthDay.length !== 4) {
@@ -39,58 +35,110 @@ function getDateIsoFromDayId(dayId: string) {
   return `2026-${monthDay.slice(0, 2)}-${monthDay.slice(2)}`;
 }
 
-export function DayCell({ day, onSelect }: DayCellProps) {
-  const { dictionary, language } = useLanguage();
-  const dateIso = getDateIsoFromDayId(day.id);
+function isSundayIsoDate(dateIso: string) {
+  const [year, month, day] = dateIso.split('-').map((value) => Number.parseInt(value, 10));
+
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+    return false;
+  }
+
+  return new Date(Date.UTC(year, month - 1, day)).getUTCDay() === 0;
+}
+
+function getTodayIsoDate() {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = `${today.getMonth() + 1}`.padStart(2, '0');
+  const day = `${today.getDate()}`.padStart(2, '0');
+
+  return `${year}-${month}-${day}`;
+}
+
+export function DayCell({
+  day,
+  isExpanded = false,
+  isSelected = false,
+  onSelect,
+  progressDisplay = 'linear',
+  progressThresholds = defaultCalendarProgressThresholds,
+}: DayCellProps) {
+  const { language } = useLanguage();
+  const dateIso = day.dateIso ?? getDateIsoFromDayId(day.id);
   const holiday = dateIso ? getHolidayForDate(language, dateIso) : undefined;
+  const isToday = day.isToday || dateIso === getTodayIsoDate();
+  const isRedDate = !day.outsideMonth && Boolean(holiday || day.isSunday || (dateIso && isSundayIsoDate(dateIso)));
+  const todayLabel = language === 'ko' ? '오늘' : 'Today';
+  const workloadLabel = language === 'ko' ? '업무량' : 'Workload';
 
   return (
-    <Button
+    <button
       className={cn(
-        'relative block h-full min-h-[124px] min-w-0 overflow-hidden rounded-none border-0 border-r border-b bg-card p-2.5 text-left text-foreground shadow-none transition hover:z-10 hover:bg-muted',
+        'relative h-full min-h-0 w-full min-w-0 overflow-hidden rounded-none border-0 border-r border-b bg-card p-0 text-left text-foreground shadow-none transition hover:z-10 hover:bg-muted',
+        'block whitespace-normal align-top outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50',
         'month-calendar-day',
         day.outsideMonth && 'bg-muted/35 text-muted-foreground',
+        isToday && 'z-10 bg-primary/5 ring-2 ring-inset ring-primary/45 hover:bg-primary/10',
+        isSelected && 'z-20 bg-primary/10 ring-2 ring-inset ring-primary shadow-[inset_0_0_0_1px_hsl(var(--primary)/0.35)] hover:bg-primary/15',
       )}
+      aria-pressed={isSelected}
       onClick={onSelect}
       type="button"
-      variant="ghost"
     >
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <span
-          className={cn('text-xs font-black', holiday && !day.outsideMonth && 'text-red-500')}
-          title={holiday?.label}
-        >
-          {day.dateNumber}
-        </span>
-        <span className="truncate text-[11px] font-bold text-muted-foreground">{day.status}</span>
-      </div>
-      <Progress
-        aria-label={`${day.progress}% routine progress`}
-        className="mb-2 h-1.5"
-        value={day.progress}
-      />
-      <div className="space-y-1">
-        {day.events.slice(0, 3).map((event) => (
+      <div className="absolute inset-x-1.5 top-1.5">
+        <div className="mb-1 flex min-w-0 items-center gap-1.5">
           <span
             className={cn(
-              'grid min-h-5 grid-cols-[34px_minmax(0,1fr)] items-center gap-1 rounded-lg border px-1.5 py-0.5 text-[11px] font-extrabold',
-              badgeColorClasses[event.color],
+              'inline-flex h-5 min-w-5 items-center justify-center justify-self-start rounded-full px-1 text-[11px] font-black',
+              isRedDate && 'text-red-500',
+              isToday && 'bg-primary text-primary-foreground shadow-sm',
             )}
-            key={event.id}
+            title={holiday ? `${todayLabel} · ${holiday.label}` : isToday ? todayLabel : undefined}
           >
-            <time className="text-[10px] opacity-75">{event.time ?? fallbackEventTimes[event.type] ?? dictionary.allDay}</time>
-            <span className="truncate">{event.title}</span>
+            {day.dateNumber}
           </span>
-        ))}
-      </div>
-      {day.timelineBar ? (
-        <div className={cn('relative -mx-2.5 mt-1 flex h-5 items-center', timelineTextClasses[day.timelineBar.color])}>
-          <span className="absolute left-0 top-1/2 h-0.5 w-full -translate-y-1/2 bg-current opacity-25" />
-          <span className="relative ml-2 max-w-[calc(100%-1rem)] truncate rounded-md border border-current bg-card px-1.5 py-0.5 text-[10px] font-black">
-            {day.timelineBar.label}
-          </span>
+          {isToday ? (
+            <span className="truncate rounded-md bg-primary/10 px-1 py-0.5 text-[9px] font-black uppercase text-primary">
+              {todayLabel}
+            </span>
+          ) : null}
+          <span className="min-w-0 flex-1" />
+          <CalendarProgressIndicator
+            className={progressDisplay === 'linear' ? 'max-w-[112px] flex-1' : undefined}
+            display={progressDisplay}
+            label={workloadLabel}
+            size="compact"
+            thresholds={progressThresholds}
+            value={day.progress}
+            valueLabel={day.progressLabel}
+          />
         </div>
-      ) : null}
-    </Button>
+        <div className="space-y-0.5">
+          {day.events.slice(0, isExpanded ? 5 : 3).map((event) => (
+            <span
+              className={cn(
+                'flex min-h-[18px] min-w-0 items-center gap-1 rounded-md border px-1 py-0.5 text-[10px] font-extrabold',
+                badgeColorClasses[event.color],
+              )}
+              key={event.id}
+            >
+              {event.courseLabel ? (
+                <span className="max-w-[58px] shrink-0 truncate rounded bg-background/40 px-1 text-[9px] font-black">
+                  {event.courseLabel}
+                </span>
+              ) : null}
+              <span className="truncate">{event.title}</span>
+            </span>
+          ))}
+        </div>
+        {day.timelineBar ? (
+          <div className={cn('relative -mx-1.5 mt-0.5 flex h-4 items-center', timelineTextClasses[day.timelineBar.color])}>
+            <span className="absolute left-0 top-1/2 h-0.5 w-full -translate-y-1/2 bg-current opacity-25" />
+            <span className="relative ml-1.5 max-w-[calc(100%-0.75rem)] truncate rounded-md border border-current bg-card px-1 py-0.5 text-[9px] font-black">
+              {day.timelineBar.label}
+            </span>
+          </div>
+        ) : null}
+      </div>
+    </button>
   );
 }

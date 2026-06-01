@@ -1,0 +1,15 @@
+FROM mcr.microsoft.com/dotnet/sdk:10.0
+
+WORKDIR /workspace/backend/Incos.Workspace.Api
+
+COPY backend/Incos.Workspace.Api/Incos.Workspace.Api.csproj ./
+RUN dotnet restore
+
+ENV ASPNETCORE_ENVIRONMENT=Development
+ENV ASPNETCORE_URLS=http://+:6272
+ENV DOTNET_USE_POLLING_FILE_WATCHER=1
+ENV DOTNET_WATCH_RESTART_ON_RUDE_EDIT=1
+
+EXPOSE 6272
+
+CMD ["sh", "-c", "dotnet restore && dotnet watch run --no-launch-profile --urls http://0.0.0.0:6272"]

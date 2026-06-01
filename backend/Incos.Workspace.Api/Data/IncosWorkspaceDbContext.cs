@@ -7,6 +7,7 @@ public sealed class IncosWorkspaceDbContext(DbContextOptions<IncosWorkspaceDbCon
     : DbContext(options)
 {
     public DbSet<User> Users => Set<User>();
+    public DbSet<UserSetting> UserSettings => Set<UserSetting>();
     public DbSet<WorkspaceMode> WorkspaceModes => Set<WorkspaceMode>();
     public DbSet<ModeSetting> ModeSettings => Set<ModeSetting>();
     public DbSet<CalendarItem> CalendarItems => Set<CalendarItem>();
@@ -39,6 +40,15 @@ public sealed class IncosWorkspaceDbContext(DbContextOptions<IncosWorkspaceDbCon
             entity.HasIndex(user => user.Email).IsUnique();
             entity.Property(user => user.Email).HasMaxLength(320);
             entity.Property(user => user.DisplayName).HasMaxLength(160);
+        });
+
+        modelBuilder.Entity<UserSetting>(entity =>
+        {
+            entity.ToTable("user_settings");
+            entity.HasIndex(setting => new { setting.UserKey, setting.SettingKey }).IsUnique();
+            entity.Property(setting => setting.UserKey).HasMaxLength(320);
+            entity.Property(setting => setting.SettingKey).HasMaxLength(120);
+            entity.Property(setting => setting.SettingJson).HasColumnType("jsonb");
         });
 
         modelBuilder.Entity<WorkspaceMode>(entity =>

@@ -10,7 +10,9 @@ public static class GoogleWorkspaceScopes
     public const string GmailSend = "https://www.googleapis.com/auth/gmail.send";
     public const string ChatSpacesReadonly = "https://www.googleapis.com/auth/chat.spaces.readonly";
     public const string ChatMessagesReadonly = "https://www.googleapis.com/auth/chat.messages.readonly";
+    public const string ChatMembershipsReadonly = "https://www.googleapis.com/auth/chat.memberships.readonly";
     public const string DirectoryReadonly = "https://www.googleapis.com/auth/directory.readonly";
+    public const string AdminDirectoryUserReadonly = "https://www.googleapis.com/auth/admin.directory.user.readonly";
 
     public static readonly string[] Calendar =
     [
@@ -34,6 +36,8 @@ public static class GoogleWorkspaceScopes
     [
         ChatSpacesReadonly,
         ChatMessagesReadonly,
+        ChatMembershipsReadonly,
+        DirectoryReadonly,
     ];
 
     public static readonly string[] All =
@@ -46,6 +50,7 @@ public static class GoogleWorkspaceScopes
         GmailSend,
         ChatSpacesReadonly,
         ChatMessagesReadonly,
+        ChatMembershipsReadonly,
         DirectoryReadonly,
     ];
 }

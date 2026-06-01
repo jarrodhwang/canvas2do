@@ -1,7 +1,7 @@
 services:
   postgres:
     image: postgres:18
-    container_name: incos-workspace-postgres
+    container_name: incos-workspace-postgres-dev
     restart: unless-stopped
     environment:
       POSTGRES_DB: incos_workspace
@@ -10,7 +10,7 @@ services:
     ports:
       - "6060:5432"
     volumes:
-      - incos-postgres-data:/var/lib/postgresql
+      - incos-postgres-data-dev:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U incos -d incos_workspace"]
       interval: 10s
@@ -20,15 +20,17 @@ services:
   api:
     build:
       context: .
-      dockerfile: backend/Incos.Workspace.Api/Dockerfile
-    container_name: incos-workspace-api
+      dockerfile: backend/Incos.Workspace.Api/Dockerfile.dev
+    container_name: incos-workspace-api-dev
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:6272
+      DOTNET_USE_POLLING_FILE_WATCHER: "1"
+      DOTNET_WATCH_RESTART_ON_RUDE_EDIT: "1"
       ConnectionStrings__IncosWorkspace: Host=postgres;Port=5432;Database=incos_workspace;Username=incos;Password=incos123
       Database__EnsureCreated: "true"
       Authentication__Google__ClientId: ${GOOGLE_CLIENT_ID:-}
@@ -43,21 +45,44 @@ services:
     ports:
       - "6272:6272"
     volumes:
-      - incos-static-images:/var/www/incos-static/images
+      - .:/workspace
+      - incos-nuget-cache-dev:/root/.nuget/packages
+      - incos-static-images-dev:/var/www/incos-static/images
 
   frontend:
     build:
       context: .
-      dockerfile: frontend/Dockerfile
-    container_name: incos-workspace-frontend
+      dockerfile: frontend/Dockerfile.dev
+    container_name: incos-workspace-frontend-dev
     restart: unless-stopped
     depends_on:
       - api
-    ports:
-      - "6173:6173"
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
+      VITE_API_BASE_URL: /api
+      VITE_API_PROXY_TARGET: http://api:6272
     volumes:
-      - incos-static-images:/var/www/incos-static/images:ro
+      - ./frontend:/app
+      - incos-frontend-node-modules-dev:/app/node_modules
+      - incos-static-images-dev:/app/public/static/images
+
+  nginx:
+    image: nginx:alpine
+    container_name: incos-workspace-nginx-dev
+    restart: unless-stopped
+    depends_on:
+      - frontend
+      - api
+    ports:
+      - "6173:80"
+    volumes:
+      - ./nginx/dev.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/friendly-50x.html:/usr/share/nginx/html/friendly-50x.html:ro
+      - incos-static-images-dev:/var/www/incos-static/images:ro
 
 volumes:
-  incos-postgres-data:
-  incos-static-images:
+  incos-postgres-data-dev:
+  incos-nuget-cache-dev:
+  incos-frontend-node-modules-dev:
+  incos-static-images-dev:

@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace Incos.Workspace.Api.Contracts;
 
 public sealed record WorkspaceModeDto(
@@ -36,6 +38,25 @@ public sealed record CreateCalendarItemRequest(
     DateTimeOffset? DueAt,
     string? RelatedEntityType,
     Guid? RelatedEntityId);
+
+public sealed record AcademyPreferencesDto(
+    JsonElement ManualLectures,
+    JsonElement CanvasLecturePreferences,
+    JsonElement ManualCoursework,
+    JsonElement CanvasCourseworkPreferences,
+    JsonElement ManualAssessments,
+    JsonElement CanvasAssessmentPreferences,
+    JsonElement CalendarSettings,
+    bool Exists);
+
+public sealed record SaveAcademyPreferencesRequest(
+    JsonElement ManualLectures,
+    JsonElement CanvasLecturePreferences,
+    JsonElement ManualCoursework,
+    JsonElement CanvasCourseworkPreferences,
+    JsonElement ManualAssessments,
+    JsonElement CanvasAssessmentPreferences,
+    JsonElement CalendarSettings);
 
 public sealed record StaticImageConfigDto(
     string PublicBasePath,
@@ -208,14 +229,27 @@ public sealed record GoogleChatAttachmentDto(
     string Source,
     string? ThumbnailUri = null,
     string? DownloadUri = null,
-    string? DriveFileId = null);
+    string? DriveFileId = null,
+    string? AttachmentResourceName = null,
+    string? WebViewLink = null,
+    string? IconLink = null,
+    long? SizeBytes = null);
 
 public sealed record GoogleChatSpaceDto(
     string Name,
     string DisplayName,
     string SpaceType,
     DateTimeOffset? LastActiveTime,
-    GoogleChatMessageDto[] Messages);
+    GoogleChatMessageDto[] Messages,
+    GoogleChatMemberDto? PrimaryMember = null,
+    GoogleChatMemberDto[]? Members = null);
+
+public sealed record GoogleChatMemberDto(
+    string Name,
+    string DisplayName,
+    string? Email = null,
+    string? AvatarUrl = null,
+    string? Type = null);
 
 public sealed record GoogleChatSpacesDto(
     string? Search,
@@ -267,8 +301,93 @@ public sealed record CanvasCourseDto(
     string? WorkflowState,
     DateTimeOffset? StartAt,
     DateTimeOffset? EndAt,
-    string? HtmlUrl);
+    string? HtmlUrl,
+    double? CurrentScore,
+    string? CurrentGrade);
 
 public sealed record CanvasCoursesDto(
     CanvasCourseDto[] Courses,
     string? TermName = null);
+
+public sealed record CanvasCourseTabDto(
+    string Id,
+    string Label,
+    string? Type,
+    string? Visibility,
+    bool Hidden,
+    string? HtmlUrl);
+
+public sealed record CanvasCourseModuleItemDto(
+    string Id,
+    string Title,
+    string? Type,
+    string? HtmlUrl,
+    string? ExternalUrl,
+    DateTimeOffset? CompletionRequirementCompletedAt);
+
+public sealed record CanvasCourseModuleDto(
+    string Id,
+    string Name,
+    int? Position,
+    int? ItemCount,
+    CanvasCourseModuleItemDto[] Items);
+
+public sealed record CanvasCourseAnnouncementDto(
+    string Id,
+    string Title,
+    string? Message,
+    DateTimeOffset? PostedAt,
+    string? HtmlUrl);
+
+public sealed record CanvasCourseAssignmentDto(
+    string Id,
+    string Name,
+    string? Description,
+    DateTimeOffset? DueAt,
+    double? PointsPossible,
+    string? HtmlUrl,
+    string[] SubmissionTypes,
+    bool IsSubmitted);
+
+public sealed record CanvasCourseContentDto(
+    CanvasCourseDto Course,
+    CanvasCourseTabDto[] Tabs,
+    CanvasCourseModuleDto[] Modules,
+    CanvasCourseAnnouncementDto[] Announcements,
+    CanvasCourseAssignmentDto[] Assignments,
+    string? SyllabusBody);
+
+public sealed record CanvasCalendarItemDto(
+    string Id,
+    string Title,
+    string Type,
+    string? CourseId,
+    string? CourseCode,
+    string? CourseName,
+    DateTimeOffset? StartAt,
+    DateTimeOffset? EndAt,
+    DateTimeOffset? DueAt,
+    string? HtmlUrl,
+    string? ContextCode,
+    string[] SubmissionTypes,
+    string? AssignmentId,
+    bool IsSubmitted);
+
+public sealed record CanvasCalendarItemsDto(
+    CanvasCalendarItemDto[] Items);
+
+public sealed record CanvasInboxItemDto(
+    string Id,
+    string Title,
+    string? Message,
+    string Type,
+    string? CourseId,
+    string? CourseCode,
+    string? CourseName,
+    DateTimeOffset? CreatedAt,
+    DateTimeOffset? UpdatedAt,
+    string? HtmlUrl,
+    string? ReadState);
+
+public sealed record CanvasInboxItemsDto(
+    CanvasInboxItemDto[] Items);

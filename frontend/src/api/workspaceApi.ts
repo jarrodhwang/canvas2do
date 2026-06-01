@@ -64,8 +64,12 @@ function isHtmlErrorResponse(response: Response, text: string) {
 }
 
 function getFriendlyServerErrorMessage(response: Response) {
-  if (response.status === 401 || response.status === 403) {
-    return 'Your workspace session expired. Sign in again, then try sending once more.';
+  if (response.status === 401) {
+    return 'Your workspace session expired. Sign in again, then refresh this view.';
+  }
+
+  if (response.status === 403) {
+    return 'The workspace server blocked this request. Sign in again or refresh the workspace.';
   }
 
   if (response.status === 404 || response.status === 405) {
@@ -187,11 +191,127 @@ export interface CanvasCourse {
   startAt?: string;
   endAt?: string;
   htmlUrl?: string;
+  currentScore?: number;
+  currentGrade?: string;
 }
 
 export interface CanvasCourses {
   courses: CanvasCourse[];
   termName?: string;
+}
+
+export interface CanvasCourseTab {
+  id: string;
+  label: string;
+  type?: string;
+  visibility?: string;
+  hidden: boolean;
+  htmlUrl?: string;
+}
+
+export interface CanvasCourseModuleItem {
+  id: string;
+  title: string;
+  type?: string;
+  htmlUrl?: string;
+  externalUrl?: string;
+  completionRequirementCompletedAt?: string;
+}
+
+export interface CanvasCourseModule {
+  id: string;
+  name: string;
+  position?: number;
+  itemCount?: number;
+  items: CanvasCourseModuleItem[];
+}
+
+export interface CanvasCourseAnnouncement {
+  id: string;
+  title: string;
+  message?: string;
+  postedAt?: string;
+  htmlUrl?: string;
+}
+
+export interface CanvasCourseAssignment {
+  id: string;
+  name: string;
+  description?: string;
+  dueAt?: string;
+  pointsPossible?: number;
+  htmlUrl?: string;
+  submissionTypes: string[];
+  isSubmitted: boolean;
+}
+
+export interface CanvasCourseContent {
+  course: CanvasCourse;
+  tabs: CanvasCourseTab[];
+  modules: CanvasCourseModule[];
+  announcements: CanvasCourseAnnouncement[];
+  assignments: CanvasCourseAssignment[];
+  syllabusBody?: string;
+}
+
+export interface CanvasCalendarItem {
+  id: string;
+  title: string;
+  type: string;
+  courseId?: string;
+  courseCode?: string;
+  courseName?: string;
+  startAt?: string;
+  endAt?: string;
+  dueAt?: string;
+  htmlUrl?: string;
+  contextCode?: string;
+  submissionTypes?: string[];
+  assignmentId?: string;
+  isSubmitted?: boolean;
+}
+
+export interface CanvasCalendarItems {
+  items: CanvasCalendarItem[];
+}
+
+export interface CanvasInboxItem {
+  id: string;
+  title: string;
+  message?: string;
+  type: string;
+  courseId?: string;
+  courseCode?: string;
+  courseName?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  htmlUrl?: string;
+  readState?: string;
+}
+
+export interface CanvasInboxItems {
+  items: CanvasInboxItem[];
+}
+
+export interface AcademyPreferences {
+  manualLectures: unknown[];
+  canvasLecturePreferences: Record<string, unknown>;
+  manualCoursework: unknown[];
+  canvasCourseworkPreferences: Record<string, unknown>;
+  manualAssessments: unknown[];
+  canvasAssessmentPreferences: Record<string, unknown>;
+  calendarSettings?: unknown;
+  exists: boolean;
+}
+
+export interface SaveAcademyPreferencesRequest {
+  manualLectures: unknown[];
+  canvasLecturePreferences: Record<string, unknown>;
+  manualCoursework?: unknown[];
+  canvasCourseworkPreferences?: Record<string, unknown>;
+  manualAssessments?: unknown[];
+  canvasAssessmentPreferences?: Record<string, unknown>;
+  calendarSettings?: unknown;
 }
 
 export interface MicrosoftIntegrationStatus {
@@ -392,6 +512,10 @@ export interface GoogleChatAttachment {
   thumbnailUri?: string;
   downloadUri?: string;
   driveFileId?: string;
+  attachmentResourceName?: string;
+  webViewLink?: string;
+  iconLink?: string;
+  sizeBytes?: number;
 }
 
 export interface GoogleChatSpace {
@@ -400,6 +524,16 @@ export interface GoogleChatSpace {
   spaceType: string;
   lastActiveTime?: string;
   messages: GoogleChatMessage[];
+  primaryMember?: GoogleChatMember;
+  members?: GoogleChatMember[];
+}
+
+export interface GoogleChatMember {
+  name: string;
+  displayName: string;
+  email?: string;
+  avatarUrl?: string;
+  type?: string;
 }
 
 export interface GoogleChatSpaces {
@@ -473,7 +607,7 @@ export const workspaceApi = {
   },
 
   async getCanvasCourses(pageSize = 5) {
-    const params = new URLSearchParams({ pageSize: String(Math.min(Math.max(pageSize, 1), 5)) });
+    const params = new URLSearchParams({ pageSize: String(Math.min(Math.max(pageSize, 1), 50)) });
     const response = await fetch(`${apiBaseUrl}/canvas/courses?${params.toString()}`, {
       credentials: 'include',
     });
@@ -485,6 +619,111 @@ export const workspaceApi = {
     }
 
     return response.json() as Promise<CanvasCourses>;
+  },
+
+  async getCanvasCourseContent(courseId: string) {
+    const response = await fetch(`${apiBaseUrl}/canvas/courses/${encodeURIComponent(courseId)}/content`, {
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to load Canvas course content.');
+
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<CanvasCourseContent>;
+  },
+
+  async getCanvasCalendarItems(options: { startDate?: string; endDate?: string; pageSize?: number } = {}) {
+    const timeout = createRequestTimeout(30000);
+    const params = new URLSearchParams();
+
+    if (options.startDate) {
+      params.set('startDate', options.startDate);
+    }
+
+    if (options.endDate) {
+      params.set('endDate', options.endDate);
+    }
+
+    if (options.pageSize) {
+      params.set('pageSize', String(options.pageSize));
+    }
+
+    const query = params.toString();
+    let response: Response;
+
+    try {
+      response = await fetch(`${apiBaseUrl}/canvas/calendar-items${query ? `?${query}` : ''}`, {
+        credentials: 'include',
+        signal: timeout.signal,
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new Error('Canvas calendar took too long to respond. Check Canvas API status and try again.');
+      }
+
+      throw new Error('Unable to reach the workspace API. Check that the API container is running.');
+    } finally {
+      timeout.cancel();
+    }
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to load Canvas calendar items.');
+
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<CanvasCalendarItems>;
+  },
+
+  async getCanvasInboxItems(pageSize = 50) {
+    const params = new URLSearchParams({ pageSize: String(Math.min(Math.max(pageSize, 1), 100)) });
+    const response = await fetch(`${apiBaseUrl}/canvas/inbox-items?${params.toString()}`, {
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to load Canvas inbox items.');
+
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<CanvasInboxItems>;
+  },
+
+  async getAcademyPreferences() {
+    const response = await fetch(`${apiBaseUrl}/academy/preferences`, {
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to load Academy preferences.');
+
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<AcademyPreferences>;
+  },
+
+  async saveAcademyPreferences(preferences: SaveAcademyPreferencesRequest) {
+    const response = await fetch(`${apiBaseUrl}/academy/preferences`, {
+      body: JSON.stringify(preferences),
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'PUT',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to save Academy preferences.');
+
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<AcademyPreferences>;
   },
 
   async getMicrosoftIntegrations() {

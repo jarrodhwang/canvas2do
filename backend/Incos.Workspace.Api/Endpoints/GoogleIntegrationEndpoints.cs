@@ -33,10 +33,20 @@ public static class GoogleIntegrationEndpoints
     private const string ScheduledGmailStatusSent = "sent";
     private const string ScheduledGmailStatusFailed = "failed";
     private const string ScheduledGmailStatusCancelled = "cancelled";
+    private const int ChatSpaceLoadConcurrency = 6;
+    private const int ChatMemberProfileLookupLimit = 10;
+    private const int ChatDirectoryProfileQueryLimit = 8;
+    private const int ChatDirectoryProfileFallbackLimit = 4;
+    private const int ChatAttachmentMetadataLimit = 10;
+    private const int ChatAttachmentPreviewMaxBytes = 25 * 1024 * 1024;
+    private static readonly TimeSpan ChatProfileCacheDuration = TimeSpan.FromHours(8);
+    private static readonly TimeSpan ChatProfileMissCacheDuration = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan ChatPeopleQuotaCooldown = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan ChatAttachmentMetadataCacheDuration = TimeSpan.FromMinutes(30);
     private const string ChatMessageFields =
-        "messages(name,text,argumentText,formattedText,createTime,sender(name,displayName,email,type),attachment(name,contentName,contentType,thumbnailUri,downloadUri,source,driveDataRef(driveFileId))),nextPageToken";
+        "messages(name,text,argumentText,formattedText,createTime,sender(name,displayName,email,type),attachment(name,contentName,contentType,thumbnailUri,downloadUri,source,attachmentDataRef(resourceName),driveDataRef(driveFileId))),nextPageToken";
     private const string ChatMessageFieldsWithAvatar =
-        "messages(name,text,argumentText,formattedText,createTime,sender(name,displayName,email,type,avatarUrl),attachment(name,contentName,contentType,thumbnailUri,downloadUri,source,driveDataRef(driveFileId))),nextPageToken";
+        "messages(name,text,argumentText,formattedText,createTime,sender(name,displayName,email,type,avatarUrl),attachment(name,contentName,contentType,thumbnailUri,downloadUri,source,attachmentDataRef(resourceName),driveDataRef(driveFileId))),nextPageToken";
 
     private sealed record GmailMessagesPage(
         GoogleGmailMessageDto[] Messages,
@@ -1021,11 +1031,54 @@ public static class GoogleIntegrationEndpoints
                         statusCode: StatusCodes.Status409Conflict);
                 }
 
-                var safePageSize = Math.Clamp(pageSize ?? 12, 1, 40);
+                var tokenScopes = await GetGoogleAccessTokenScopesAsync(
+                    httpClientFactory,
+                    accessToken,
+                    cancellationToken);
+                var missingChatScopes = tokenScopes.Count > 0
+                    ? GoogleWorkspaceScopes.Chat
+                        .Where(scope => !tokenScopes.Contains(scope))
+                        .ToArray()
+                    : [];
+
+                if (missingChatScopes.Length > 0)
+                {
+                    return Results.Problem(
+                        title: "Google Chat needs profile permission.",
+                        detail: "Reconnect Google Chat so sender names and Workspace profile photos can be resolved.",
+                        statusCode: StatusCodes.Status409Conflict);
+                }
+
+                var userCachePrefix = GetUserCachePrefix(context.User);
+                var currentUserKey = GetCurrentUserKey(context.User);
+                var profileResolutionCacheKey = $"{userCachePrefix}:chat:profile-resolution";
+                var profileResolution = await cache.GetOrCreateAsync(
+                        profileResolutionCacheKey,
+                        async entry =>
+                        {
+                            entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10);
+                            return await CheckGoogleChatProfileResolutionAsync(
+                                httpClientFactory,
+                                accessToken,
+                                tokenScopes,
+                                currentUserKey,
+                                cancellationToken);
+                        }) ??
+                    new GoogleChatProfileResolutionStatus(true, null, null);
+
+                if (!profileResolution.Available)
+                {
+                    return Results.Problem(
+                        title: profileResolution.Title,
+                        detail: profileResolution.Detail,
+                        statusCode: StatusCodes.Status409Conflict);
+                }
+
+                var safePageSize = Math.Clamp(pageSize ?? 120, 1, 250);
                 var cacheKey = string.Join(
                     ':',
-                    GetUserCachePrefix(context.User),
-                    "chat",
+                    userCachePrefix,
+                    "chat-v2",
                     search?.Trim() ?? "spaces",
                     safePageSize);
 
@@ -1035,10 +1088,13 @@ public static class GoogleIntegrationEndpoints
                             cacheKey,
                             async entry =>
                             {
-                                entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(30);
+                                entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(2);
                                 return await GetChatSpacesAsync(
                                     httpClientFactory,
+                                    cache,
                                     accessToken,
+                                    context.User,
+                                    userCachePrefix,
                                     search,
                                     safePageSize,
                                     cancellationToken);
@@ -1056,6 +1112,156 @@ public static class GoogleIntegrationEndpoints
                 }
             })
             .WithName("GetGoogleChatSpaces");
+
+        google.MapGet("/chat/avatar", async (
+                HttpContext context,
+                IHttpClientFactory httpClientFactory,
+                IConfiguration configuration,
+                string url,
+                CancellationToken cancellationToken) =>
+            {
+                var accessToken = await GetGoogleAccessTokenAsync(
+                    context,
+                    httpClientFactory,
+                    configuration,
+                    cancellationToken);
+
+                if (string.IsNullOrWhiteSpace(accessToken))
+                {
+                    return Results.Problem(
+                        title: "Google Chat is not connected.",
+                        detail: "Reconnect Google Chat so profile images can be loaded.",
+                        statusCode: StatusCodes.Status409Conflict);
+                }
+
+                try
+                {
+                    var avatar = await GetGoogleAvatarImageAsync(
+                        httpClientFactory,
+                        accessToken,
+                        url,
+                        cancellationToken);
+
+                    return Results.File(
+                        avatar.Content,
+                        avatar.ContentType,
+                        enableRangeProcessing: false);
+                }
+                catch (GoogleApiRequestException exception)
+                {
+                    return Results.Problem(
+                        title: exception.Title,
+                        detail: exception.Detail,
+                        statusCode: exception.StatusCode);
+                }
+            })
+            .WithName("GetGoogleChatAvatar");
+
+        google.MapGet("/chat/attachment-preview", async (
+                HttpContext context,
+                IHttpClientFactory httpClientFactory,
+                IConfiguration configuration,
+                string url,
+                CancellationToken cancellationToken) =>
+            {
+                var accessToken = await GetGoogleAccessTokenAsync(
+                    context,
+                    httpClientFactory,
+                    configuration,
+                    cancellationToken);
+
+                if (string.IsNullOrWhiteSpace(accessToken))
+                {
+                    return Results.Problem(
+                        title: "Google Chat is not connected.",
+                        detail: "Reconnect Google Chat so attachment previews can be loaded.",
+                        statusCode: StatusCodes.Status409Conflict);
+                }
+
+                try
+                {
+                    var preview = TryParseChatMediaPreviewToken(url, out var previewRequest)
+                        ? await GetGoogleChatAttachmentPreviewPayloadAsync(
+                            httpClientFactory,
+                            accessToken,
+                            previewRequest.ResourceName,
+                            previewRequest.FileName,
+                            previewRequest.ContentType,
+                            cancellationToken)
+                        : await GetGoogleAvatarImagePayloadAsync(
+                            httpClientFactory,
+                            accessToken,
+                            url,
+                            cancellationToken);
+
+                    return Results.File(
+                        preview.Content,
+                        preview.ContentType,
+                        enableRangeProcessing: false);
+                }
+                catch (GoogleApiRequestException exception) when (exception.StatusCode is
+                    StatusCodes.Status403Forbidden or
+                    StatusCodes.Status404NotFound)
+                {
+                    return Results.NotFound();
+                }
+                catch (GoogleApiRequestException exception)
+                {
+                    return Results.Problem(
+                        title: exception.Title,
+                        detail: exception.Detail,
+                        statusCode: exception.StatusCode);
+                }
+            })
+            .WithName("GetGoogleChatAttachmentPreview");
+
+        google.MapGet("/chat/attachment-content", async (
+                HttpContext context,
+                IHttpClientFactory httpClientFactory,
+                IConfiguration configuration,
+                string resourceName,
+                string? fileName,
+                string? contentType,
+                CancellationToken cancellationToken) =>
+            {
+                var accessToken = await GetGoogleAccessTokenAsync(
+                    context,
+                    httpClientFactory,
+                    configuration,
+                    cancellationToken);
+
+                if (string.IsNullOrWhiteSpace(accessToken))
+                {
+                    return Results.Problem(
+                        title: "Google Chat is not connected.",
+                        detail: "Reconnect Google Chat so attachment previews can be loaded.",
+                        statusCode: StatusCodes.Status409Conflict);
+                }
+
+                try
+                {
+                    var media = await GetGoogleChatAttachmentMediaAsync(
+                        httpClientFactory,
+                        accessToken,
+                        resourceName,
+                        fileName,
+                        contentType,
+                        cancellationToken);
+
+                    return Results.File(
+                        media.Content,
+                        media.ContentType,
+                        enableRangeProcessing: false);
+                }
+                catch (GoogleApiRequestException exception)
+                {
+                    return Results.Problem(
+                        title: exception.Title,
+                        detail: exception.Detail,
+                        statusCode: exception.StatusCode);
+                }
+            })
+            .WithName("GetGoogleChatAttachmentContent");
 
         return app;
     }
@@ -1135,6 +1341,43 @@ public static class GoogleIntegrationEndpoints
         }
 
         return refreshedToken.AccessToken;
+    }
+
+    private static async Task<HashSet<string>> GetGoogleAccessTokenScopesAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        CancellationToken cancellationToken)
+    {
+        var requestUrl = QueryHelpers.AddQueryString(
+            "https://www.googleapis.com/oauth2/v3/tokeninfo",
+            new Dictionary<string, string?>
+            {
+                ["access_token"] = accessToken,
+            });
+        string payload;
+
+        try
+        {
+            payload = await SendGoogleGetAsync(
+                httpClientFactory,
+                accessToken,
+                requestUrl,
+                "Google token scope check failed.",
+                cancellationToken);
+        }
+        catch (GoogleApiRequestException)
+        {
+            return [];
+        }
+
+        using var document = JsonDocument.Parse(payload);
+        var scopes = GetJsonString(document.RootElement, "scope");
+
+        return string.IsNullOrWhiteSpace(scopes)
+            ? []
+            : scopes
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
     private static bool ShouldRefreshAccessToken(string? accessToken, string? expiresAt)
@@ -1375,6 +1618,172 @@ public static class GoogleIntegrationEndpoints
         return scopesClaim
             .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static async Task<GoogleChatProfileResolutionStatus> CheckGoogleChatProfileResolutionAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        HashSet<string> tokenScopes,
+        string currentUserKey,
+        CancellationToken cancellationToken)
+    {
+        var peopleStatus = await CheckGooglePeopleDirectoryAvailableAsync(
+            httpClientFactory,
+            accessToken,
+            cancellationToken);
+
+        if (peopleStatus.Available)
+        {
+            return peopleStatus;
+        }
+
+        if (tokenScopes.Contains(GoogleWorkspaceScopes.AdminDirectoryUserReadonly))
+        {
+            var adminStatus = await CheckGoogleAdminDirectoryAvailableAsync(
+                httpClientFactory,
+                accessToken,
+                currentUserKey,
+                cancellationToken);
+
+            if (adminStatus.Available)
+            {
+                return adminStatus;
+            }
+        }
+
+        return peopleStatus with
+        {
+            Title = "Google Chat profiles cannot be resolved.",
+            Detail = peopleStatus.Detail,
+        };
+    }
+
+    private static async Task<GoogleChatProfileResolutionStatus> CheckGooglePeopleDirectoryAvailableAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        CancellationToken cancellationToken)
+    {
+        var requestUrl = QueryHelpers.AddQueryString(
+            "https://people.googleapis.com/v1/people:listDirectoryPeople",
+            new Dictionary<string, string?>
+            {
+                ["readMask"] = "names",
+                ["sources"] = "DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE",
+                ["pageSize"] = "1",
+                ["fields"] = "people(resourceName,names(displayName)),nextPageToken",
+            });
+
+        try
+        {
+            await SendGoogleGetAsync(
+                httpClientFactory,
+                accessToken,
+                requestUrl,
+                "Google People directory check failed.",
+                cancellationToken);
+
+            return new GoogleChatProfileResolutionStatus(true, null, null);
+        }
+        catch (GoogleApiRequestException exception) when (exception.StatusCode is
+            StatusCodes.Status400BadRequest or
+            StatusCodes.Status403Forbidden or
+            StatusCodes.Status404NotFound)
+        {
+            return new GoogleChatProfileResolutionStatus(
+                false,
+                "Google People API must be enabled.",
+                CreateGooglePeopleSetupDetail(exception.Detail));
+        }
+        catch (GoogleApiRequestException exception) when (IsGooglePeopleQuotaExceeded(exception))
+        {
+            return new GoogleChatProfileResolutionStatus(true, null, null);
+        }
+    }
+
+    private static async Task<GoogleChatProfileResolutionStatus> CheckGoogleAdminDirectoryAvailableAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        string currentUserKey,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(currentUserKey) ||
+            !currentUserKey.Contains('@', StringComparison.Ordinal))
+        {
+            return new GoogleChatProfileResolutionStatus(
+                false,
+                "Google Workspace Directory cannot be checked.",
+                "The signed-in Google account email was not available.");
+        }
+
+        var requestUrl = QueryHelpers.AddQueryString(
+            $"https://admin.googleapis.com/admin/directory/v1/users/{Uri.EscapeDataString(currentUserKey)}",
+            new Dictionary<string, string?>
+            {
+                ["projection"] = "basic",
+                ["fields"] = "id",
+            });
+
+        try
+        {
+            await SendGoogleGetAsync(
+                httpClientFactory,
+                accessToken,
+                requestUrl,
+                "Google Workspace Admin Directory check failed.",
+                cancellationToken);
+
+            return new GoogleChatProfileResolutionStatus(true, null, null);
+        }
+        catch (GoogleApiRequestException exception) when (exception.StatusCode is
+            StatusCodes.Status400BadRequest or
+            StatusCodes.Status403Forbidden or
+            StatusCodes.Status404NotFound)
+        {
+            return new GoogleChatProfileResolutionStatus(
+                false,
+                "Google Workspace Directory permission is unavailable.",
+                "The signed-in account cannot read Workspace Directory profiles through Admin SDK.");
+        }
+    }
+
+    private static string CreateGooglePeopleSetupDetail(string googleErrorDetail)
+    {
+        var googleMessage = ExtractGoogleErrorMessage(googleErrorDetail);
+
+        if (googleMessage.Contains("has not been used", StringComparison.OrdinalIgnoreCase) ||
+            googleMessage.Contains("disabled", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Enable Google People API in the Google Cloud project used by this app, then refresh Chat. Google Chat only returns user IDs, so People API or Admin Directory is required for real names and profile photos.";
+        }
+
+        return string.IsNullOrWhiteSpace(googleMessage)
+            ? "Google Chat only returns user IDs. Enable Google People API, or grant Workspace Directory read access, so names and profile photos can be resolved."
+            : googleMessage;
+    }
+
+    private static string ExtractGoogleErrorMessage(string googleErrorDetail)
+    {
+        if (string.IsNullOrWhiteSpace(googleErrorDetail))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(googleErrorDetail);
+
+            if (document.RootElement.TryGetProperty("error", out var errorElement) &&
+                errorElement.ValueKind == JsonValueKind.Object)
+            {
+                return GetJsonString(errorElement, "message") ?? googleErrorDetail;
+            }
+        }
+        catch (JsonException)
+        {
+            return googleErrorDetail;
+        }
+
+        return googleErrorDetail;
     }
 
     private static string GetCurrentUserKey(ClaimsPrincipal user) =>
@@ -2461,58 +2870,145 @@ public static class GoogleIntegrationEndpoints
 
     private static async Task<GoogleChatSpaceDto[]> GetChatSpacesAsync(
         IHttpClientFactory httpClientFactory,
+        IMemoryCache cache,
         string accessToken,
+        ClaimsPrincipal currentUser,
+        string userCachePrefix,
         string? search,
         int pageSize,
         CancellationToken cancellationToken)
     {
-        var requestUrl = QueryHelpers.AddQueryString(
-            "https://chat.googleapis.com/v1/spaces",
-            new Dictionary<string, string?>
-            {
-                ["pageSize"] = pageSize.ToString(CultureInfo.InvariantCulture),
-                ["fields"] = "spaces(name,displayName,spaceType,type,lastActiveTime,spaceUri),nextPageToken",
-            });
-        var payload = await SendGoogleGetAsync(
-            httpClientFactory,
-            accessToken,
-            requestUrl,
-            "Google Chat spaces request failed.",
-            cancellationToken);
-
-        using var document = JsonDocument.Parse(payload);
-
-        if (!document.RootElement.TryGetProperty("spaces", out var spacesElement))
-        {
-            return [];
-        }
-
-        var searchTerm = search?.Trim();
-        var spaces = spacesElement
-            .EnumerateArray()
-            .Select(CreateGoogleChatSpaceSeed)
-            .Take(pageSize)
-            .ToArray();
-        var spacesWithMessages = await Task.WhenAll(spaces.Select(async space =>
-        {
-            var messages = await GetChatMessagesAsync(
+        var currentUserKey = GetCurrentUserKey(currentUser);
+        var currentUserProfile = await GetGoogleUserInfoProfileAsync(
                 httpClientFactory,
                 accessToken,
-                space.Name,
-                cancellationToken);
+                cancellationToken) ??
+            CreateCurrentGoogleProfileFromClaims(currentUser);
+        var searchTerm = search?.Trim();
+        var spaces = await GetChatSpaceSeedsAsync(
+            httpClientFactory,
+            accessToken,
+            pageSize,
+            cancellationToken);
+        var currentChatUserName = await GetCurrentChatUserNameAsync(
+            httpClientFactory,
+            accessToken,
+            spaces.FirstOrDefault()?.Name,
+            currentUserProfile.Email ?? currentUserKey,
+            cancellationToken);
+        using var loadSemaphore = new SemaphoreSlim(ChatSpaceLoadConcurrency);
+        var spacesWithMessages = await Task.WhenAll(spaces.Select(async space =>
+        {
+            await loadSemaphore.WaitAsync(cancellationToken);
 
-            return space with
+            try
             {
-                Messages = messages,
-                DisplayName = CreateChatSpaceDisplayName(space, messages),
-                LastActiveTime = space.LastActiveTime ?? messages.LastOrDefault()?.CreatedAt,
-            };
+                var messages = await GetChatMessagesAsync(
+                    httpClientFactory,
+                    cache,
+                    accessToken,
+                    userCachePrefix,
+                    space.Name,
+                    cancellationToken);
+                var members = await GetChatMembersAsync(
+                    httpClientFactory,
+                    accessToken,
+                    space.Name,
+                    cancellationToken);
+                var senderResourceNames = GetChatSenderResourceNames(messages);
+                var enrichedMembers = await EnrichChatMembersWithGoogleProfilesAsync(
+                    httpClientFactory,
+                    cache,
+                    accessToken,
+                    userCachePrefix,
+                    members,
+                    senderResourceNames,
+                    cancellationToken);
+                enrichedMembers = ApplyCurrentUserProfileToChatMembers(
+                    enrichedMembers,
+                    currentChatUserName,
+                    currentUserProfile);
+                messages = ApplyCurrentUserProfileToMessages(
+                    messages,
+                    currentChatUserName,
+                    currentUserProfile);
+                messages = ApplyChatMemberProfilesToMessages(messages, enrichedMembers);
+                var primaryMember = SelectPrimaryChatMember(
+                    space,
+                    enrichedMembers,
+                    messages,
+                    currentUserKey,
+                    currentChatUserName);
+
+                var enrichedSpace = space with
+                {
+                    Messages = messages,
+                    Members = enrichedMembers,
+                    PrimaryMember = primaryMember,
+                    DisplayName = CreateChatSpaceDisplayName(space, messages, primaryMember, currentChatUserName),
+                    LastActiveTime = space.LastActiveTime ?? messages.LastOrDefault()?.CreatedAt,
+                };
+
+                return SanitizeChatSpaceForDisplay(enrichedSpace);
+            }
+            finally
+            {
+                loadSemaphore.Release();
+            }
         }));
 
         return spacesWithMessages
             .Where(space => string.IsNullOrWhiteSpace(searchTerm) || MatchesChatSearch(space, searchTerm))
             .OrderByDescending(space => space.LastActiveTime)
             .ThenBy(space => space.DisplayName)
+            .ToArray();
+    }
+
+    private static async Task<GoogleChatSpaceDto[]> GetChatSpaceSeedsAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        int maxSpaces,
+        CancellationToken cancellationToken)
+    {
+        var spaces = new List<GoogleChatSpaceDto>();
+        var pageToken = (string?)null;
+
+        do
+        {
+            var remaining = Math.Max(1, maxSpaces - spaces.Count);
+            var requestUrl = QueryHelpers.AddQueryString(
+                "https://chat.googleapis.com/v1/spaces",
+                new Dictionary<string, string?>
+                {
+                    ["pageSize"] = Math.Min(100, remaining).ToString(CultureInfo.InvariantCulture),
+                    ["pageToken"] = pageToken,
+                    ["fields"] = "spaces(name,displayName,spaceType,type,lastActiveTime,spaceUri),nextPageToken",
+                });
+            var payload = await SendGoogleGetAsync(
+                httpClientFactory,
+                accessToken,
+                requestUrl,
+                "Google Chat spaces request failed.",
+                cancellationToken);
+
+            using var document = JsonDocument.Parse(payload);
+
+            if (document.RootElement.TryGetProperty("spaces", out var spacesElement) &&
+                spacesElement.ValueKind == JsonValueKind.Array)
+            {
+                spaces.AddRange(spacesElement
+                    .EnumerateArray()
+                    .Select(CreateGoogleChatSpaceSeed));
+            }
+
+            pageToken = GetJsonString(document.RootElement, "nextPageToken");
+        }
+        while (!string.IsNullOrWhiteSpace(pageToken) && spaces.Count < maxSpaces);
+
+        return spaces
+            .GroupBy(space => space.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .Take(maxSpaces)
             .ToArray();
     }
 
@@ -2534,7 +3030,9 @@ public static class GoogleIntegrationEndpoints
 
     private static async Task<GoogleChatMessageDto[]> GetChatMessagesAsync(
         IHttpClientFactory httpClientFactory,
+        IMemoryCache cache,
         string accessToken,
+        string userCachePrefix,
         string spaceName,
         CancellationToken cancellationToken)
     {
@@ -2594,15 +3092,26 @@ public static class GoogleIntegrationEndpoints
                 .Select(CreateGoogleChatMessageDto)
                 .OrderBy(message => message.CreatedAt)
                 .ToArray();
+            messages = await EnrichChatAttachmentsWithDriveMetadataAsync(
+                httpClientFactory,
+                cache,
+                accessToken,
+                userCachePrefix,
+                messages,
+                cancellationToken);
 
             var profileEnrichedMessages = await EnrichChatMessagesWithGoogleProfilesAsync(
                 httpClientFactory,
+                cache,
                 accessToken,
+                userCachePrefix,
                 messages,
                 cancellationToken);
             var directoryEnrichedMessages = await EnrichChatMessagesWithDirectoryProfilesAsync(
                 httpClientFactory,
+                cache,
                 accessToken,
+                userCachePrefix,
                 profileEnrichedMessages,
                 cancellationToken);
 
@@ -2617,6 +3126,592 @@ public static class GoogleIntegrationEndpoints
             return [];
         }
     }
+
+    private static async Task<GoogleChatMemberDto[]> GetChatMembersAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        string spaceName,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(spaceName))
+        {
+            return [];
+        }
+
+        var memberships = await GetChatMembershipsAsync(
+            httpClientFactory,
+            accessToken,
+            spaceName,
+            includeAvatar: true,
+            cancellationToken);
+
+        if (memberships.Length == 0)
+        {
+            memberships = await GetChatMembershipsAsync(
+                httpClientFactory,
+                accessToken,
+                spaceName,
+                includeAvatar: false,
+                cancellationToken);
+        }
+
+        return memberships
+            .Where(membership =>
+            {
+                var state = GetJsonString(membership, "state");
+
+                return string.IsNullOrWhiteSpace(state) ||
+                       string.Equals(state, "JOINED", StringComparison.OrdinalIgnoreCase);
+            })
+            .Select(CreateGoogleChatMemberDto)
+            .Where(member => !string.IsNullOrWhiteSpace(member.Name))
+            .GroupBy(member => member.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToArray();
+    }
+
+    private static async Task<JsonElement[]> GetChatMembershipsAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        string spaceName,
+        bool includeAvatar,
+        CancellationToken cancellationToken)
+    {
+        var memberships = new List<JsonElement>();
+        var pageToken = (string?)null;
+
+        do
+        {
+            var requestUrl = QueryHelpers.AddQueryString(
+                $"https://chat.googleapis.com/v1/{spaceName}/members",
+                new Dictionary<string, string?>
+                {
+                    ["pageSize"] = "100",
+                    ["pageToken"] = pageToken,
+                    ["filter"] = "member.type = \"HUMAN\"",
+                    ["fields"] = includeAvatar
+                        ? "memberships(member(name,displayName,email,type,avatarUrl),state),nextPageToken"
+                        : "memberships(member(name,displayName,type),state),nextPageToken",
+                });
+            string payload;
+
+            try
+            {
+                payload = await SendGoogleGetAsync(
+                    httpClientFactory,
+                    accessToken,
+                    requestUrl,
+                    "Google Chat members request failed.",
+                    cancellationToken);
+            }
+            catch (GoogleApiRequestException exception) when (exception.StatusCode is
+                StatusCodes.Status400BadRequest or
+                StatusCodes.Status403Forbidden or
+                StatusCodes.Status404NotFound)
+            {
+                return [];
+            }
+            catch (GoogleApiRequestException exception) when (IsGooglePeopleQuotaExceeded(exception))
+            {
+                return [];
+            }
+
+            using var document = JsonDocument.Parse(payload);
+
+            if (document.RootElement.TryGetProperty("memberships", out var membershipsElement) &&
+                membershipsElement.ValueKind == JsonValueKind.Array)
+            {
+                memberships.AddRange(membershipsElement
+                    .EnumerateArray()
+                    .Select(membership => membership.Clone()));
+            }
+
+            pageToken = GetJsonString(document.RootElement, "nextPageToken");
+        }
+        while (!string.IsNullOrWhiteSpace(pageToken));
+
+        return memberships.ToArray();
+    }
+
+    private static GoogleChatMemberDto CreateGoogleChatMemberDto(JsonElement membership)
+    {
+        if (!membership.TryGetProperty("member", out var memberElement) ||
+            memberElement.ValueKind != JsonValueKind.Object)
+        {
+            return new GoogleChatMemberDto(string.Empty, string.Empty);
+        }
+
+        var name = GetJsonString(memberElement, "name") ?? string.Empty;
+        var displayName = CleanChatSenderName(GetJsonString(memberElement, "displayName")) ?? string.Empty;
+        var email = GetJsonString(memberElement, "email");
+
+        return new GoogleChatMemberDto(
+            name,
+            string.IsNullOrWhiteSpace(displayName) ? email ?? "Google Chat user" : displayName,
+            email,
+            GetJsonString(memberElement, "avatarUrl"),
+            GetJsonString(memberElement, "type"));
+    }
+
+    private static async Task<GoogleChatMemberDto[]> EnrichChatMembersWithGoogleProfilesAsync(
+        IHttpClientFactory httpClientFactory,
+        IMemoryCache cache,
+        string accessToken,
+        string userCachePrefix,
+        GoogleChatMemberDto[] members,
+        string[] priorityMemberNames,
+        CancellationToken cancellationToken)
+    {
+        if (members.Length == 0)
+        {
+            return members;
+        }
+
+        var priorityMemberNamesSet = priorityMemberNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var priorityCandidates = members
+            .Where(member => priorityMemberNamesSet.Contains(member.Name) && NeedsChatMemberProfileEnrichment(member));
+        var remainingCandidates = members
+            .Where(member => !priorityMemberNamesSet.Contains(member.Name) && NeedsChatMemberProfileEnrichment(member))
+            .Take(ChatMemberProfileLookupLimit);
+        var enrichmentCandidates = priorityCandidates
+            .Concat(remainingCandidates)
+            .DistinctBy(member => member.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (enrichmentCandidates.Length == 0)
+        {
+            return members;
+        }
+
+        var profileTasks = enrichmentCandidates.Select(async member => new
+        {
+            member.Name,
+            Member = await EnrichChatMemberWithGoogleProfileAsync(
+                httpClientFactory,
+                cache,
+                accessToken,
+                userCachePrefix,
+                member,
+                cancellationToken),
+        });
+        var enrichedMembers = (await Task.WhenAll(profileTasks))
+            .ToDictionary(result => result.Name, result => result.Member, StringComparer.OrdinalIgnoreCase);
+
+        return members
+            .Select(member => enrichedMembers.TryGetValue(member.Name, out var enrichedMember)
+                ? enrichedMember
+                : member)
+            .ToArray();
+    }
+
+    private static bool NeedsChatMemberProfileEnrichment(GoogleChatMemberDto member) =>
+        string.IsNullOrWhiteSpace(member.AvatarUrl) ||
+        string.IsNullOrWhiteSpace(member.Email) ||
+        string.IsNullOrWhiteSpace(CleanChatSenderName(member.DisplayName));
+
+    private static async Task<GoogleChatMemberDto> EnrichChatMemberWithGoogleProfileAsync(
+        IHttpClientFactory httpClientFactory,
+        IMemoryCache cache,
+        string accessToken,
+        string userCachePrefix,
+        GoogleChatMemberDto member,
+        CancellationToken cancellationToken)
+    {
+        var enrichedMember = member;
+
+        if (IsGoogleHumanUserResourceName(member.Name))
+        {
+            var profile = await GetCachedGoogleWorkspaceProfileAsync(
+                httpClientFactory,
+                cache,
+                accessToken,
+                userCachePrefix,
+                member.Name,
+                cancellationToken);
+            enrichedMember = ApplyGoogleProfileToChatMember(enrichedMember, profile);
+        }
+
+        if (!string.IsNullOrWhiteSpace(enrichedMember.AvatarUrl) &&
+            !string.IsNullOrWhiteSpace(enrichedMember.Email) &&
+            !IsGoogleHumanUserResourceName(enrichedMember.DisplayName))
+        {
+            return enrichedMember;
+        }
+
+        var directoryQuery = enrichedMember.Email ??
+                             (IsGoogleHumanUserResourceName(enrichedMember.DisplayName)
+                                 ? null
+                                 : enrichedMember.DisplayName);
+
+        if (string.IsNullOrWhiteSpace(directoryQuery))
+        {
+            return enrichedMember;
+        }
+
+        var directoryProfile = await GetCachedGoogleDirectoryProfileAsync(
+            httpClientFactory,
+            cache,
+            accessToken,
+            userCachePrefix,
+            directoryQuery,
+            cancellationToken);
+
+        return ApplyGoogleProfileToChatMember(enrichedMember, directoryProfile);
+    }
+
+    private static GoogleChatMemberDto ApplyGoogleProfileToChatMember(
+        GoogleChatMemberDto member,
+        GoogleWorkspaceProfile? profile)
+    {
+        if (profile is null)
+        {
+            return member;
+        }
+
+        return member with
+        {
+            DisplayName = CleanChatSenderName(profile.DisplayName) ??
+                          CleanChatSenderName(member.DisplayName) ??
+                          "Google Chat user",
+            Email = string.IsNullOrWhiteSpace(profile.Email) ? member.Email : profile.Email,
+            AvatarUrl = string.IsNullOrWhiteSpace(profile.PhotoUrl) ? member.AvatarUrl : profile.PhotoUrl,
+        };
+    }
+
+    private static GoogleChatMemberDto[] ApplyCurrentUserProfileToChatMembers(
+        GoogleChatMemberDto[] members,
+        string? currentChatUserName,
+        GoogleWorkspaceProfile currentUserProfile)
+    {
+        if (string.IsNullOrWhiteSpace(currentChatUserName))
+        {
+            return members;
+        }
+
+        return members
+            .Select(member => string.Equals(member.Name, currentChatUserName, StringComparison.OrdinalIgnoreCase)
+                ? ApplyGoogleProfileToChatMember(member, currentUserProfile)
+                : member)
+            .ToArray();
+    }
+
+    private static GoogleChatMessageDto[] ApplyChatMemberProfilesToMessages(
+        GoogleChatMessageDto[] messages,
+        GoogleChatMemberDto[] members)
+    {
+        if (members.Length == 0)
+        {
+            return messages;
+        }
+
+        var membersByName = members.ToDictionary(member => member.Name, StringComparer.OrdinalIgnoreCase);
+
+        return messages
+            .Select(message =>
+            {
+                if (string.IsNullOrWhiteSpace(message.SenderName) ||
+                    !membersByName.TryGetValue(message.SenderName, out var member))
+                {
+                    return message;
+                }
+
+                return message with
+                {
+                    Sender = CleanChatSenderName(member.DisplayName) ??
+                             CleanChatSenderName(message.Sender) ??
+                             "Google Chat user",
+                    SenderEmail = string.IsNullOrWhiteSpace(member.Email) ? message.SenderEmail : member.Email,
+                    SenderAvatarUrl = string.IsNullOrWhiteSpace(member.AvatarUrl) ? message.SenderAvatarUrl : member.AvatarUrl,
+                };
+            })
+            .ToArray();
+    }
+
+    private static GoogleChatMessageDto[] ApplyCurrentUserProfileToMessages(
+        GoogleChatMessageDto[] messages,
+        string? currentChatUserName,
+        GoogleWorkspaceProfile currentUserProfile)
+    {
+        if (string.IsNullOrWhiteSpace(currentChatUserName))
+        {
+            return messages;
+        }
+
+        return messages
+            .Select(message =>
+            {
+                if (!string.Equals(message.SenderName, currentChatUserName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return message;
+                }
+
+                return message with
+                {
+                    Sender = CleanChatSenderName(currentUserProfile.DisplayName) ??
+                             CleanChatSenderName(message.Sender) ??
+                             "You",
+                    SenderEmail = string.IsNullOrWhiteSpace(currentUserProfile.Email)
+                        ? message.SenderEmail
+                        : currentUserProfile.Email,
+                    SenderAvatarUrl = string.IsNullOrWhiteSpace(currentUserProfile.PhotoUrl)
+                        ? message.SenderAvatarUrl
+                        : currentUserProfile.PhotoUrl,
+                };
+            })
+            .ToArray();
+    }
+
+    private static async Task<GoogleChatMessageDto[]> EnrichChatAttachmentsWithDriveMetadataAsync(
+        IHttpClientFactory httpClientFactory,
+        IMemoryCache cache,
+        string accessToken,
+        string userCachePrefix,
+        GoogleChatMessageDto[] messages,
+        CancellationToken cancellationToken)
+    {
+        var driveFileIds = messages
+            .SelectMany(message => message.Attachments ?? [])
+            .Select(attachment => attachment.DriveFileId)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(ChatAttachmentMetadataLimit)
+            .ToArray();
+
+        if (driveFileIds.Length == 0)
+        {
+            return messages;
+        }
+
+        var metadataTasks = driveFileIds.Select(async fileId => new
+        {
+            FileId = fileId,
+            Metadata = await GetCachedChatAttachmentMetadataAsync(
+                httpClientFactory,
+                cache,
+                accessToken,
+                userCachePrefix,
+                fileId,
+                cancellationToken),
+        });
+        var metadataByFileId = (await Task.WhenAll(metadataTasks))
+            .Where(result => result.Metadata is not null)
+            .ToDictionary(
+                result => result.FileId,
+                result => result.Metadata!,
+                StringComparer.OrdinalIgnoreCase);
+
+        if (metadataByFileId.Count == 0)
+        {
+            return messages;
+        }
+
+        return messages
+            .Select(message => message with
+            {
+                Attachments = message.Attachments?
+                    .Select(attachment => EnrichChatAttachment(attachment, metadataByFileId))
+                    .ToArray(),
+            })
+            .ToArray();
+    }
+
+    private static GoogleChatAttachmentDto EnrichChatAttachment(
+        GoogleChatAttachmentDto attachment,
+        IReadOnlyDictionary<string, GoogleChatAttachmentMetadata> metadataByFileId)
+    {
+        if (string.IsNullOrWhiteSpace(attachment.DriveFileId) ||
+            !metadataByFileId.TryGetValue(attachment.DriveFileId, out var metadata))
+        {
+            return attachment;
+        }
+
+        return attachment with
+        {
+            FileName = string.IsNullOrWhiteSpace(metadata.Name) ? attachment.FileName : metadata.Name,
+            ContentType = string.IsNullOrWhiteSpace(metadata.MimeType) ? attachment.ContentType : metadata.MimeType,
+            ThumbnailUri = string.IsNullOrWhiteSpace(attachment.ThumbnailUri)
+                ? metadata.ThumbnailLink
+                : attachment.ThumbnailUri,
+            DownloadUri = string.IsNullOrWhiteSpace(attachment.DownloadUri)
+                ? metadata.WebContentLink
+                : attachment.DownloadUri,
+            AttachmentResourceName = attachment.AttachmentResourceName,
+            WebViewLink = metadata.WebViewLink,
+            IconLink = metadata.IconLink,
+            SizeBytes = metadata.SizeBytes,
+        };
+    }
+
+    private static async Task<GoogleChatAttachmentMetadata?> GetCachedChatAttachmentMetadataAsync(
+        IHttpClientFactory httpClientFactory,
+        IMemoryCache cache,
+        string accessToken,
+        string userCachePrefix,
+        string fileId,
+        CancellationToken cancellationToken)
+    {
+        var cacheKey = $"{userCachePrefix}:chat:attachment:{fileId}";
+
+        return await cache.GetOrCreateAsync(
+            cacheKey,
+            async entry =>
+            {
+                try
+                {
+                    var metadata = await GetChatAttachmentMetadataAsync(
+                        httpClientFactory,
+                        accessToken,
+                        fileId,
+                        cancellationToken);
+                    entry.AbsoluteExpirationRelativeToNow = ChatAttachmentMetadataCacheDuration;
+
+                    return metadata;
+                }
+                catch (GoogleApiRequestException exception) when (exception.StatusCode is
+                    StatusCodes.Status400BadRequest or
+                    StatusCodes.Status403Forbidden or
+                    StatusCodes.Status404NotFound)
+                {
+                    entry.AbsoluteExpirationRelativeToNow = ChatProfileMissCacheDuration;
+
+                    return null;
+                }
+            });
+    }
+
+    private static async Task<GoogleChatAttachmentMetadata?> GetChatAttachmentMetadataAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        string fileId,
+        CancellationToken cancellationToken)
+    {
+        var requestUrl = QueryHelpers.AddQueryString(
+            $"https://www.googleapis.com/drive/v3/files/{Uri.EscapeDataString(fileId)}",
+            new Dictionary<string, string?>
+            {
+                ["supportsAllDrives"] = "true",
+                ["fields"] = "id,name,mimeType,webViewLink,webContentLink,iconLink,thumbnailLink,size",
+            });
+        var payload = await SendGoogleGetAsync(
+            httpClientFactory,
+            accessToken,
+            requestUrl,
+            "Google Drive attachment metadata request failed.",
+            cancellationToken);
+
+        using var document = JsonDocument.Parse(payload);
+
+        return new GoogleChatAttachmentMetadata(
+            GetJsonString(document.RootElement, "name"),
+            GetJsonString(document.RootElement, "mimeType"),
+            GetJsonString(document.RootElement, "webViewLink"),
+            GetJsonString(document.RootElement, "webContentLink"),
+            GetJsonString(document.RootElement, "iconLink"),
+            GetJsonString(document.RootElement, "thumbnailLink"),
+            GetJsonLong(document.RootElement, "size"));
+    }
+
+    private static string[] GetChatSenderResourceNames(GoogleChatMessageDto[] messages) =>
+        messages
+            .Select(message => message.SenderName)
+            .Where(IsGoogleHumanUserResourceName)
+            .Select(senderName => senderName!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    private static GoogleChatMemberDto? SelectPrimaryChatMember(
+        GoogleChatSpaceDto space,
+        GoogleChatMemberDto[] members,
+        GoogleChatMessageDto[] messages,
+        string currentUserKey,
+        string? currentChatUserName)
+    {
+        if (members.Length == 0)
+        {
+            var latestHumanMessage = messages.LastOrDefault(message =>
+                !IsGoogleChatFallbackSender(message) &&
+                !IsCurrentGoogleChatSender(message.SenderName, currentChatUserName));
+
+            return latestHumanMessage is null
+                ? null
+                : new GoogleChatMemberDto(
+                    latestHumanMessage.SenderName ?? string.Empty,
+                    latestHumanMessage.Sender,
+                    latestHumanMessage.SenderEmail,
+                    latestHumanMessage.SenderAvatarUrl,
+                    latestHumanMessage.SenderType);
+        }
+
+        if (space.SpaceType == "DIRECT_MESSAGE")
+        {
+            var otherMember = members.FirstOrDefault(member =>
+                !IsCurrentGoogleChatMember(member, currentUserKey, currentChatUserName) &&
+                !IsUnresolvedChatMember(member));
+            var unresolvedOtherMember = members.FirstOrDefault(member =>
+                !IsCurrentGoogleChatMember(member, currentUserKey, currentChatUserName));
+
+            if (otherMember is not null || unresolvedOtherMember is not null)
+            {
+                return otherMember ?? unresolvedOtherMember;
+            }
+
+            var latestOtherHumanMessage = messages.LastOrDefault(message =>
+                !IsGoogleChatFallbackSender(message) &&
+                !IsGoogleChatAppSender(message.SenderName, message.SenderType) &&
+                !IsCurrentGoogleChatSender(message.SenderName, currentChatUserName));
+
+            return latestOtherHumanMessage is null
+                ? null
+                : new GoogleChatMemberDto(
+                    latestOtherHumanMessage.SenderName ?? string.Empty,
+                    latestOtherHumanMessage.Sender,
+                    latestOtherHumanMessage.SenderEmail,
+                    latestOtherHumanMessage.SenderAvatarUrl,
+                    latestOtherHumanMessage.SenderType);
+        }
+
+        return members.FirstOrDefault(member => !string.IsNullOrWhiteSpace(member.AvatarUrl)) ??
+               members.FirstOrDefault();
+    }
+
+    private static bool IsGoogleChatFallbackSender(GoogleChatMessageDto message) =>
+        string.Equals(message.Sender, "Google Chat", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(message.Sender, "Google Chat user", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(message.Sender, "Unknown user", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsUnresolvedChatMember(GoogleChatMemberDto member) =>
+        IsUnresolvedChatDisplayName(member.DisplayName);
+
+    private static bool IsUnresolvedChatDisplayName(string? value) =>
+        string.IsNullOrWhiteSpace(value) ||
+        string.Equals(value, "Google Chat user", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(value, "Unknown user", StringComparison.OrdinalIgnoreCase) ||
+        IsOpaqueGoogleIdentity(value);
+
+    private static bool IsCurrentGoogleChatMember(
+        GoogleChatMemberDto member,
+        string currentUserKey,
+        string? currentChatUserName)
+    {
+        if (!string.IsNullOrWhiteSpace(currentChatUserName) &&
+            string.Equals(member.Name, currentChatUserName, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(currentUserKey))
+        {
+            return false;
+        }
+
+        return string.Equals(member.Email, currentUserKey, StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(member.DisplayName, currentUserKey, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsCurrentGoogleChatSender(string? senderName, string? currentChatUserName) =>
+        !string.IsNullOrWhiteSpace(currentChatUserName) &&
+        string.Equals(senderName, currentChatUserName, StringComparison.OrdinalIgnoreCase);
 
     private static GoogleChatMessageDto CreateGoogleChatMessageDto(JsonElement message)
     {
@@ -2640,14 +3735,23 @@ public static class GoogleIntegrationEndpoints
                    GetJsonString(message, "formattedText") ??
                    string.Empty;
         var attachments = GetChatAttachments(message);
+        var normalizedText = NormalizeChatText(StripHtml(text));
         var cleanedSender = CleanChatSenderName(sender);
+        var isAppSender = IsGoogleChatAppSender(senderName, senderType);
+        var displaySender = isAppSender
+            ? InferGoogleChatAppSenderName(normalizedText)
+            : IsGoogleHumanUserResourceName(cleanedSender)
+                ? null
+                : cleanedSender;
 
         return new GoogleChatMessageDto(
             GetJsonString(message, "name") ?? string.Empty,
-            string.IsNullOrWhiteSpace(cleanedSender) ? "Google Chat" : cleanedSender,
+            string.IsNullOrWhiteSpace(displaySender)
+                ? (isAppSender ? "Google Chat" : "Google Chat user")
+                : displaySender,
             string.IsNullOrWhiteSpace(text) && attachments.Length > 0
                 ? string.Empty
-                : NormalizeChatText(StripHtml(text)),
+                : normalizedText,
             GetJsonDateTimeOffset(message, "createTime"),
             senderName,
             senderEmail,
@@ -2656,9 +3760,32 @@ public static class GoogleIntegrationEndpoints
             attachments);
     }
 
+    private static bool IsGoogleChatAppSender(string? senderName, string? senderType) =>
+        string.Equals(senderType, "BOT", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(senderName, "users/app", StringComparison.OrdinalIgnoreCase);
+
+    private static string InferGoogleChatAppSenderName(string text)
+    {
+        if (text.Contains("figma", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Figma";
+        }
+
+        if (text.Contains("google drive", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("공유", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("shared", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Google Drive";
+        }
+
+        return "Google Chat";
+    }
+
     private static async Task<GoogleChatMessageDto[]> EnrichChatMessagesWithGoogleProfilesAsync(
         IHttpClientFactory httpClientFactory,
+        IMemoryCache cache,
         string accessToken,
+        string userCachePrefix,
         GoogleChatMessageDto[] messages,
         CancellationToken cancellationToken)
     {
@@ -2676,9 +3803,11 @@ public static class GoogleIntegrationEndpoints
         var profileTasks = senderResourceNames.Select(async senderResourceName => new
         {
             SenderResourceName = senderResourceName!,
-            Profile = await GetGoogleWorkspaceProfileAsync(
+            Profile = await GetCachedGoogleWorkspaceProfileAsync(
                 httpClientFactory,
+                cache,
                 accessToken,
+                userCachePrefix,
                 senderResourceName!,
                 cancellationToken),
         });
@@ -2688,6 +3817,30 @@ public static class GoogleIntegrationEndpoints
                 result => result.SenderResourceName,
                 result => result.Profile!,
                 StringComparer.OrdinalIgnoreCase);
+
+        if (profiles.Count < senderResourceNames.Length)
+        {
+            var missingSenderResourceNames = senderResourceNames
+                .Where(senderResourceName => !profiles.ContainsKey(senderResourceName!))
+                .Select(senderResourceName => senderResourceName!)
+                .ToArray();
+            if (missingSenderResourceNames.Length <= ChatDirectoryProfileFallbackLimit)
+            {
+                var directoryProfiles = await GetGoogleDirectoryProfilesByResourceNamesAsync(
+                    httpClientFactory,
+                    accessToken,
+                    missingSenderResourceNames,
+                    cancellationToken);
+
+                foreach (var profile in directoryProfiles)
+                {
+                    foreach (var senderResourceName in GetChatUserNamesForGoogleProfile(profile))
+                    {
+                        profiles.TryAdd(senderResourceName, profile);
+                    }
+                }
+            }
+        }
 
         if (profiles.Count == 0)
         {
@@ -2705,7 +3858,9 @@ public static class GoogleIntegrationEndpoints
 
                 return message with
                 {
-                    Sender = string.IsNullOrWhiteSpace(profile.DisplayName) ? message.Sender : profile.DisplayName,
+                    Sender = CleanChatSenderName(profile.DisplayName) ??
+                             CleanChatSenderName(message.Sender) ??
+                             "Google Chat user",
                     SenderEmail = string.IsNullOrWhiteSpace(profile.Email) ? message.SenderEmail : profile.Email,
                     SenderAvatarUrl = string.IsNullOrWhiteSpace(profile.PhotoUrl) ? message.SenderAvatarUrl : profile.PhotoUrl,
                 };
@@ -2717,6 +3872,203 @@ public static class GoogleIntegrationEndpoints
         !string.IsNullOrWhiteSpace(senderResourceName) &&
         senderResourceName.StartsWith("users/", StringComparison.OrdinalIgnoreCase) &&
         !string.Equals(senderResourceName, "users/app", StringComparison.OrdinalIgnoreCase);
+
+    private static string? ConvertChatUserNameToPeopleResourceName(string? senderResourceName)
+    {
+        if (!IsGoogleHumanUserResourceName(senderResourceName))
+        {
+            return null;
+        }
+
+        var personId = senderResourceName!["users/".Length..].Trim();
+
+        return string.IsNullOrWhiteSpace(personId)
+            ? null
+            : $"people/{personId}";
+    }
+
+    private static string? GetChatUserId(string? senderResourceName)
+    {
+        if (!IsGoogleHumanUserResourceName(senderResourceName))
+        {
+            return null;
+        }
+
+        var personId = senderResourceName!["users/".Length..].Trim();
+
+        return string.IsNullOrWhiteSpace(personId) ? null : personId;
+    }
+
+    private static string? ConvertPeopleResourceNameToChatUserName(string? peopleResourceName)
+    {
+        if (string.IsNullOrWhiteSpace(peopleResourceName) ||
+            !peopleResourceName.StartsWith("people/", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var personId = peopleResourceName["people/".Length..].Trim();
+
+        return string.IsNullOrWhiteSpace(personId)
+            ? null
+            : $"users/{personId}";
+    }
+
+    private static async Task<string?> GetCurrentChatUserNameAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        string? spaceName,
+        string? currentUserEmail,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(spaceName) ||
+            string.IsNullOrWhiteSpace(currentUserEmail) ||
+            !currentUserEmail.Contains('@', StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        var requestUrl = QueryHelpers.AddQueryString(
+            $"https://chat.googleapis.com/v1/{spaceName}/members/{Uri.EscapeDataString(currentUserEmail)}",
+            new Dictionary<string, string?>
+            {
+                ["fields"] = "member(name,type),state",
+            });
+        string payload;
+
+        try
+        {
+            payload = await SendGoogleGetAsync(
+                httpClientFactory,
+                accessToken,
+                requestUrl,
+                "Google Chat current user membership request failed.",
+                cancellationToken);
+        }
+        catch (GoogleApiRequestException exception) when (exception.StatusCode is
+            StatusCodes.Status400BadRequest or
+            StatusCodes.Status403Forbidden or
+            StatusCodes.Status404NotFound)
+        {
+            return null;
+        }
+
+        using var document = JsonDocument.Parse(payload);
+
+        return document.RootElement.TryGetProperty("member", out var memberElement) &&
+               memberElement.ValueKind == JsonValueKind.Object
+            ? GetJsonString(memberElement, "name")
+            : null;
+    }
+
+    private static string[] GetChatUserNamesForGoogleProfile(GoogleWorkspaceProfile profile)
+    {
+        var names = new List<string>();
+        var resourceName = ConvertPeopleResourceNameToChatUserName(profile.ResourceName);
+
+        if (!string.IsNullOrWhiteSpace(resourceName))
+        {
+            names.Add(resourceName);
+        }
+
+        foreach (var sourceId in profile.SourceIds ?? [])
+        {
+            if (!string.IsNullOrWhiteSpace(sourceId))
+            {
+                names.Add($"users/{sourceId}");
+            }
+        }
+
+        return names
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static async Task<GoogleWorkspaceProfile?> GetCachedGoogleWorkspaceProfileAsync(
+        IHttpClientFactory httpClientFactory,
+        IMemoryCache cache,
+        string accessToken,
+        string userCachePrefix,
+        string senderResourceName,
+        CancellationToken cancellationToken)
+    {
+        if (!IsGoogleHumanUserResourceName(senderResourceName))
+        {
+            return null;
+        }
+
+        var cacheKey = $"{userCachePrefix}:chat:profile:resource:{senderResourceName}";
+        var profileEntry = await cache.GetOrCreateAsync(
+            cacheKey,
+            async entry =>
+            {
+                try
+                {
+                    var profile = await GetGoogleWorkspaceProfileAsync(
+                        httpClientFactory,
+                        accessToken,
+                        senderResourceName,
+                        cancellationToken);
+                    entry.AbsoluteExpirationRelativeToNow = profile is null
+                        ? ChatProfileMissCacheDuration
+                        : ChatProfileCacheDuration;
+
+                    return new GoogleWorkspaceProfileCacheEntry(profile);
+                }
+                catch (GoogleApiRequestException exception) when (IsGooglePeopleQuotaExceeded(exception))
+                {
+                    entry.AbsoluteExpirationRelativeToNow = ChatPeopleQuotaCooldown;
+
+                    return new GoogleWorkspaceProfileCacheEntry(null);
+                }
+            });
+
+        return profileEntry?.Profile;
+    }
+
+    private static async Task<GoogleWorkspaceProfile?> GetCachedGoogleDirectoryProfileAsync(
+        IHttpClientFactory httpClientFactory,
+        IMemoryCache cache,
+        string accessToken,
+        string userCachePrefix,
+        string query,
+        CancellationToken cancellationToken)
+    {
+        var normalizedQuery = NormalizeCacheKey(query);
+
+        if (string.IsNullOrWhiteSpace(normalizedQuery))
+        {
+            return null;
+        }
+
+        var cacheKey = $"{userCachePrefix}:chat:profile:directory:{normalizedQuery}";
+        var profileEntry = await cache.GetOrCreateAsync(
+            cacheKey,
+            async entry =>
+            {
+                try
+                {
+                    var profile = await GetGoogleDirectoryProfileAsync(
+                        httpClientFactory,
+                        accessToken,
+                        query,
+                        cancellationToken);
+                    entry.AbsoluteExpirationRelativeToNow = profile is null
+                        ? ChatProfileMissCacheDuration
+                        : ChatProfileCacheDuration;
+
+                    return new GoogleWorkspaceProfileCacheEntry(profile);
+                }
+                catch (GoogleApiRequestException exception) when (IsGooglePeopleQuotaExceeded(exception))
+                {
+                    entry.AbsoluteExpirationRelativeToNow = ChatPeopleQuotaCooldown;
+
+                    return new GoogleWorkspaceProfileCacheEntry(null);
+                }
+            });
+
+        return profileEntry?.Profile;
+    }
 
     private static async Task<GoogleWorkspaceProfile?> GetGoogleWorkspaceProfileAsync(
         IHttpClientFactory httpClientFactory,
@@ -2735,8 +4087,9 @@ public static class GoogleIntegrationEndpoints
             $"https://people.googleapis.com/v1/people/{Uri.EscapeDataString(personId)}",
             new Dictionary<string, string?>
             {
-                ["personFields"] = "names,emailAddresses,photos",
-                ["fields"] = "names(displayName),emailAddresses(value),photos(url,default)",
+                ["personFields"] = "metadata,names,emailAddresses,photos",
+                ["sources"] = "READ_SOURCE_TYPE_PROFILE",
+                ["fields"] = "resourceName,metadata(sources(type,id)),names(displayName),emailAddresses(value),photos(url,default)",
             });
         string payload;
 
@@ -2754,15 +4107,341 @@ public static class GoogleIntegrationEndpoints
             StatusCodes.Status403Forbidden or
             StatusCodes.Status404NotFound)
         {
+            return await GetGoogleProfileAsync(
+                httpClientFactory,
+                accessToken,
+                personId,
+                cancellationToken);
+        }
+
+        using var document = JsonDocument.Parse(payload);
+
+        var directoryProfile = CreateGoogleWorkspaceProfile(document.RootElement);
+
+        return IsEmptyGoogleWorkspaceProfile(directoryProfile)
+            ? await GetGoogleProfileAsync(httpClientFactory, accessToken, personId, cancellationToken)
+            : directoryProfile;
+    }
+
+    private static async Task<GoogleWorkspaceProfile?> GetGoogleUserInfoProfileAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        CancellationToken cancellationToken)
+    {
+        string payload;
+
+        try
+        {
+            payload = await SendGoogleGetAsync(
+                httpClientFactory,
+                accessToken,
+                "https://www.googleapis.com/oauth2/v3/userinfo",
+                "Google user profile request failed.",
+                cancellationToken);
+        }
+        catch (GoogleApiRequestException exception) when (exception.StatusCode is
+            StatusCodes.Status400BadRequest or
+            StatusCodes.Status401Unauthorized or
+            StatusCodes.Status403Forbidden or
+            StatusCodes.Status404NotFound)
+        {
             return null;
         }
 
         using var document = JsonDocument.Parse(payload);
 
         return new GoogleWorkspaceProfile(
-            GetPeopleDisplayName(document.RootElement),
-            GetPeopleEmail(document.RootElement),
-            GetPeoplePhotoUrl(document.RootElement));
+            GetJsonString(document.RootElement, "name"),
+            GetJsonString(document.RootElement, "email"),
+            GetJsonString(document.RootElement, "picture"),
+            GetJsonString(document.RootElement, "sub"));
+    }
+
+    private static GoogleWorkspaceProfile CreateCurrentGoogleProfileFromClaims(ClaimsPrincipal user) =>
+        new(
+            user.FindFirstValue(ClaimTypes.Name) ??
+            user.FindFirstValue("name") ??
+            user.FindFirstValue(ClaimTypes.Email),
+            user.FindFirstValue(ClaimTypes.Email),
+            user.FindFirstValue("urn:google:picture"));
+
+    private static async Task<GoogleWorkspaceProfile?> GetGoogleProfileAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        string personId,
+        CancellationToken cancellationToken)
+    {
+        var requestUrl = QueryHelpers.AddQueryString(
+            $"https://people.googleapis.com/v1/people/{Uri.EscapeDataString(personId)}",
+            new Dictionary<string, string?>
+            {
+                ["personFields"] = "metadata,names,emailAddresses,photos",
+                ["fields"] = "resourceName,metadata(sources(type,id)),names(displayName),emailAddresses(value),photos(url,default)",
+            });
+        string payload;
+
+        try
+        {
+            payload = await SendGoogleGetAsync(
+                httpClientFactory,
+                accessToken,
+                requestUrl,
+                "Google profile request failed.",
+                cancellationToken);
+        }
+        catch (GoogleApiRequestException exception) when (exception.StatusCode is
+            StatusCodes.Status400BadRequest or
+            StatusCodes.Status403Forbidden or
+            StatusCodes.Status404NotFound)
+        {
+            return await GetAdminDirectoryProfileAsync(
+                httpClientFactory,
+                accessToken,
+                personId,
+                cancellationToken);
+        }
+
+        using var document = JsonDocument.Parse(payload);
+
+        var profile = CreateGoogleWorkspaceProfile(document.RootElement);
+
+        return IsEmptyGoogleWorkspaceProfile(profile)
+            ? await GetAdminDirectoryProfileAsync(httpClientFactory, accessToken, personId, cancellationToken)
+            : profile;
+    }
+
+    private static async Task<GoogleWorkspaceProfile?> GetAdminDirectoryProfileAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        string userKey,
+        CancellationToken cancellationToken)
+    {
+        var userProfileTask = GetAdminDirectoryUserProfileAsync(
+            httpClientFactory,
+            accessToken,
+            userKey,
+            cancellationToken);
+        var userPhotoTask = GetAdminDirectoryUserPhotoUrlAsync(
+            httpClientFactory,
+            accessToken,
+            userKey,
+            cancellationToken);
+
+        await Task.WhenAll(userProfileTask, userPhotoTask);
+
+        var profile = await userProfileTask;
+        var photoUrl = await userPhotoTask;
+
+        return profile is null && string.IsNullOrWhiteSpace(photoUrl)
+            ? null
+            : new GoogleWorkspaceProfile(
+                profile?.DisplayName,
+                profile?.Email,
+                string.IsNullOrWhiteSpace(photoUrl) ? profile?.PhotoUrl : photoUrl,
+                profile?.ResourceName);
+    }
+
+    private static async Task<GoogleWorkspaceProfile?> GetAdminDirectoryUserProfileAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        string userKey,
+        CancellationToken cancellationToken)
+    {
+        var requestUrl = QueryHelpers.AddQueryString(
+            $"https://admin.googleapis.com/admin/directory/v1/users/{Uri.EscapeDataString(userKey)}",
+            new Dictionary<string, string?>
+            {
+                ["projection"] = "basic",
+                ["fields"] = "id,primaryEmail,name(fullName),thumbnailPhotoUrl",
+            });
+        string payload;
+
+        try
+        {
+            payload = await SendGoogleGetAsync(
+                httpClientFactory,
+                accessToken,
+                requestUrl,
+                "Google Workspace Admin Directory user request failed.",
+                cancellationToken);
+        }
+        catch (GoogleApiRequestException exception) when (exception.StatusCode is
+            StatusCodes.Status400BadRequest or
+            StatusCodes.Status403Forbidden or
+            StatusCodes.Status404NotFound)
+        {
+            return null;
+        }
+
+        using var document = JsonDocument.Parse(payload);
+        var name = document.RootElement.TryGetProperty("name", out var nameElement) &&
+                   nameElement.ValueKind == JsonValueKind.Object
+            ? GetJsonString(nameElement, "fullName")
+            : null;
+
+        return new GoogleWorkspaceProfile(
+            name,
+            GetJsonString(document.RootElement, "primaryEmail"),
+            GetJsonString(document.RootElement, "thumbnailPhotoUrl"),
+            $"people/{userKey}");
+    }
+
+    private static async Task<string?> GetAdminDirectoryUserPhotoUrlAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        string userKey,
+        CancellationToken cancellationToken)
+    {
+        var requestUrl = QueryHelpers.AddQueryString(
+            $"https://admin.googleapis.com/admin/directory/v1/users/{Uri.EscapeDataString(userKey)}/photos/thumbnail",
+            new Dictionary<string, string?>
+            {
+                ["fields"] = "mimeType,photoData",
+            });
+        string payload;
+
+        try
+        {
+            payload = await SendGoogleGetAsync(
+                httpClientFactory,
+                accessToken,
+                requestUrl,
+                "Google Workspace Admin Directory user photo request failed.",
+                cancellationToken);
+        }
+        catch (GoogleApiRequestException exception) when (exception.StatusCode is
+            StatusCodes.Status400BadRequest or
+            StatusCodes.Status403Forbidden or
+            StatusCodes.Status404NotFound)
+        {
+            return null;
+        }
+
+        using var document = JsonDocument.Parse(payload);
+        var photoData = GetJsonString(document.RootElement, "photoData");
+
+        return string.IsNullOrWhiteSpace(photoData)
+            ? null
+            : $"data:{GetJsonString(document.RootElement, "mimeType") ?? "image/jpeg"};base64,{NormalizeGooglePhotoData(photoData)}";
+    }
+
+    private static string NormalizeGooglePhotoData(string photoData)
+    {
+        var normalized = photoData.Replace('-', '+').Replace('_', '/');
+        var padding = normalized.Length % 4;
+
+        return padding == 0
+            ? normalized
+            : normalized.PadRight(normalized.Length + 4 - padding, '=');
+    }
+
+    private static bool IsEmptyGoogleWorkspaceProfile(GoogleWorkspaceProfile profile) =>
+        string.IsNullOrWhiteSpace(profile.DisplayName) &&
+        string.IsNullOrWhiteSpace(profile.Email) &&
+        string.IsNullOrWhiteSpace(profile.PhotoUrl);
+
+    private static GoogleWorkspaceProfile CreateGoogleWorkspaceProfile(JsonElement person) =>
+        new(
+            GetPeopleDisplayName(person),
+            GetPeopleEmail(person),
+            GetPeoplePhotoUrl(person),
+            GetPeopleResourceName(person),
+            GetPeopleSourceIds(person));
+
+    private static bool MatchesWantedGoogleProfile(
+        GoogleWorkspaceProfile profile,
+        HashSet<string> wantedPeopleResourceNames,
+        HashSet<string> wantedSourceIds)
+    {
+        if (!string.IsNullOrWhiteSpace(profile.ResourceName) &&
+            wantedPeopleResourceNames.Contains(profile.ResourceName))
+        {
+            return true;
+        }
+
+        return (profile.SourceIds ?? [])
+            .Any(sourceId => wantedSourceIds.Contains(sourceId));
+    }
+
+    private static async Task<GoogleWorkspaceProfile[]> GetGoogleDirectoryProfilesByResourceNamesAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        string[] senderResourceNames,
+        CancellationToken cancellationToken)
+    {
+        var wantedPeopleResourceNames = senderResourceNames
+            .Select(ConvertChatUserNameToPeopleResourceName)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var wantedSourceIds = senderResourceNames
+            .Select(GetChatUserId)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (wantedPeopleResourceNames.Count == 0 && wantedSourceIds.Count == 0)
+        {
+            return [];
+        }
+
+        var profiles = new List<GoogleWorkspaceProfile>();
+        var pageToken = (string?)null;
+        var pageCount = 0;
+
+        do
+        {
+            var requestUrl = QueryHelpers.AddQueryString(
+                "https://people.googleapis.com/v1/people:listDirectoryPeople",
+                new Dictionary<string, string?>
+                {
+                    ["readMask"] = "metadata,names,emailAddresses,photos",
+                    ["sources"] = "DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE",
+                    ["pageSize"] = "500",
+                    ["pageToken"] = pageToken,
+                    ["fields"] = "people(resourceName,metadata(sources(type,id)),names(displayName),emailAddresses(value),photos(url,default)),nextPageToken",
+                });
+            string payload;
+
+            try
+            {
+                payload = await SendGoogleGetAsync(
+                    httpClientFactory,
+                    accessToken,
+                    requestUrl,
+                    "Google Workspace directory list request failed.",
+                    cancellationToken);
+            }
+            catch (GoogleApiRequestException exception) when (exception.StatusCode is
+                StatusCodes.Status400BadRequest or
+                StatusCodes.Status403Forbidden or
+                StatusCodes.Status404NotFound)
+            {
+                return [];
+            }
+
+            using var document = JsonDocument.Parse(payload);
+
+            if (document.RootElement.TryGetProperty("people", out var peopleElement) &&
+                peopleElement.ValueKind == JsonValueKind.Array)
+            {
+                profiles.AddRange(peopleElement
+                    .EnumerateArray()
+                    .Select(CreateGoogleWorkspaceProfile)
+                    .Where(profile => MatchesWantedGoogleProfile(profile, wantedPeopleResourceNames, wantedSourceIds)));
+            }
+
+            pageToken = GetJsonString(document.RootElement, "nextPageToken");
+            pageCount += 1;
+        }
+        while (!string.IsNullOrWhiteSpace(pageToken) &&
+               pageCount < 10 &&
+               profiles.Count < Math.Max(wantedPeopleResourceNames.Count, wantedSourceIds.Count));
+
+        return profiles
+            .GroupBy(profile => profile.ResourceName, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToArray();
     }
 
     private static string? GetPeopleDisplayName(JsonElement person) =>
@@ -2773,6 +4452,28 @@ public static class GoogleIntegrationEndpoints
                 .Select(name => GetJsonString(name, "displayName"))
                 .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
             : null;
+
+    private static string? GetPeopleResourceName(JsonElement person) =>
+        GetJsonString(person, "resourceName");
+
+    private static string[] GetPeopleSourceIds(JsonElement person)
+    {
+        if (!person.TryGetProperty("metadata", out var metadataElement) ||
+            metadataElement.ValueKind != JsonValueKind.Object ||
+            !metadataElement.TryGetProperty("sources", out var sourcesElement) ||
+            sourcesElement.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        return sourcesElement
+            .EnumerateArray()
+            .Select(source => GetJsonString(source, "id"))
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
 
     private static string? GetPeopleEmail(JsonElement person) =>
         person.TryGetProperty("emailAddresses", out var emailsElement) &&
@@ -2793,20 +4494,24 @@ public static class GoogleIntegrationEndpoints
 
         var photos = photosElement.EnumerateArray().ToArray();
         var nonDefaultPhoto = photos.FirstOrDefault(photo =>
-            photo.TryGetProperty("default", out var defaultElement) &&
-            defaultElement.ValueKind == JsonValueKind.False);
+            GetJsonBool(photo, "default") != true &&
+            !string.IsNullOrWhiteSpace(GetJsonString(photo, "url")));
         var photoUrl = nonDefaultPhoto.ValueKind == JsonValueKind.Object
             ? GetJsonString(nonDefaultPhoto, "url")
             : null;
 
         return string.IsNullOrWhiteSpace(photoUrl)
-            ? photos.Select(photo => GetJsonString(photo, "url")).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
+            ? photos
+                .Select(photo => GetJsonString(photo, "url"))
+                .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
             : photoUrl;
     }
 
     private static async Task<GoogleChatMessageDto[]> EnrichChatMessagesWithDirectoryProfilesAsync(
         IHttpClientFactory httpClientFactory,
+        IMemoryCache cache,
         string accessToken,
+        string userCachePrefix,
         GoogleChatMessageDto[] messages,
         CancellationToken cancellationToken)
     {
@@ -2815,7 +4520,7 @@ public static class GoogleIntegrationEndpoints
             .Where(value => !string.IsNullOrWhiteSpace(value))
             .Select(value => value!)
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(20)
+            .Take(ChatDirectoryProfileQueryLimit)
             .ToArray();
 
         if (queries.Length == 0)
@@ -2823,9 +4528,11 @@ public static class GoogleIntegrationEndpoints
             return messages;
         }
 
-        var profileTasks = queries.Select(query => GetGoogleDirectoryProfileAsync(
+        var profileTasks = queries.Select(query => GetCachedGoogleDirectoryProfileAsync(
             httpClientFactory,
+            cache,
             accessToken,
+            userCachePrefix,
             query,
             cancellationToken));
         var profiles = (await Task.WhenAll(profileTasks))
@@ -2854,9 +4561,9 @@ public static class GoogleIntegrationEndpoints
 
                 return message with
                 {
-                    Sender = string.IsNullOrWhiteSpace(matchedProfile.DisplayName)
-                        ? message.Sender
-                        : matchedProfile.DisplayName,
+                    Sender = CleanChatSenderName(matchedProfile.DisplayName) ??
+                             CleanChatSenderName(message.Sender) ??
+                             "Google Chat user",
                     SenderEmail = string.IsNullOrWhiteSpace(matchedProfile.Email)
                         ? message.SenderEmail
                         : matchedProfile.Email,
@@ -2871,10 +4578,9 @@ public static class GoogleIntegrationEndpoints
     private static IEnumerable<string?> CreateDirectoryProfileQueries(GoogleChatMessageDto message)
     {
         yield return message.SenderEmail;
-        yield return ExtractEmailAddress(message.Text);
-        yield return ExtractChatActorName(message.Text);
 
-        if (!string.Equals(message.Sender, "Google Chat", StringComparison.OrdinalIgnoreCase))
+        if (!IsGoogleChatFallbackSender(message) &&
+            !IsGoogleChatAppSender(message.SenderName, message.SenderType))
         {
             yield return message.Sender;
         }
@@ -2891,10 +4597,10 @@ public static class GoogleIntegrationEndpoints
             new Dictionary<string, string?>
             {
                 ["query"] = query,
-                ["readMask"] = "names,emailAddresses,photos",
+                ["readMask"] = "metadata,names,emailAddresses,photos",
                 ["sources"] = "DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE",
                 ["pageSize"] = "5",
-                ["fields"] = "people(names(displayName),emailAddresses(value),photos(url,default))",
+                ["fields"] = "people(resourceName,metadata(sources(type,id)),names(displayName),emailAddresses(value),photos(url,default))",
             });
         string payload;
 
@@ -2925,10 +4631,7 @@ public static class GoogleIntegrationEndpoints
 
         var profiles = peopleElement
             .EnumerateArray()
-            .Select(person => new GoogleWorkspaceProfile(
-                GetPeopleDisplayName(person),
-                GetPeopleEmail(person),
-                GetPeoplePhotoUrl(person)))
+            .Select(CreateGoogleWorkspaceProfile)
             .ToArray();
 
         return FindBestGoogleWorkspaceProfile(query, profiles);
@@ -2954,7 +4657,7 @@ public static class GoogleIntegrationEndpoints
         GoogleChatMessageDto message,
         GoogleWorkspaceProfile[] profiles)
     {
-        var senderEmail = message.SenderEmail ?? ExtractEmailAddress(message.Text);
+        var senderEmail = message.SenderEmail;
 
         if (!string.IsNullOrWhiteSpace(senderEmail))
         {
@@ -2967,7 +4670,13 @@ public static class GoogleIntegrationEndpoints
             }
         }
 
-        var senderName = NormalizeIdentityName(ExtractChatActorName(message.Text) ?? message.Sender);
+        if (IsGoogleChatFallbackSender(message) ||
+            IsGoogleChatAppSender(message.SenderName, message.SenderType))
+        {
+            return null;
+        }
+
+        var senderName = NormalizeIdentityName(message.Sender);
 
         if (string.IsNullOrWhiteSpace(senderName))
         {
@@ -3034,9 +4743,9 @@ public static class GoogleIntegrationEndpoints
 
                 return message with
                 {
-                    Sender = string.IsNullOrWhiteSpace(matchedProfile.DisplayName)
-                        ? message.Sender
-                        : matchedProfile.DisplayName,
+                    Sender = CleanChatSenderName(matchedProfile.DisplayName) ??
+                             CleanChatSenderName(message.Sender) ??
+                             "Google Chat user",
                     SenderEmail = string.IsNullOrWhiteSpace(matchedProfile.EmailAddress)
                         ? message.SenderEmail
                         : matchedProfile.EmailAddress,
@@ -3102,7 +4811,7 @@ public static class GoogleIntegrationEndpoints
         GoogleChatMessageDto message,
         GoogleDrivePermissionProfile[] permissionProfiles)
     {
-        var senderEmail = message.SenderEmail ?? ExtractEmailAddress(message.Text);
+        var senderEmail = message.SenderEmail;
 
         if (!string.IsNullOrWhiteSpace(senderEmail))
         {
@@ -3115,8 +4824,13 @@ public static class GoogleIntegrationEndpoints
             }
         }
 
-        var actorName = ExtractChatActorName(message.Text);
-        var senderName = NormalizeIdentityName(actorName ?? message.Sender);
+        if (IsGoogleChatFallbackSender(message) ||
+            IsGoogleChatAppSender(message.SenderName, message.SenderType))
+        {
+            return null;
+        }
+
+        var senderName = NormalizeIdentityName(message.Sender);
 
         if (string.IsNullOrWhiteSpace(senderName))
         {
@@ -3172,6 +4886,9 @@ public static class GoogleIntegrationEndpoints
                 var driveFileId = attachment.TryGetProperty("driveDataRef", out var driveDataRef)
                     ? GetJsonString(driveDataRef, "driveFileId")
                     : null;
+                var attachmentResourceName = attachment.TryGetProperty("attachmentDataRef", out var attachmentDataRef)
+                    ? GetJsonString(attachmentDataRef, "resourceName")
+                    : null;
                 var fileName = GetJsonString(attachment, "contentName");
 
                 return new GoogleChatAttachmentDto(
@@ -3181,27 +4898,48 @@ public static class GoogleIntegrationEndpoints
                     GetJsonString(attachment, "source") ?? "UPLOADED_CONTENT",
                     GetJsonString(attachment, "thumbnailUri"),
                     GetJsonString(attachment, "downloadUri"),
-                    driveFileId);
+                    driveFileId,
+                    attachmentResourceName);
             })
             .ToArray();
     }
 
-    private static string CreateChatSpaceDisplayName(GoogleChatSpaceDto space, GoogleChatMessageDto[] messages)
+    private static string CreateChatSpaceDisplayName(
+        GoogleChatSpaceDto space,
+        GoogleChatMessageDto[] messages,
+        GoogleChatMemberDto? primaryMember,
+        string? currentChatUserName)
     {
         if (!IsGeneratedChatSpaceDisplayName(space.DisplayName, space.SpaceType))
         {
             return space.DisplayName;
         }
 
-        var latestMessage = messages.LastOrDefault();
-        var inferredName = latestMessage is null
-            ? null
-            : ExtractChatActorName(latestMessage.Text) ?? latestMessage.Sender;
+        if (primaryMember is not null &&
+            !IsUnresolvedChatDisplayName(primaryMember.DisplayName))
+        {
+            return primaryMember.DisplayName;
+        }
+
+        var inferredName = messages
+            .LastOrDefault(message =>
+                !IsGoogleChatFallbackSender(message) &&
+                !IsGoogleChatAppSender(message.SenderName, message.SenderType) &&
+                !IsCurrentGoogleChatSender(message.SenderName, currentChatUserName))
+            ?.Sender;
 
         if (!string.IsNullOrWhiteSpace(inferredName) &&
-            !string.Equals(inferredName, "Google Chat", StringComparison.OrdinalIgnoreCase))
+            !IsUnresolvedChatDisplayName(inferredName))
         {
             return inferredName;
+        }
+
+        var latestAppMessage = messages.LastOrDefault(message =>
+            IsGoogleChatAppSender(message.SenderName, message.SenderType));
+
+        if (latestAppMessage is not null)
+        {
+            return InferGoogleChatAppSenderName(latestAppMessage.Text);
         }
 
         return space.SpaceType switch
@@ -3211,6 +4949,55 @@ public static class GoogleIntegrationEndpoints
             _ => "Space",
         };
     }
+
+    private static GoogleChatSpaceDto SanitizeChatSpaceForDisplay(GoogleChatSpaceDto space)
+    {
+        var messages = space.Messages
+            .Select(SanitizeChatMessageForDisplay)
+            .ToArray();
+        var members = space.Members?
+            .Select(SanitizeChatMemberForDisplay)
+            .ToArray();
+        var primaryMember = space.PrimaryMember is null
+            ? null
+            : SanitizeChatMemberForDisplay(space.PrimaryMember);
+        var displayName = CleanChatSenderName(space.DisplayName) ?? space.DisplayName;
+
+        if (IsOpaqueGoogleIdentity(displayName))
+        {
+            displayName = FormatChatSpaceFallbackName(space.Name, space.SpaceType);
+        }
+
+        return space with
+        {
+            DisplayName = displayName,
+            Messages = messages,
+            Members = members,
+            PrimaryMember = primaryMember,
+        };
+    }
+
+    private static GoogleChatMessageDto SanitizeChatMessageForDisplay(GoogleChatMessageDto message)
+    {
+        if (IsGoogleChatAppSender(message.SenderName, message.SenderType))
+        {
+            return message with
+            {
+                Sender = CleanChatSenderName(message.Sender) ?? "Google Chat",
+            };
+        }
+
+        return message with
+        {
+            Sender = CleanChatSenderName(message.Sender) ?? "Google Chat user",
+        };
+    }
+
+    private static GoogleChatMemberDto SanitizeChatMemberForDisplay(GoogleChatMemberDto member) =>
+        member with
+        {
+            DisplayName = CleanChatSenderName(member.DisplayName) ?? "Google Chat user",
+        };
 
     private static bool IsGeneratedChatSpaceDisplayName(string displayName, string spaceType) =>
         displayName.StartsWith("Direct message ", StringComparison.OrdinalIgnoreCase) ||
@@ -3227,30 +5014,6 @@ public static class GoogleIntegrationEndpoints
             (message.Attachments?.Any(attachment =>
                 attachment.FileName.Contains(searchTerm, StringComparison.OrdinalIgnoreCase)) ?? false));
 
-    private static string? ExtractChatActorName(string text)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            return null;
-        }
-
-        var koreanSharedMatch = Regex.Match(text, @"^(?<name>.+?)님이\s", RegexOptions.Compiled);
-
-        if (koreanSharedMatch.Success)
-        {
-            return CleanChatSenderName(koreanSharedMatch.Groups["name"].Value);
-        }
-
-        var englishSharedMatch = Regex.Match(
-            text,
-            @"^(?<name>.+?)\s+(shared|sent|uploaded|commented)\b",
-            RegexOptions.Compiled | RegexOptions.IgnoreCase);
-
-        return englishSharedMatch.Success
-            ? CleanChatSenderName(englishSharedMatch.Groups["name"].Value)
-            : null;
-    }
-
     private static string? CleanChatSenderName(string? sender)
     {
         if (string.IsNullOrWhiteSpace(sender))
@@ -3264,8 +5027,17 @@ public static class GoogleIntegrationEndpoints
             " ",
             RegexOptions.Compiled);
 
-        return NormalizeWhitespace(withoutEmailParentheses);
+        var cleanedSender = NormalizeWhitespace(withoutEmailParentheses);
+
+        return IsOpaqueGoogleIdentity(cleanedSender)
+            ? null
+            : cleanedSender;
     }
+
+    private static bool IsOpaqueGoogleIdentity(string? value) =>
+        !string.IsNullOrWhiteSpace(value) &&
+        (IsGoogleHumanUserResourceName(value) ||
+         value.StartsWith("people/", StringComparison.OrdinalIgnoreCase));
 
     private static string NormalizeChatText(string value)
     {
@@ -3306,9 +5078,22 @@ public static class GoogleIntegrationEndpoints
                payload.Contains("rateLimitExceeded", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool IsGooglePeopleQuotaExceeded(GoogleApiRequestException exception)
+    {
+        return exception.StatusCode == StatusCodes.Status429TooManyRequests ||
+               (exception.Detail.Contains("people.googleapis.com", StringComparison.OrdinalIgnoreCase) &&
+                exception.Detail.Contains("Quota exceeded", StringComparison.OrdinalIgnoreCase)) ||
+               exception.Detail.Contains("Critical read requests", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static string NormalizeWhitespace(string value)
     {
         return Regex.Replace(value, @"\s+", " ", RegexOptions.Compiled).Trim();
+    }
+
+    private static string NormalizeCacheKey(string value)
+    {
+        return Regex.Replace(value.Trim().ToLowerInvariant(), @"[^\w@.\-/]+", "_", RegexOptions.Compiled);
     }
 
     private static string NormalizeEmailBody(string value)
@@ -3754,6 +5539,117 @@ public static class GoogleIntegrationEndpoints
             StatusCodes.Status503ServiceUnavailable);
     }
 
+    private static async Task<GoogleAvatarImage> GetGoogleAvatarImageAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        string avatarUrl,
+        CancellationToken cancellationToken)
+    {
+        if (!Uri.TryCreate(avatarUrl, UriKind.Absolute, out var uri) ||
+            !IsAllowedGoogleAvatarUri(uri))
+        {
+            throw new GoogleApiRequestException(
+                "Google avatar URL was invalid.",
+                "The profile image URL was not a trusted Google image URL.",
+                StatusCodes.Status400BadRequest);
+        }
+
+        var avatar = await TryFetchGoogleAvatarImageAsync(
+            httpClientFactory,
+            uri,
+            accessToken,
+            cancellationToken);
+
+        if (avatar is not null)
+        {
+            return avatar;
+        }
+
+        avatar = await TryFetchGoogleAvatarImageAsync(
+            httpClientFactory,
+            uri,
+            accessToken: null,
+            cancellationToken);
+
+        if (avatar is not null)
+        {
+            return avatar;
+        }
+
+        throw new GoogleApiRequestException(
+            "Google avatar could not be loaded.",
+            "The profile image could not be fetched from Google.",
+            StatusCodes.Status502BadGateway);
+    }
+
+    private static async Task<DriveDownloadPayload> GetGoogleAvatarImagePayloadAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        string avatarUrl,
+        CancellationToken cancellationToken)
+    {
+        var avatar = await GetGoogleAvatarImageAsync(
+            httpClientFactory,
+            accessToken,
+            avatarUrl,
+            cancellationToken);
+
+        return new DriveDownloadPayload(avatar.Content, avatar.ContentType, "preview");
+    }
+
+    private static async Task<GoogleAvatarImage?> TryFetchGoogleAvatarImageAsync(
+        IHttpClientFactory httpClientFactory,
+        Uri uri,
+        string? accessToken,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+
+        if (!string.IsNullOrWhiteSpace(accessToken))
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        }
+
+        using var response = await httpClientFactory
+            .CreateClient()
+            .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        var contentType = response.Content.Headers.ContentType?.MediaType ?? "image/jpeg";
+
+        if (!contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var content = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+
+        return content.Length is > 0 and <= 2_000_000
+            ? new GoogleAvatarImage(content, contentType)
+            : null;
+    }
+
+    private static bool IsAllowedGoogleAvatarUri(Uri uri)
+    {
+        if (!string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var host = uri.Host;
+
+        return host.Equals("googleusercontent.com", StringComparison.OrdinalIgnoreCase) ||
+               host.EndsWith(".googleusercontent.com", StringComparison.OrdinalIgnoreCase) ||
+               host.Equals("google.com", StringComparison.OrdinalIgnoreCase) ||
+               host.EndsWith(".google.com", StringComparison.OrdinalIgnoreCase) ||
+               host.Equals("googleapis.com", StringComparison.OrdinalIgnoreCase) ||
+               host.EndsWith(".googleapis.com", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static async Task<string> SendGooglePostAsync(
         IHttpClientFactory httpClientFactory,
         string accessToken,
@@ -3801,6 +5697,194 @@ public static class GoogleIntegrationEndpoints
         }
 
         return await response.Content.ReadAsByteArrayAsync(cancellationToken);
+    }
+
+    private static async Task<DriveDownloadPayload> GetGoogleChatAttachmentMediaAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        string resourceName,
+        string? fileName,
+        string? contentType,
+        CancellationToken cancellationToken)
+    {
+        ValidateGoogleChatAttachmentResourceName(resourceName);
+
+        var requestUrl = QueryHelpers.AddQueryString(
+            $"https://chat.googleapis.com/v1/media/{EscapeGoogleResourcePath(resourceName)}",
+            new Dictionary<string, string?>
+            {
+                ["alt"] = "media",
+            });
+        using var request = new HttpRequestMessage(HttpMethod.Get, requestUrl);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+        using var response = await httpClientFactory
+            .CreateClient()
+            .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var payload = await response.Content.ReadAsStringAsync(cancellationToken);
+
+            throw new GoogleApiRequestException(
+                "Google Chat attachment download failed.",
+                payload,
+                (int)response.StatusCode);
+        }
+
+        if (response.Content.Headers.ContentLength > ChatAttachmentPreviewMaxBytes)
+        {
+            throw new GoogleApiRequestException(
+                "Google Chat attachment is too large to preview.",
+                "This attachment is too large to preview inline.",
+                StatusCodes.Status413PayloadTooLarge);
+        }
+
+        var content = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+
+        if (content.Length > ChatAttachmentPreviewMaxBytes)
+        {
+            throw new GoogleApiRequestException(
+                "Google Chat attachment is too large to preview.",
+                "This attachment is too large to preview inline.",
+                StatusCodes.Status413PayloadTooLarge);
+        }
+
+        return new DriveDownloadPayload(
+            content,
+            response.Content.Headers.ContentType?.MediaType ??
+            (string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType),
+            SanitizeFileName(string.IsNullOrWhiteSpace(fileName) ? "attachment" : fileName));
+    }
+
+    private static async Task<DriveDownloadPayload> GetGoogleChatAttachmentPreviewPayloadAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        string resourceName,
+        string? fileName,
+        string? contentType,
+        CancellationToken cancellationToken)
+    {
+        var media = await GetGoogleChatAttachmentMediaAsync(
+            httpClientFactory,
+            accessToken,
+            resourceName,
+            fileName,
+            contentType,
+            cancellationToken);
+
+        if (media.ContentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+        {
+            return media;
+        }
+
+        if (media.ContentType.Equals("application/pdf", StringComparison.OrdinalIgnoreCase))
+        {
+            return media;
+        }
+
+        if (TryExtractOfficeThumbnail(media.Content, out var thumbnail))
+        {
+            return new DriveDownloadPayload(thumbnail.Content, thumbnail.ContentType, "preview");
+        }
+
+        throw new GoogleApiRequestException(
+            "Google Chat attachment preview was unavailable.",
+            "Google Chat did not provide a thumbnail for this attachment.",
+            StatusCodes.Status404NotFound);
+    }
+
+    private static bool TryExtractOfficeThumbnail(byte[] content, out GoogleAvatarImage thumbnail)
+    {
+        thumbnail = default!;
+
+        try
+        {
+            using var stream = new MemoryStream(content);
+            using var archive = new ZipArchive(stream, ZipArchiveMode.Read);
+            var thumbnailEntry = archive.Entries.FirstOrDefault(entry =>
+                string.Equals(entry.FullName, "docProps/thumbnail.jpeg", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(entry.FullName, "docProps/thumbnail.jpg", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(entry.FullName, "docProps/thumbnail.png", StringComparison.OrdinalIgnoreCase));
+
+            if (thumbnailEntry is null ||
+                thumbnailEntry.Length <= 0 ||
+                thumbnailEntry.Length > 2_000_000)
+            {
+                return false;
+            }
+
+            using var thumbnailStream = thumbnailEntry.Open();
+            using var buffer = new MemoryStream();
+            thumbnailStream.CopyTo(buffer);
+            var extension = Path.GetExtension(thumbnailEntry.FullName);
+            var contentType = string.Equals(extension, ".png", StringComparison.OrdinalIgnoreCase)
+                ? "image/png"
+                : "image/jpeg";
+
+            thumbnail = new GoogleAvatarImage(buffer.ToArray(), contentType);
+            return true;
+        }
+        catch (InvalidDataException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryParseChatMediaPreviewToken(string value, out ChatAttachmentPreviewRequest previewRequest)
+    {
+        previewRequest = default!;
+        const string prefix = "chat-media:";
+
+        if (string.IsNullOrWhiteSpace(value) ||
+            !value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var parts = value[prefix.Length..].Split('|');
+
+        if (parts.Length < 1)
+        {
+            return false;
+        }
+
+        var resourceName = Uri.UnescapeDataString(parts[0]);
+
+        if (string.IsNullOrWhiteSpace(resourceName))
+        {
+            return false;
+        }
+
+        previewRequest = new ChatAttachmentPreviewRequest(
+            resourceName,
+            parts.Length > 1 ? Uri.UnescapeDataString(parts[1]) : null,
+            parts.Length > 2 ? Uri.UnescapeDataString(parts[2]) : null);
+
+        return true;
+    }
+
+    private static void ValidateGoogleChatAttachmentResourceName(string resourceName)
+    {
+        if (string.IsNullOrWhiteSpace(resourceName) ||
+            !resourceName.StartsWith("spaces/", StringComparison.OrdinalIgnoreCase) ||
+            !resourceName.Contains("/messages/", StringComparison.OrdinalIgnoreCase) ||
+            !resourceName.Contains("/attachments/", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new GoogleApiRequestException(
+                "Google Chat attachment resource was invalid.",
+                "The attachment resource name was not recognized.",
+                StatusCodes.Status400BadRequest);
+        }
+    }
+
+    private static string EscapeGoogleResourcePath(string resourceName)
+    {
+        return string.Join(
+            '/',
+            resourceName
+                .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(Uri.EscapeDataString));
     }
 
     private static string BuildDriveFilesRequestUrl(
@@ -4089,12 +6173,37 @@ public static class GoogleIntegrationEndpoints
     private sealed record GoogleWorkspaceProfile(
         string? DisplayName,
         string? Email,
-        string? PhotoUrl);
+        string? PhotoUrl,
+        string? ResourceName = null,
+        string[]? SourceIds = null);
+
+    private sealed record GoogleWorkspaceProfileCacheEntry(GoogleWorkspaceProfile? Profile);
+
+    private sealed record GoogleChatProfileResolutionStatus(
+        bool Available,
+        string? Title,
+        string? Detail);
 
     private sealed record GoogleDrivePermissionProfile(
         string? DisplayName,
         string? EmailAddress,
         string? PhotoLink);
+
+    private sealed record GoogleChatAttachmentMetadata(
+        string? Name,
+        string? MimeType,
+        string? WebViewLink,
+        string? WebContentLink,
+        string? IconLink,
+        string? ThumbnailLink,
+        long? SizeBytes);
+
+    private sealed record ChatAttachmentPreviewRequest(
+        string ResourceName,
+        string? FileName,
+        string? ContentType);
+
+    private sealed record GoogleAvatarImage(byte[] Content, string ContentType);
 
     private sealed record DriveDownloadPayload(byte[] Content, string ContentType, string FileName);
 

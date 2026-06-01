@@ -17,17 +17,19 @@ import {
 import { Switch } from './ui/switch';
 
 interface LoginPageProps {
+  authMessage?: string | null;
   isCheckingSession: boolean;
   onThemeChange: (theme: AppTheme) => void;
   theme: AppTheme;
 }
 
-export function LoginPage({ isCheckingSession, onThemeChange, theme }: LoginPageProps) {
+export function LoginPage({ authMessage, isCheckingSession, onThemeChange, theme }: LoginPageProps) {
   const { dictionary, language, setLanguage } = useLanguage();
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isStartingLogin, setIsStartingLogin] = useState(false);
   const isDark = theme === 'dark';
   const loginUrl = workspaceApi.getGoogleLoginUrl('/');
+  const visibleError = loginError ?? authMessage;
 
   const handleGoogleLogin = async () => {
     setLoginError(null);
@@ -111,10 +113,10 @@ export function LoginPage({ isCheckingSession, onThemeChange, theme }: LoginPage
               <span>{isStartingLogin ? dictionary.checkingGoogleConfig : dictionary.continueWithGoogle}</span>
             </>
           </Button>
-          {loginError ? (
+          {visibleError ? (
             <div className="flex gap-2 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-xs font-semibold text-destructive">
               <AlertCircle aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-              <span>{loginError}</span>
+              <span>{visibleError}</span>
             </div>
           ) : null}
           <div className="rounded-lg border bg-muted/35 p-3 text-xs font-semibold text-muted-foreground">

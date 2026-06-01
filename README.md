@@ -6,7 +6,8 @@ Flexible workspace management app scaffolded from the personal manager prototype
 
 - `frontend/`: React TypeScript + Vite UI built with shadcn/ui and Tailwind CSS.
 - `backend/Incos.Workspace.Api/`: ASP.NET Core Web API on .NET 10.
-- `docker-compose.yml`: PostgreSQL, API, and frontend containers.
+- `docker-compose.yml`: production-like PostgreSQL, Release API, and built frontend/Nginx containers.
+- `docker-compose.dev.yml`: hot-reload Docker stack for local development.
 
 The frontend treats Academy and Project as sample modes, not permanent app logic. Modes are defined in `frontend/src/modes/defaultModes.ts` and can be enabled, hidden, renamed, or expanded without rewriting the component tree.
 
@@ -106,13 +107,18 @@ Backend only:
 dotnet run --project backend/Incos.Workspace.Api/Incos.Workspace.Api.csproj
 ```
 
-Full stack with Docker, built static frontend and API containers:
+Production-like full stack with Docker:
 
 ```bash
 docker compose up -d --build
 ```
 
 Then open `http://localhost:6173`.
+
+Production Docker files:
+
+- `frontend/Dockerfile`: builds the React app and serves the static files with Nginx.
+- `backend/Incos.Workspace.Api/Dockerfile`: publishes the API in Release mode and runs `Incos.Workspace.Api.dll`.
 
 Docker ports:
 
@@ -122,7 +128,7 @@ Docker ports:
 
 Containers use `restart: unless-stopped`, so they keep running after SSH disconnects and restart after a PC reboot unless manually stopped.
 
-Nginx serves static images from `/static/images/` using the `incos-static-images` Docker volume and reverse-proxies `/api/` to the ASP.NET Core container.
+The frontend Nginx container serves static images from `/static/images/` using the `incos-static-images` Docker volume and reverse-proxies `/api/` to the ASP.NET Core container.
 
 Hot-reload Docker dev mode:
 
@@ -134,8 +140,14 @@ Dev mode runs:
 
 - API: `dotnet watch run --no-launch-profile --urls http://0.0.0.0:6272`
 - Frontend: `npm run dev -- --host 0.0.0.0 --port 6173`
-- Static images: mounted to `frontend/public/static/images`, served by Vite at `/static/images/...`
+- Dev reverse proxy: Nginx listens on `http://localhost:6173` and proxies to Vite/API containers.
+- Static images: mounted to `frontend/public/static/images` and served at `/static/images/...`
 - Vite API proxy: Docker dev sets `VITE_API_PROXY_TARGET=http://api:6272`; local dev defaults to `http://localhost:6272`.
+
+Development Docker files:
+
+- `frontend/Dockerfile.dev`: installs frontend dependencies and runs the Vite dev server.
+- `backend/Incos.Workspace.Api/Dockerfile.dev`: restores NuGet packages and runs `dotnet watch run`.
 
 Useful dev commands:
 

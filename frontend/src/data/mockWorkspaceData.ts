@@ -4,16 +4,21 @@ export interface CalendarEvent {
   id: string;
   title: string;
   color: ColorToken;
+  courseLabel?: string;
   type: string;
   time?: string;
 }
 
 export interface CalendarDay {
   id: string;
+  dateIso?: string;
   dateNumber: number;
+  isSunday?: boolean;
+  isToday?: boolean;
   outsideMonth?: boolean;
   status: string;
   progress: number;
+  progressLabel?: string;
   events: CalendarEvent[];
   timelineBar?: {
     label: string;
@@ -28,6 +33,11 @@ export interface AgendaItem {
   subtitle: string;
   type: string;
   color: ColorToken;
+  canOpenDetails?: boolean;
+  isCanvasSource?: boolean;
+  isCompleted?: boolean;
+  isLocked?: boolean;
+  isStarred?: boolean;
 }
 
 export interface BoardItem {
@@ -37,6 +47,14 @@ export interface BoardItem {
   type: string;
   color: ColorToken;
   checklistProgress: string;
+  dueAt?: string;
+  isCompleted?: boolean;
+  isLocked?: boolean;
+  isTitleEditable?: boolean;
+  canOpenDetails?: boolean;
+  isCanvasSource?: boolean;
+  isStarred?: boolean;
+  time?: string;
 }
 
 export interface TimelineItem {
@@ -46,6 +64,11 @@ export interface TimelineItem {
   widthPercent: number;
   label: string;
   color: ColorToken;
+  canOpenDetails?: boolean;
+  isCanvasSource?: boolean;
+  isCompleted?: boolean;
+  isLocked?: boolean;
+  isStarred?: boolean;
 }
 
 export interface LinkItem {

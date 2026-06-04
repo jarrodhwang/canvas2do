@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
-import { Check, EyeOff, MoreHorizontal, Pencil, Star, Trash2 } from 'lucide-react';
+import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { Check, ExternalLink, EyeOff, MoreHorizontal, Pencil, Plus, Star, Trash2 } from 'lucide-react';
 import { workspaceApi } from './api/workspaceApi';
-import type { CanvasCalendarItem, GoogleDriveFile } from './api/workspaceApi';
+import type { CanvasCalendarItem, CanvasTokenStatus, GoogleDriveFile } from './api/workspaceApi';
 import { AddItemModal } from './components/AddItemModal';
 import { CalendarShell } from './components/CalendarShell';
 import { CanvasInboxView } from './components/CanvasInboxView';
+import { CanvasPeopleView } from './components/CanvasPeopleView';
 import { CourseOverviewView } from './components/CourseOverviewView';
 import { DashboardCards } from './components/DashboardCards';
 import { DetailPanel } from './components/DetailPanel';
@@ -190,6 +191,7 @@ const calendarTodoTypes = [
 
 interface StoredCoursePreference {
   assessmentType?: string;
+  archivedAsManualLectureId?: string;
   chipColor?: ColorToken;
   code?: string;
   completed?: boolean;
@@ -204,11 +206,18 @@ interface StoredCoursePreference {
   friendlyName?: string;
   htmlUrl?: string;
   hidden?: boolean;
+  id?: string;
   isSubmitted?: boolean;
+  links?: Array<{
+    id?: string;
+    label?: string;
+    url?: string;
+  }>;
   originalCourseCode?: string;
   semester?: string;
   starred?: boolean;
   submissionType?: string;
+  termName?: string;
   title?: string;
 }
 
@@ -261,9 +270,17 @@ interface CalendarSourceItem {
 }
 
 interface CalendarCourseFilterOption {
+  canAdd?: boolean;
   checked: boolean;
   color: ColorToken;
   id: string;
+  label: string;
+}
+
+interface SelectedDayCourseGroup {
+  canAdd?: boolean;
+  color: ColorToken;
+  items: CalendarSourceItem[];
   label: string;
 }
 
@@ -277,6 +294,7 @@ const academyCalendarSettingsStorageKey = 'incos-academy-calendar-settings';
 const academyCalendarHiddenCoursesStorageKey = 'incos-academy-calendar-hidden-courses';
 const academyPreferencesUpdatedEvent = 'incos-academy-preferences-updated';
 const academyOpenCourseworkDialogEvent = 'incos-academy-open-coursework-dialog';
+const defaultAcademySemester = getDateBasedAcademySemester();
 
 const defaultAcademyCalendarSettings: AcademyCalendarSettings = {
   progressDisplay: 'linear',
@@ -286,6 +304,27 @@ const defaultAcademyCalendarSettings: AcademyCalendarSettings = {
 };
 const calendarAutoExpandMediaQuery = '(max-width: 1279px), (max-height: 860px)';
 const dayTodoDialogMediaQuery = '(max-width: 1535px)';
+
+function getDateBasedAcademySemester(date = new Date()) {
+  const month = date.getMonth();
+  const term = month <= 3 ? 'Spring' : month <= 7 ? 'Summer' : 'Fall';
+
+  return `${term} ${date.getFullYear()}`;
+}
+
+function normalizeSemesterName(value?: string, fallback = defaultAcademySemester) {
+  const trimmedValue = value?.trim();
+
+  if (!trimmedValue || /^default term$/i.test(trimmedValue)) {
+    return fallback;
+  }
+
+  return trimmedValue;
+}
+
+function semesterMatches(value: string | undefined, selectedSemester: string | undefined, fallback = defaultAcademySemester) {
+  return normalizeSemesterName(value, fallback) === normalizeSemesterName(selectedSemester, fallback);
+}
 
 function getInitialCalendarAutoExpanded() {
   return typeof window !== 'undefined' &&
@@ -398,6 +437,14 @@ function getStoredCanvasLecturePreferences() {
     : {};
 }
 
+function getStoredManualLectures() {
+  const storedManualLectures = readStoredJson<unknown>(manualLecturesStorageKey, []);
+
+  return Array.isArray(storedManualLectures)
+    ? storedManualLectures as StoredCoursePreference[]
+    : [];
+}
+
 function getStoredManualCoursework() {
   const storedCoursework = readStoredJson<unknown>(manualCourseworkStorageKey, []);
 
@@ -493,10 +540,7 @@ function getStoredCourseChipColor(courseCode?: string): ColorToken | undefined {
     return undefined;
   }
 
-  const storedManualLectures = readStoredJson<unknown>(manualLecturesStorageKey, []);
-  const manualLectures = Array.isArray(storedManualLectures)
-    ? storedManualLectures as StoredCoursePreference[]
-    : [];
+  const manualLectures = getStoredManualLectures();
   const manualLecture = manualLectures.find((lecture) => (
     codesMatch(courseCode, lecture.friendlyCourseCode) || codesMatch(courseCode, lecture.code)
   ));
@@ -516,10 +560,7 @@ function getStoredCourseChipColor(courseCode?: string): ColorToken | undefined {
 function getCourseDisplay(item: CalendarSourceItem, fallbackLabel: string) {
   const canvasPreferences = getStoredCanvasLecturePreferences();
   const preferenceById = item.courseId ? canvasPreferences[item.courseId] : undefined;
-  const storedManualLectures = readStoredJson<unknown>(manualLecturesStorageKey, []);
-  const manualLectures = Array.isArray(storedManualLectures)
-    ? storedManualLectures as StoredCoursePreference[]
-    : [];
+  const manualLectures = getStoredManualLectures();
   const manualLecture = manualLectures.find((lecture) => (
     codesMatch(item.courseCode, lecture.friendlyCourseCode) ||
     codesMatch(item.courseCode, lecture.code) ||
@@ -545,6 +586,133 @@ function getCourseDisplay(item: CalendarSourceItem, fallbackLabel: string) {
   };
 }
 
+function coursePreferenceMatchesCourse(
+  preference: StoredCoursePreference,
+  course: Pick<CalendarSourceItem, 'courseCode' | 'courseId' | 'courseName'>,
+) {
+  return (
+    codesMatch(course.courseCode, preference.friendlyCourseCode) ||
+    codesMatch(course.courseCode, preference.code) ||
+    codesMatch(course.courseCode, preference.courseCode) ||
+    codesMatch(course.courseCode, preference.originalCourseCode) ||
+    codesMatch(course.courseName, preference.friendlyName) ||
+    codesMatch(course.courseName, preference.courseName)
+  );
+}
+
+function isCourseReferenceHidden(course: Pick<CalendarSourceItem, 'courseCode' | 'courseId' | 'courseName'>) {
+  const hiddenManualLecture = getStoredManualLectures().some((lecture) => (
+    Boolean(lecture.hidden) && coursePreferenceMatchesCourse(lecture, course)
+  ));
+
+  if (hiddenManualLecture) {
+    return true;
+  }
+
+  return Object.entries(getStoredCanvasLecturePreferences()).some(([courseId, preference]) => (
+    Boolean(preference.hidden) &&
+    (
+      (Boolean(course.courseId) && course.courseId === courseId) ||
+      coursePreferenceMatchesCourse(preference, course)
+    )
+  ));
+}
+
+function normalizeExternalUrl(value?: string) {
+  const trimmedValue = value?.trim();
+
+  if (!trimmedValue) {
+    return undefined;
+  }
+
+  return /^https?:\/\//i.test(trimmedValue) ? trimmedValue : `https://${trimmedValue}`;
+}
+
+function getManualLectureLinkUrl(lecture: StoredCoursePreference, linkId: string) {
+  return normalizeExternalUrl(lecture.links?.find((link) => link.id === linkId)?.url);
+}
+
+function getCanvasCourseIdFromUrl(value?: string) {
+  if (!value) {
+    return undefined;
+  }
+
+  try {
+    const url = new URL(value, window.location.origin);
+    const match = url.pathname.match(/\/courses\/([^/?#]+)/i);
+
+    return match ? decodeURIComponent(match[1]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function getStoredManualLectureForItem(item: CalendarSourceItem) {
+  const manualLectures = getStoredManualLectures();
+
+  return manualLectures.find((lecture) => (
+    codesMatch(item.courseCode, lecture.friendlyCourseCode) ||
+    codesMatch(item.courseCode, lecture.code) ||
+    codesMatch(item.courseName, lecture.friendlyName)
+  ));
+}
+
+function getStoredCanvasCourseIdForItem(item: CalendarSourceItem) {
+  if (item.courseId) {
+    return item.courseId;
+  }
+
+  const courseIdFromUrl = getCanvasCourseIdFromUrl(item.htmlUrl);
+
+  if (courseIdFromUrl) {
+    return courseIdFromUrl;
+  }
+
+  const canvasPreferences = getStoredCanvasLecturePreferences();
+  const matchingPreference = Object.entries(canvasPreferences).find(([, preference]) => (
+    codesMatch(item.courseCode, preference.friendlyCourseCode) ||
+    codesMatch(item.courseCode, preference.originalCourseCode) ||
+    codesMatch(item.courseName, preference.friendlyName)
+  ));
+
+  return matchingPreference?.[0];
+}
+
+function getManualCourseworkTargetUrl(item: CalendarSourceItem, lecture: StoredCoursePreference) {
+  void item;
+
+  const submissionUrl = getManualLectureLinkUrl(lecture, 'submission-link');
+  const lectureWebsiteUrl = getManualLectureLinkUrl(lecture, 'lecture-website');
+
+  return submissionUrl ?? lectureWebsiteUrl;
+}
+
+function getCalendarSourceItemOpenTarget(item: CalendarSourceItem) {
+  if (item.source === 'canvas') {
+    const canvasCourseId = getStoredCanvasCourseIdForItem(item);
+
+    return canvasCourseId
+      ? {
+          courseRowId: `canvas:${canvasCourseId}`,
+          resourceUrl: item.htmlUrl,
+        }
+      : undefined;
+  }
+
+  const manualLecture = getStoredManualLectureForItem(item);
+
+  const manualLectureId = manualLecture?.id;
+
+  if (!manualLectureId) {
+    return undefined;
+  }
+
+  return {
+    courseRowId: `manual:${manualLectureId}`,
+    resourceUrl: getManualCourseworkTargetUrl(item, manualLecture),
+  };
+}
+
 function getCalendarCourseFilterId(label: string) {
   return normalizeCourseCode(label || 'calendar-course');
 }
@@ -560,27 +728,131 @@ function getCalendarCourseFilterOption(item: CalendarSourceItem, fallbackLabel: 
   };
 }
 
-function getCalendarCourseFilterOptions(
-  items: CalendarSourceItem[],
+function setCalendarCourseOption(
+  optionMap: Map<string, CalendarCourseFilterOption>,
+  labelValue: string | undefined,
+  color: ColorToken | undefined,
+  hiddenCourseIds: string[],
+) {
+  const label = labelValue?.trim();
+
+  if (!label) {
+    return;
+  }
+
+  const id = getCalendarCourseFilterId(label);
+
+  if (!optionMap.has(id)) {
+    optionMap.set(id, {
+      checked: !hiddenCourseIds.includes(id),
+      color: color ?? 'green',
+      id,
+      label,
+    });
+  }
+}
+
+function getActiveCalendarCourseOptions(
+  canvasItems: CanvasCalendarItem[],
   hiddenCourseIds: string[],
   fallbackLabel: string,
+  selectedSemester: string,
 ): CalendarCourseFilterOption[] {
   const optionMap = new Map<string, CalendarCourseFilterOption>();
+  const canvasLecturePreferences = getStoredCanvasLecturePreferences();
 
-  items.forEach((item) => {
-    const option = getCalendarCourseFilterOption(item, fallbackLabel);
+  getStoredManualLectures().forEach((lecture) => {
+    if (lecture.hidden || !semesterMatches(lecture.semester, selectedSemester)) {
+      return;
+    }
 
-    if (!optionMap.has(option.id)) {
-      optionMap.set(option.id, {
-        ...option,
-        checked: !hiddenCourseIds.includes(option.id),
-      });
+    setCalendarCourseOption(
+      optionMap,
+      lecture.friendlyCourseCode ||
+        lecture.code ||
+        lecture.courseCode ||
+        lecture.friendlyName ||
+        lecture.courseName,
+      lecture.chipColor ?? getStoredCourseChipColor(lecture.friendlyCourseCode || lecture.code || lecture.courseCode),
+      hiddenCourseIds,
+    );
+  });
+
+  Object.values(canvasLecturePreferences).forEach((preference) => {
+    if (
+      preference.archivedAsManualLectureId ||
+      preference.hidden ||
+      !semesterMatches(preference.semester ?? preference.termName, selectedSemester)
+    ) {
+      return;
+    }
+
+    setCalendarCourseOption(
+      optionMap,
+      preference.friendlyCourseCode ||
+        preference.originalCourseCode ||
+        preference.courseCode ||
+        preference.code ||
+        preference.friendlyName ||
+        preference.courseName,
+      preference.chipColor ?? getStoredCourseChipColor(preference.friendlyCourseCode || preference.originalCourseCode || preference.courseCode),
+      hiddenCourseIds,
+    );
+  });
+
+  canvasItems.forEach((item) => {
+    if (!item.courseId && !item.courseCode && !item.courseName) {
+      return;
+    }
+
+    if (isCourseReferenceHidden(item)) {
+      return;
+    }
+
+    if (!semesterMatches(item.courseId ? canvasLecturePreferences[item.courseId]?.semester : undefined, selectedSemester)) {
+      return;
+    }
+
+    const option = getCalendarCourseFilterOption({
+      id: item.id,
+      source: 'canvas',
+      title: item.title,
+      type: item.type,
+      courseId: item.courseId,
+      courseCode: item.courseCode,
+      courseName: item.courseName,
+      dueAt: item.dueAt,
+      startAt: item.startAt,
+      endAt: item.endAt,
+      htmlUrl: item.htmlUrl,
+      color: getCanvasItemColor(item),
+    }, fallbackLabel);
+
+    if (option.label !== fallbackLabel) {
+      setCalendarCourseOption(optionMap, option.label, option.color, hiddenCourseIds);
     }
   });
 
   return [...optionMap.values()].sort((firstOption, secondOption) => (
     firstOption.label.localeCompare(secondOption.label)
   ));
+}
+
+function getActiveAwareCourseDisplay(
+  item: CalendarSourceItem,
+  fallbackLabel: string,
+  activeCourseOptionIds?: Set<string>,
+) {
+  void activeCourseOptionIds;
+
+  const courseDisplay = getCourseDisplay(item, fallbackLabel);
+
+  return courseDisplay;
+}
+
+function isCalendarTodoInteractiveTarget(target: EventTarget | null) {
+  return target instanceof Element &&
+    Boolean(target.closest('button,a,input,textarea,select,[role="menuitem"],[data-calendar-todo-action]'));
 }
 
 function filterCalendarSourceItemsByCourse(
@@ -603,13 +875,20 @@ function getCalendarBoardColumns(options: CalendarCourseFilterOption[]): BoardCo
   return options
     .filter((option) => option.checked)
     .map((option) => ({
+      canAdd: option.canAdd,
       id: option.id,
       label: option.label,
       color: option.color,
     }));
 }
 
-function getCalendarBoardItems(items: CalendarSourceItem[], fallbackLabel: string): BoardItem[] {
+function getCalendarBoardItems(
+  items: CalendarSourceItem[],
+  fallbackLabel: string,
+  activeCourseOptionIds?: Set<string>,
+): BoardItem[] {
+  void activeCourseOptionIds;
+
   return items
     .slice()
     .sort((firstItem, secondItem) => (
@@ -630,7 +909,7 @@ function getCalendarBoardItems(items: CalendarSourceItem[], fallbackLabel: strin
         dueAt,
         isCompleted: Boolean(item.isCompleted),
         isLocked: Boolean(item.isLocked),
-        isTitleEditable: item.source === 'manual-coursework',
+        isTitleEditable: !item.isLocked,
         canOpenDetails: true,
         isCanvasSource: item.source === 'canvas',
         isStarred: Boolean(item.isStarred),
@@ -945,8 +1224,11 @@ function getCanvasItemColor(item: CanvasCalendarItem) {
     ?? 'blue';
 }
 
-function getCalendarSourceEvent(item: CalendarSourceItem): CalendarEvent {
-  const courseDisplay = getCourseDisplay(item, '');
+function getCalendarSourceEvent(
+  item: CalendarSourceItem,
+  activeCourseOptionIds?: Set<string>,
+): CalendarEvent {
+  const courseDisplay = getActiveAwareCourseDisplay(item, '', activeCourseOptionIds);
 
   return {
     id: item.id,
@@ -958,9 +1240,13 @@ function getCalendarSourceEvent(item: CalendarSourceItem): CalendarEvent {
   };
 }
 
-function getCalendarSourceAgendaItem(item: CalendarSourceItem): AgendaItem {
+function getCalendarSourceAgendaItem(
+  item: CalendarSourceItem,
+  fallbackCourseLabel = '',
+  activeCourseOptionIds?: Set<string>,
+): AgendaItem {
   const label = item.type.charAt(0).toUpperCase() + item.type.slice(1);
-  const courseDisplay = getCourseDisplay(item, '');
+  const courseDisplay = getActiveAwareCourseDisplay(item, fallbackCourseLabel, activeCourseOptionIds);
 
   return {
     id: item.id,
@@ -982,6 +1268,7 @@ function getCalendarSourceItems(canvasItems: CanvasCalendarItem[], preferenceVer
 
   const canvasCourseworkPreferences = getStoredCanvasCourseworkPreferences();
   const canvasAssessmentPreferences = getStoredCanvasAssessmentPreferences();
+  const canvasLecturePreferences = getStoredCanvasLecturePreferences();
   const canvasSourceItems = canvasItems
     .filter((item) => {
       const isAssessment = isAssessmentType(item.type, item.title);
@@ -1010,7 +1297,7 @@ function getCalendarSourceItems(canvasItems: CanvasCalendarItem[], preferenceVer
         startAt: preference?.startAt || item.startAt,
         endAt: preference?.endAt || item.endAt,
         htmlUrl: preference?.htmlUrl || item.htmlUrl,
-        semester: preference?.semester,
+        semester: preference?.semester || (item.courseId ? canvasLecturePreferences[item.courseId]?.semester : undefined),
         color: getCanvasItemColor(item),
         isCompleted,
         isLocked: Boolean(item.isSubmitted),
@@ -1114,6 +1401,7 @@ function createAcademyCalendarDays(
   monthDate: Date,
   sourceItems: CalendarSourceItem[],
   loadStatus: CanvasCalendarLoadStatus,
+  activeCourseOptionIds?: Set<string>,
 ): CalendarDay[] {
   const monthRange = getCalendarMonthRange(monthDate);
   const firstWeekday = monthRange.startDate.getUTCDay();
@@ -1140,7 +1428,7 @@ function createAcademyCalendarDays(
     ));
     const dateIso = getIsoDateFromUtcDate(date);
     const dateItems = itemsByDate[dateIso] ?? [];
-    const events = dateItems.map(getCalendarSourceEvent);
+    const events = dateItems.map((item) => getCalendarSourceEvent(item, activeCourseOptionIds));
     const dayProgress = getDayTodoProgress(dateItems);
     const outsideMonth = date.getUTCMonth() !== monthRange.monthIndex;
     const status = outsideMonth
@@ -1173,6 +1461,7 @@ function createAcademyCalendarData(
   loadStatus: CanvasCalendarLoadStatus,
   agendaDateIso: string,
   fallbackCourseLabel: string,
+  activeCourseOptionIds?: Set<string>,
 ): WorkspaceModeMockData {
   const agenda = sourceItems
     .filter((item) => getLocalIsoDate(getCalendarSourceItemDate(item)) === agendaDateIso)
@@ -1180,7 +1469,7 @@ function createAcademyCalendarData(
       new Date(getCalendarSourceItemDate(firstItem) ?? '').getTime() -
       new Date(getCalendarSourceItemDate(secondItem) ?? '').getTime()
     ))
-    .map(getCalendarSourceAgendaItem);
+    .map((item) => getCalendarSourceAgendaItem(item, fallbackCourseLabel, activeCourseOptionIds));
 
   return {
     ...data,
@@ -1188,8 +1477,9 @@ function createAcademyCalendarData(
     boardItems: getCalendarBoardItems(
       sourceItems.filter((item) => getLocalIsoDate(getCalendarSourceItemDate(item)) === agendaDateIso),
       fallbackCourseLabel,
+      activeCourseOptionIds,
     ),
-    days: createAcademyCalendarDays(monthDate, sourceItems, loadStatus),
+    days: createAcademyCalendarDays(monthDate, sourceItems, loadStatus, activeCourseOptionIds),
     monthLabel: formatCalendarMonthLabel(monthDate),
     timeline: getCalendarTimelineItems(sourceItems, monthDate, fallbackCourseLabel),
   };
@@ -1227,6 +1517,32 @@ function toIsoFromDateInput(value: string) {
   const date = new Date(value);
 
   return Number.isNaN(date.getTime()) ? '' : date.toISOString();
+}
+
+function optionalIsoFromDateInput(value: string) {
+  const isoValue = toIsoFromDateInput(value);
+
+  return isoValue || undefined;
+}
+
+function formatSettingsDateTime(value?: string, locale = 'en-CA') {
+  if (!value) {
+    return '--';
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return '--';
+  }
+
+  return date.toLocaleString(locale, {
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  });
 }
 
 function toggleCalendarSourceItemDone(item: CalendarSourceItem) {
@@ -1290,10 +1606,12 @@ function createCalendarTodoDetailsDraft(item?: CalendarSourceItem | null): Calen
 
 function CalendarTodoDetailsDialog({
   item,
+  onOpenItem,
   onOpenChange,
   onSave,
 }: {
   item?: CalendarSourceItem | null;
+  onOpenItem?: (item: CalendarSourceItem) => void;
   onOpenChange: (open: boolean) => void;
   onSave: (item: CalendarSourceItem, draft: CalendarTodoDetailsDraft) => void;
 }) {
@@ -1390,6 +1708,12 @@ function CalendarTodoDetailsDialog({
             </div>
           </div>
           <DialogFooter>
+            {item && onOpenItem ? (
+              <Button className="mr-auto" onClick={() => onOpenItem(item)} type="button" variant="secondary">
+                <ExternalLink className="size-4" />
+                {dictionary.courseOverviewOpenCanvas}
+              </Button>
+            ) : null}
             <Button onClick={() => onOpenChange(false)} type="button" variant="outline">
               {dictionary.cancel}
             </Button>
@@ -1408,7 +1732,19 @@ function AcademySettingsView({
   onSettingsChange: (settings: AcademyCalendarSettings) => void;
   settings: AcademyCalendarSettings;
 }) {
-  const { dictionary } = useLanguage();
+  const { dictionary, language } = useLanguage();
+  const [canvasTokenStatus, setCanvasTokenStatus] = useState<CanvasTokenStatus | null>(null);
+  const [isCanvasTokenLoading, setIsCanvasTokenLoading] = useState(true);
+  const [isCanvasTokenSaving, setIsCanvasTokenSaving] = useState(false);
+  const [canvasTokenError, setCanvasTokenError] = useState('');
+  const [canvasTokenMessage, setCanvasTokenMessage] = useState('');
+  const [canvasTokenDraft, setCanvasTokenDraft] = useState({
+    accessToken: '',
+    expiresAt: '',
+    instanceUrl: '',
+    startsAt: '',
+  });
+  const dateLocale = language === 'ko' ? 'ko-KR' : 'en-CA';
   const updateSettings = (partialSettings: Partial<AcademyCalendarSettings>) => {
     onSettingsChange(normalizeAcademyCalendarSettings({
       ...settings,
@@ -1422,6 +1758,78 @@ function AcademySettingsView({
       [key]: Number.isFinite(parsedValue) ? parsedValue : settings[key],
     });
   };
+  const loadCanvasTokenStatus = () => {
+    setIsCanvasTokenLoading(true);
+    setCanvasTokenError('');
+
+    workspaceApi
+      .getCanvasTokenStatus()
+      .then((status) => {
+        setCanvasTokenStatus(status);
+        setCanvasTokenDraft((currentDraft) => ({
+          ...currentDraft,
+          accessToken: '',
+          expiresAt: formatDateInputValue(status.expiresAt),
+          instanceUrl: status.instanceUrl ?? currentDraft.instanceUrl,
+          startsAt: formatDateInputValue(status.startsAt),
+        }));
+      })
+      .catch((error: unknown) => {
+        setCanvasTokenError(error instanceof Error ? error.message : dictionary.canvasTokenStatusUnavailable);
+      })
+      .finally(() => setIsCanvasTokenLoading(false));
+  };
+  const updateCanvasTokenDraft = (field: keyof typeof canvasTokenDraft, value: string) => {
+    setCanvasTokenDraft((currentDraft) => ({
+      ...currentDraft,
+      [field]: value,
+    }));
+  };
+  const canvasTokenStatusLabels: Record<string, string> = {
+    connected: dictionary.canvasTokenStatusConnected,
+    expired: dictionary.canvasTokenStatusExpired,
+    invalid: dictionary.canvasTokenStatusInvalid,
+    needs_connection: dictionary.canvasTokenStatusNeedsConnection,
+    pending: dictionary.canvasTokenStatusPending,
+  };
+  const canvasTokenSourceLabels: Record<string, string> = {
+    environment: dictionary.canvasTokenSourceEnvironment,
+    none: dictionary.canvasTokenSourceNone,
+    user: dictionary.canvasTokenSourceUser,
+  };
+  const handleCanvasTokenSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setIsCanvasTokenSaving(true);
+    setCanvasTokenError('');
+    setCanvasTokenMessage('');
+
+    workspaceApi
+      .updateCanvasToken({
+        accessToken: canvasTokenDraft.accessToken,
+        expiresAt: optionalIsoFromDateInput(canvasTokenDraft.expiresAt),
+        instanceUrl: canvasTokenDraft.instanceUrl,
+        startsAt: optionalIsoFromDateInput(canvasTokenDraft.startsAt),
+      })
+      .then((status) => {
+        setCanvasTokenStatus(status);
+        setCanvasTokenDraft((currentDraft) => ({
+          ...currentDraft,
+          accessToken: '',
+          expiresAt: formatDateInputValue(status.expiresAt),
+          instanceUrl: status.instanceUrl ?? currentDraft.instanceUrl,
+          startsAt: formatDateInputValue(status.startsAt),
+        }));
+        setCanvasTokenMessage(dictionary.canvasTokenSaved);
+      })
+      .catch((error: unknown) => {
+        setCanvasTokenError(error instanceof Error ? error.message : dictionary.canvasTokenSaveFailed);
+      })
+      .finally(() => setIsCanvasTokenSaving(false));
+  };
+
+  useEffect(() => {
+    loadCanvasTokenStatus();
+  }, []);
 
   return (
     <div className="grid min-h-0 gap-4 xl:h-full xl:overflow-y-auto xl:pr-1">
@@ -1433,6 +1841,138 @@ function AcademySettingsView({
           </p>
         </CardHeader>
         <CardContent className="grid gap-5">
+          <section className="grid gap-3 rounded-lg border bg-muted/20 p-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-black text-foreground">
+                  {dictionary.canvasTokenSettingsTitle}
+                </h3>
+                <p className="mt-1 max-w-2xl text-xs font-semibold text-muted-foreground">
+                  {dictionary.canvasTokenSettingsHint}
+                </p>
+              </div>
+              <Button
+                className="h-8 rounded-md px-2.5 text-xs font-black"
+                disabled={isCanvasTokenLoading}
+                onClick={loadCanvasTokenStatus}
+                type="button"
+                variant="outline"
+              >
+                {dictionary.canvasTokenRefresh}
+              </Button>
+            </div>
+
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+              {[
+                [dictionary.canvasTokenStatusLabel, canvasTokenStatus ? canvasTokenStatusLabels[canvasTokenStatus.status] ?? canvasTokenStatus.status : '--'],
+                [dictionary.canvasTokenSource, canvasTokenStatus ? canvasTokenSourceLabels[canvasTokenStatus.tokenSource] ?? canvasTokenStatus.tokenSource : '--'],
+                [dictionary.canvasTokenExpiresAt, formatSettingsDateTime(canvasTokenStatus?.expiresAt, dateLocale)],
+                [dictionary.canvasTokenStartsAt, formatSettingsDateTime(canvasTokenStatus?.startsAt, dateLocale)],
+              ].map(([label, value]) => (
+                <div className="min-w-0 rounded-lg border bg-card p-3" key={label}>
+                  <div className="text-[10px] font-black uppercase text-muted-foreground">{label}</div>
+                  <div className="mt-1 truncate text-sm font-black text-foreground">
+                    {isCanvasTokenLoading ? dictionary.canvasTokenLoading : value}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="grid gap-2 rounded-lg border bg-card p-3 text-xs font-semibold text-muted-foreground">
+              <div className="flex min-w-0 items-center justify-between gap-3">
+                <span>{dictionary.canvasTokenInstanceUrl}</span>
+                <span className="min-w-0 truncate text-right text-foreground">
+                  {canvasTokenStatus?.instanceUrl ?? dictionary.notSet}
+                </span>
+              </div>
+              <div className="flex min-w-0 items-center justify-between gap-3">
+                <span>{dictionary.canvasTokenConnectedUser}</span>
+                <span className="min-w-0 truncate text-right text-foreground">
+                  {canvasTokenStatus?.userName ?? dictionary.notSet}
+                </span>
+              </div>
+              <div className="flex min-w-0 items-center justify-between gap-3">
+                <span>{dictionary.canvasTokenUpdatedAt}</span>
+                <span className="min-w-0 truncate text-right text-foreground">
+                  {formatSettingsDateTime(canvasTokenStatus?.updatedAt, dateLocale)}
+                </span>
+              </div>
+            </div>
+
+            <form className="grid gap-3 rounded-lg border bg-card p-3" onSubmit={handleCanvasTokenSubmit}>
+              <div>
+                <h4 className="text-xs font-black uppercase text-muted-foreground">
+                  {dictionary.canvasTokenChangeTitle}
+                </h4>
+                <p className="mt-1 text-xs font-semibold text-muted-foreground">
+                  {dictionary.canvasTokenSecureNote}
+                </p>
+              </div>
+              <div className="grid gap-3 lg:grid-cols-[minmax(220px,1fr)_minmax(260px,1.2fr)]">
+                <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                  <span>{dictionary.canvasTokenInstanceUrl}</span>
+                  <Input
+                    autoComplete="off"
+                    inputMode="url"
+                    onChange={(event) => updateCanvasTokenDraft('instanceUrl', event.target.value)}
+                    placeholder="https://canvas.sfu.ca"
+                    required
+                    value={canvasTokenDraft.instanceUrl}
+                  />
+                </label>
+                <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                  <span>{dictionary.canvasTokenValue}</span>
+                  <Input
+                    autoComplete="new-password"
+                    onChange={(event) => updateCanvasTokenDraft('accessToken', event.target.value)}
+                    placeholder={dictionary.canvasTokenValuePlaceholder}
+                    required
+                    type="password"
+                    value={canvasTokenDraft.accessToken}
+                  />
+                </label>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                  <span>{dictionary.canvasTokenStartsAt}</span>
+                  <Input
+                    lang={language === 'ko' ? 'ko-KR' : 'en-CA'}
+                    onChange={(event) => updateCanvasTokenDraft('startsAt', event.target.value)}
+                    type="datetime-local"
+                    value={canvasTokenDraft.startsAt}
+                  />
+                </label>
+                <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                  <span>{dictionary.canvasTokenExpiresAt}</span>
+                  <Input
+                    lang={language === 'ko' ? 'ko-KR' : 'en-CA'}
+                    onChange={(event) => updateCanvasTokenDraft('expiresAt', event.target.value)}
+                    type="datetime-local"
+                    value={canvasTokenDraft.expiresAt}
+                  />
+                </label>
+              </div>
+              {canvasTokenError ? (
+                <div className="rounded-md border border-red-500/35 bg-red-500/10 px-3 py-2 text-xs font-bold text-red-700 dark:text-red-200">
+                  {canvasTokenError}
+                </div>
+              ) : null}
+              {canvasTokenMessage ? (
+                <div className="rounded-md border border-emerald-500/35 bg-emerald-500/10 px-3 py-2 text-xs font-bold text-emerald-700 dark:text-emerald-200">
+                  {canvasTokenMessage}
+                </div>
+              ) : null}
+              <div className="flex justify-end">
+                <Button
+                  className="rounded-md"
+                  disabled={isCanvasTokenSaving}
+                  type="submit"
+                >
+                  {isCanvasTokenSaving ? dictionary.canvasTokenSaving : dictionary.canvasTokenSave}
+                </Button>
+              </div>
+            </form>
+          </section>
           <section className="grid gap-3 rounded-lg border bg-muted/20 p-3">
             <div>
               <h3 className="text-sm font-black text-foreground">
@@ -1566,6 +2106,9 @@ function App() {
   const [authRedirectMessage] = useState(getInitialAuthRedirectMessage);
   const [academyPreferenceVersion, setAcademyPreferenceVersion] = useState(0);
   const [selectedCourseOverviewRowId, setSelectedCourseOverviewRowId] = useState<string | null>(null);
+  const [selectedCourseOverviewResourceUrl, setSelectedCourseOverviewResourceUrl] = useState<string | null>(null);
+  const calendarTodoLongPressTimeoutRef = useRef<number | null>(null);
+  const calendarTodoLongPressTriggeredRef = useRef(false);
   const isApplyingHistoryRef = useRef(false);
   const hasAppliedUrlNavigationRef = useRef(false);
   const activeSidebarItem = navigation.modeId === activeMode.id ? navigation.sidebarItemId : 'dashboard';
@@ -1576,10 +2119,11 @@ function App() {
   const isOutlookView = activeSidebarItem === 'outlook';
   const isChatView = activeSidebarItem === 'chat';
   const isCanvasInboxView = activeMode.id === 'academy' && activeSidebarItem === 'inbox';
+  const isAcademyPeopleView = activeMode.id === 'academy' && activeSidebarItem === 'people';
   const isCommunicationView = isEmailView || isOutlookView || isChatView;
   const isCoursesView = activeMode.id === 'academy' && activeSidebarItem === 'courses';
   const isAcademySettingsView = activeMode.id === 'academy' && activeSidebarItem === 'settings';
-  const isMainOnlyView = isCommunicationView || isCoursesView || isCanvasInboxView || isAcademySettingsView;
+  const isMainOnlyView = isCommunicationView || isCoursesView || isCanvasInboxView || isAcademyPeopleView || isAcademySettingsView;
   const isDashboardWorkspaceView = !isDriveView && !isMainOnlyView;
   const effectiveCalendarExpanded = isCalendarExpanded || isCalendarAutoExpanded;
   const canvasCalendarMonthKey = getCalendarMonthKey(calendarMonth);
@@ -1600,12 +2144,21 @@ function App() {
     : activeMode.id === 'academy' && canvasCalendarLoadStatus === 'failed'
       ? dictionary.canvasCalendarUnavailable
       : undefined;
+  const selectedAcademySemester = normalizeSemesterName(academyCalendarSettings.selectedSemester);
   const allCalendarSourceItems = activeMode.id === 'academy'
     ? getCalendarSourceItems(canvasCalendarItems, academyPreferenceVersion)
+        .filter((item) => semesterMatches(item.semester, selectedAcademySemester))
+        .filter((item) => !isCourseReferenceHidden(item))
     : [];
   const calendarCourseFilterOptions = activeMode.id === 'academy'
-    ? getCalendarCourseFilterOptions(allCalendarSourceItems, hiddenCalendarCourseIds, dictionary.selectedDayTodoNoCourse)
+    ? getActiveCalendarCourseOptions(
+        canvasCalendarItems,
+        hiddenCalendarCourseIds,
+        dictionary.selectedDayTodoNoCourse,
+        selectedAcademySemester,
+      )
     : [];
+  const activeCalendarCourseOptionIds = new Set(calendarCourseFilterOptions.map((option) => option.id));
   const calendarSourceItems = activeMode.id === 'academy'
     ? filterCalendarSourceItemsByCourse(
         allCalendarSourceItems,
@@ -1619,11 +2172,33 @@ function App() {
       new Date(getCalendarSourceItemDate(firstItem) ?? '').getTime() -
       new Date(getCalendarSourceItemDate(secondItem) ?? '').getTime()
     ));
+  const inactiveSelectedDayCourseOptions = activeMode.id === 'academy'
+    ? Array.from(
+        selectedDaySourceItems.reduce<Map<string, CalendarCourseFilterOption>>((options, item) => {
+          const option = getCalendarCourseFilterOption(item, dictionary.selectedDayTodoNoCourse);
+
+          if (!activeCalendarCourseOptionIds.has(option.id) && !options.has(option.id)) {
+            options.set(option.id, {
+              ...option,
+              canAdd: false,
+              checked: true,
+            });
+          }
+
+          return options;
+        }, new Map()).values(),
+      )
+    : [];
+  const calendarBoardCourseOptions = [...calendarCourseFilterOptions, ...inactiveSelectedDayCourseOptions];
   const calendarBoardColumns = activeMode.id === 'academy'
-    ? getCalendarBoardColumns(calendarCourseFilterOptions)
+    ? getCalendarBoardColumns(calendarBoardCourseOptions)
     : undefined;
-  const selectedDayGroups = selectedDaySourceItems.reduce<Record<string, { color: ColorToken; items: CalendarSourceItem[]; label: string }>>((groups, item) => {
-    const courseDisplay = getCourseDisplay(item, dictionary.selectedDayTodoNoCourse);
+  const selectedDayItemsByCourse = selectedDaySourceItems.reduce<Record<string, SelectedDayCourseGroup>>((groups, item) => {
+    const courseDisplay = getActiveAwareCourseDisplay(
+      item,
+      dictionary.selectedDayTodoNoCourse,
+      activeCalendarCourseOptionIds,
+    );
 
     return {
       ...groups,
@@ -1634,6 +2209,21 @@ function App() {
       },
     };
   }, {});
+  const selectedDayGroups: SelectedDayCourseGroup[] = activeMode.id === 'academy'
+    ? [
+        ...calendarCourseFilterOptions
+          .filter((option) => option.checked)
+          .map((option) => ({
+            color: option.color,
+            canAdd: option.canAdd !== false,
+            items: selectedDayItemsByCourse[option.label]?.items ?? [],
+            label: option.label,
+          })),
+        ...Object.values(selectedDayItemsByCourse)
+          .filter((group) => !calendarCourseFilterOptions.some((option) => option.label === group.label))
+          .map((group) => ({ ...group, canAdd: false })),
+      ]
+    : Object.values(selectedDayItemsByCourse);
   const selectedDayHeading = formatSelectedDayHeading(selectedCalendarDayIso, language);
   const selectedDayRelativeBadge = formatRelativeDayBadge(selectedCalendarDayIso);
   const isSelectedCalendarDayToday = selectedCalendarDayIso === getTodayIsoDate();
@@ -1645,6 +2235,7 @@ function App() {
         canvasCalendarLoadStatus,
         selectedCalendarDayIso,
         dictionary.selectedDayTodoNoCourse,
+        activeCalendarCourseOptionIds,
       )
     : activeData;
   const selectedDayProgressInfo = getDayTodoProgress(selectedDaySourceItems);
@@ -1709,6 +2300,38 @@ function App() {
     }, 0);
   };
 
+  const openAcademyCourseResource = (courseRowId?: string | null, resourceUrl?: string | null) => {
+    if (activeMode.id !== 'academy') {
+      return;
+    }
+
+    setSelectedCourseOverviewRowId(courseRowId ?? null);
+    setSelectedCourseOverviewResourceUrl(resourceUrl ?? null);
+    navigateWorkspace({
+      modeId: activeMode.id,
+      sidebarItemId: 'courses',
+      view: currentView,
+    });
+  };
+
+  const openCalendarSourceItem = (item: CalendarSourceItem) => {
+    const target = getCalendarSourceItemOpenTarget(item);
+
+    if (!target) {
+      return;
+    }
+
+    openAcademyCourseResource(target.courseRowId, target.resourceUrl);
+  };
+
+  const openCalendarActionItem = (item: { id: string }) => {
+    const sourceItem = calendarSourceItems.find((calendarItem) => calendarItem.id === item.id);
+
+    if (sourceItem) {
+      openCalendarSourceItem(sourceItem);
+    }
+  };
+
   const persistAcademyCalendarSettings = (settings: AcademyCalendarSettings) => {
     storeAcademyCalendarSettings(settings);
 
@@ -1768,41 +2391,85 @@ function App() {
     }
   };
 
-  const handleQuickAddCalendarTodo = (column: BoardColumnConfig) => {
+  const createQuickCalendarCoursework = ({
+    courseCode = '',
+    dateIso = selectedCalendarDayIso,
+    focusBoardItem = false,
+    title = '',
+  }: {
+    courseCode?: string;
+    dateIso?: string;
+    focusBoardItem?: boolean;
+    title?: string;
+  }) => {
     const randomId = typeof crypto !== 'undefined' && 'randomUUID' in crypto
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const newCoursework: StoredManualCoursework = {
       id: `manual-coursework-${randomId}`,
-      title: '',
-      courseCode: column.label,
-      dueAt: getEndOfDayIsoDateTime(selectedCalendarDayIso),
+      title,
+      courseCode,
+      dueAt: getEndOfDayIsoDateTime(dateIso),
       startAt: new Date().toISOString(),
       courseworkType: 'assignment',
       submissionType: 'no_submission',
       completed: false,
-      semester: academyCalendarSettings.selectedSemester,
+      semester: selectedAcademySemester,
     };
     const nextCoursework = [...getStoredManualCoursework(), newCoursework];
 
     storeJson(manualCourseworkStorageKey, nextCoursework);
-    setFocusedCalendarTodoId(newCoursework.id);
+    setSelectedCalendarDayIso(dateIso);
+    if (focusBoardItem) {
+      setFocusedCalendarTodoId(newCoursework.id);
+    }
     persistAcademyPreferencesFromStorage();
   };
 
-  const handleUpdateCalendarTodoTitle = (item: BoardItem, title: string) => {
-    if (!item.isTitleEditable) {
+  const handleQuickAddCalendarTodo = (column: BoardColumnConfig) => {
+    createQuickCalendarCoursework({
+      courseCode: column.label,
+      focusBoardItem: true,
+    });
+  };
+
+  const handleQuickAddCalendarCourseworkForDay = (day: CalendarDay) => {
+    if (!day.dateIso) {
       return;
     }
 
-    const nextCoursework = getStoredManualCoursework().map((coursework) => (
-      coursework.id === item.id
-        ? { ...coursework, title }
-        : coursework
-    ));
+    createQuickCalendarCoursework({
+      dateIso: day.dateIso,
+      focusBoardItem: true,
+    });
+  };
 
-    storeJson(manualCourseworkStorageKey, nextCoursework);
-    persistAcademyPreferencesFromStorage();
+  const handleQuickAddSelectedDayCoursework = (courseCode?: string) => {
+    createQuickCalendarCoursework({
+      courseCode: courseCode ?? '',
+      focusBoardItem: true,
+    });
+  };
+
+  const handleUpdateCalendarSourceItemTitle = (item: CalendarSourceItem, title: string) => {
+    if (item.isLocked) {
+      return;
+    }
+
+    updateCalendarSourceItemPreference(item, (preference) => ({
+      ...preference,
+      title,
+    }));
+  };
+
+  const handleUpdateCalendarTodoTitle = (item: BoardItem, title: string) => {
+    const sourceItem = calendarSourceItems.find((calendarItem) => calendarItem.id === item.id);
+
+    if (!sourceItem) {
+      return;
+    }
+
+    handleUpdateCalendarSourceItemTitle(sourceItem, title);
   };
 
   const handleOpenCalendarTodoDetails = (item: { id: string }) => {
@@ -2265,6 +2932,38 @@ function App() {
     };
   }, []);
 
+  useEffect(() => () => {
+    clearCalendarTodoLongPress();
+  }, []);
+
+  const clearCalendarTodoLongPress = () => {
+    if (calendarTodoLongPressTimeoutRef.current) {
+      window.clearTimeout(calendarTodoLongPressTimeoutRef.current);
+      calendarTodoLongPressTimeoutRef.current = null;
+    }
+  };
+
+  const startCalendarTodoRename = (item: CalendarSourceItem) => {
+    if (item.isLocked) {
+      return;
+    }
+
+    setFocusedCalendarTodoId(item.id);
+  };
+
+  const handleCalendarTodoPointerDown = (event: ReactPointerEvent, item: CalendarSourceItem) => {
+    if (item.isLocked || isCalendarTodoInteractiveTarget(event.target)) {
+      return;
+    }
+
+    clearCalendarTodoLongPress();
+    calendarTodoLongPressTriggeredRef.current = false;
+    calendarTodoLongPressTimeoutRef.current = window.setTimeout(() => {
+      calendarTodoLongPressTriggeredRef.current = true;
+      startCalendarTodoRename(item);
+    }, 520);
+  };
+
   const renderDayTodoContent = (variant: 'card' | 'dialog' = 'card') => (
     <>
       <div className={cn('min-w-0 rounded-lg border bg-muted/25 p-3', variant === 'card' && 'mb-4')}>
@@ -2303,27 +3002,48 @@ function App() {
         />
       </div>
       <div className={cn('min-h-0 flex-1 overflow-y-auto pr-1', variant === 'dialog' && 'max-h-[64vh]')}>
-        {selectedDaySourceItems.length === 0 ? (
+        {selectedDayGroups.length === 0 ? (
           <div className="rounded-lg border border-dashed bg-muted/35 p-4 text-sm font-bold text-muted-foreground">
             {dictionary.selectedDayTodoEmpty}
           </div>
         ) : (
           <div className="grid gap-4">
-            {Object.values(selectedDayGroups).map((group) => (
+            {selectedDayGroups.map((group) => (
               <section className="min-w-0" key={group.label}>
-                <div
-                  className={cn(
-                    'mb-2 inline-flex max-w-full rounded-md border px-2 py-1 text-xs font-black',
-                    badgeColorClasses[group.color],
-                  )}
-                >
-                  <span className="truncate">{group.label}</span>
+                <div className="mb-2 flex min-w-0 items-center gap-2">
+                  <div
+                    className={cn(
+                      'inline-flex max-w-full rounded-md border px-2 py-1 text-xs font-black',
+                      badgeColorClasses[group.color],
+                    )}
+                  >
+                    <span className="truncate">{group.label}</span>
+                  </div>
+                  {group.canAdd !== false ? (
+                    <button
+                      aria-label={`${dictionary.courseworkAdd} · ${group.label}`}
+                      className={cn(
+                        'grid size-7 shrink-0 place-items-center rounded-md border text-xs font-black transition hover:brightness-95',
+                        badgeColorClasses[group.color],
+                      )}
+                      onClick={() => handleQuickAddSelectedDayCoursework(group.label)}
+                      title={`${dictionary.courseworkAdd} · ${group.label}`}
+                      type="button"
+                    >
+                      <Plus className="size-4" />
+                    </button>
+                  ) : null}
                 </div>
                 <div className="grid gap-2">
-                  {group.items.map((item) => {
+                  {group.items.length === 0 ? (
+                    <div className="rounded-lg border border-dashed bg-muted/25 px-3 py-2 text-xs font-bold text-muted-foreground">
+                      {dictionary.selectedDayTodoEmpty}
+                    </div>
+                  ) : group.items.map((item) => {
                     const dueLabel = formatCalendarSourceItemSelectedDayTime(item) ?? dictionary.allDay;
                     const dueState = getCalendarDueState(getCalendarSourceItemDate(item), Boolean(item.isCompleted));
                     const courseDisplay = getCourseDisplay(item, dictionary.selectedDayTodoNoCourse);
+                    const isEditingTitle = focusedCalendarTodoId === item.id && !item.isLocked;
                     const itemRow = (
                       <div
                         className={cn(
@@ -2331,18 +3051,43 @@ function App() {
                           item.isLocked ? 'cursor-default' : 'cursor-pointer hover:bg-muted/45',
                         )}
                         onKeyDown={(event) => {
+                          if (isCalendarTodoInteractiveTarget(event.target)) {
+                            return;
+                          }
+
                           if ((event.key === 'Enter' || event.key === ' ') && !item.isLocked) {
                             event.preventDefault();
                             toggleCalendarSourceItemDone(item);
                             persistAcademyPreferencesFromStorage();
                           }
                         }}
-                        onClick={() => {
-                          if (!item.isLocked) {
+                        onClick={(event) => {
+                          clearCalendarTodoLongPress();
+
+                          if (calendarTodoLongPressTriggeredRef.current) {
+                            calendarTodoLongPressTriggeredRef.current = false;
+                            event.preventDefault();
+                            return;
+                          }
+
+                          if (isCalendarTodoInteractiveTarget(event.target)) {
+                            return;
+                          }
+
+                          if (!item.isLocked && !isEditingTitle) {
                             toggleCalendarSourceItemDone(item);
                             persistAcademyPreferencesFromStorage();
                           }
                         }}
+                        onDoubleClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          startCalendarTodoRename(item);
+                        }}
+                        onPointerCancel={clearCalendarTodoLongPress}
+                        onPointerDown={(event) => handleCalendarTodoPointerDown(event, item)}
+                        onPointerLeave={clearCalendarTodoLongPress}
+                        onPointerUp={clearCalendarTodoLongPress}
                         role="button"
                         tabIndex={0}
                       >
@@ -2368,7 +3113,40 @@ function App() {
                           {item.isCompleted ? '✓' : ''}
                         </button>
                         <span className="min-w-0">
-                          <span className="block truncate text-[15px] font-black leading-snug text-foreground">{item.title}</span>
+                          {isEditingTitle ? (
+                            <input
+                              aria-label={dictionary.boardAddTodoItem}
+                              autoFocus
+                              className="block min-w-0 max-w-full rounded-md border bg-background px-2 py-1 text-[15px] font-black leading-snug text-foreground outline-none transition focus-visible:ring-2 focus-visible:ring-ring/45"
+                              onBlur={() => setFocusedCalendarTodoId(null)}
+                              onChange={(event) => handleUpdateCalendarSourceItemTitle(item, event.target.value)}
+                              onClick={(event) => event.stopPropagation()}
+                              onFocus={(event) => event.currentTarget.select()}
+                              onKeyDown={(event) => {
+                                event.stopPropagation();
+                                if (event.key === 'Enter' || event.key === 'Escape') {
+                                  event.currentTarget.blur();
+                                }
+                              }}
+                              placeholder={dictionary.boardAddTodoItem}
+                              value={item.title}
+                            />
+                          ) : (
+                            <span
+                              className="block truncate text-[15px] font-black leading-snug text-foreground"
+                              onClick={(event) => {
+                                if (item.isLocked) {
+                                  return;
+                                }
+
+                                event.preventDefault();
+                                event.stopPropagation();
+                                startCalendarTodoRename(item);
+                              }}
+                            >
+                              {item.title || dictionary.boardAddTodoItem}
+                            </span>
+                          )}
                           <span className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 text-[10px] font-black text-muted-foreground">
                             <span
                               className={cn(
@@ -2400,6 +3178,10 @@ function App() {
                                 </button>
                               </DropdownMenuTrigger>
                               <DropdownMenuContent align="end" className="w-56">
+                                <DropdownMenuItem onSelect={() => openCalendarSourceItem(item)}>
+                                  <ExternalLink className="size-4" />
+                                  <span>{dictionary.courseOverviewOpenCanvas}</span>
+                                </DropdownMenuItem>
                                 <DropdownMenuItem onSelect={() => handleOpenCalendarTodoDetails(item)}>
                                   <Pencil className="size-4" />
                                   <span>{dictionary.courseworkOpenDetails}</span>
@@ -2444,6 +3226,10 @@ function App() {
                         <ContextMenuTrigger asChild>{itemRow}</ContextMenuTrigger>
                         <ContextMenuContent className="w-56">
                           <ContextMenuLabel>{item.title}</ContextMenuLabel>
+                          <ContextMenuItem onSelect={() => openCalendarSourceItem(item)}>
+                            <ExternalLink className="size-4" />
+                            <span>{dictionary.courseOverviewOpenCanvas}</span>
+                          </ContextMenuItem>
                           <ContextMenuItem onSelect={() => handleOpenCalendarTodoDetails(item)}>
                             <Pencil className="size-4" />
                             <span>{dictionary.courseworkOpenDetails}</span>
@@ -2582,9 +3368,14 @@ function App() {
           ) : isChatView ? (
             <GoogleCommunicationView key="chat" type="chat" />
           ) : isCanvasInboxView ? (
-            <CanvasInboxView />
+            <CanvasInboxView onOpenIntegration={openAcademyCourseResource} />
+          ) : isAcademyPeopleView ? (
+            <CanvasPeopleView onOpenCoursePeople={openAcademyCourseResource} />
           ) : isCoursesView ? (
-            <CourseOverviewView initialSelectedCourseRowId={selectedCourseOverviewRowId} />
+            <CourseOverviewView
+              initialResourceUrl={selectedCourseOverviewResourceUrl}
+              initialSelectedCourseRowId={selectedCourseOverviewRowId}
+            />
           ) : isAcademySettingsView ? (
             <AcademySettingsView
               onSettingsChange={handleAcademyCalendarSettingsChange}
@@ -2594,16 +3385,9 @@ function App() {
             <>
               {!effectiveCalendarExpanded ? (
                 <div className="dashboard-summary-cards overflow-hidden transition-all duration-300 ease-out max-lg:hidden">
-                  <DashboardCards
-                    onOpenAddItem={openAcademyCourseworkDialog}
-                    onOpenCourse={(courseRowId) => {
-                      setSelectedCourseOverviewRowId(courseRowId ?? null);
-                      navigateWorkspace({
-                        modeId: activeMode.id,
-                        sidebarItemId: 'courses',
-                        view: currentView,
-                      });
-                    }}
+                    <DashboardCards
+                      onOpenAddItem={openAcademyCourseworkDialog}
+                    onOpenCourse={openAcademyCourseResource}
                     onPlanMeeting={() => {
                       window.open(
                         'https://calendar.google.com/calendar/u/0/r/eventedit',
@@ -2633,6 +3417,9 @@ function App() {
                 isSelectedDateToday={isSelectedCalendarDayToday}
                 isLoading={activeMode.id === 'academy' && canvasCalendarLoadStatus === 'loading'}
                 mode={activeMode}
+                onAddCourseworkForDay={activeMode.id === 'academy'
+                  ? handleQuickAddCalendarCourseworkForDay
+                  : undefined}
                 onFinishTodoTitleEdit={() => setFocusedCalendarTodoId(null)}
                 onNextMonth={activeMode.id === 'academy'
                   ? () => setCalendarMonth((currentMonth) => addCalendarMonths(currentMonth, 1))
@@ -2643,6 +3430,7 @@ function App() {
                 onOpenAddItem={activeMode.id === 'academy'
                   ? handleQuickAddCalendarTodo
                   : () => setIsAddModalOpen(true)}
+                onOpenTodo={openCalendarActionItem}
                 onOpenTodoDetails={handleOpenCalendarTodoDetails}
                 onPreviousAgendaDay={activeMode.id === 'academy'
                   ? () => handleMoveSelectedAgendaDay(-1)
@@ -2651,6 +3439,7 @@ function App() {
                   ? () => setCalendarMonth((currentMonth) => addCalendarMonths(currentMonth, -1))
                   : undefined}
                 onRemoveTodo={handleRemoveCalendarTodo}
+                onStartTodoTitleEdit={(item) => setFocusedCalendarTodoId(item.id)}
                 onToggleCourseFilter={handleToggleCalendarCourse}
                 onSelectItem={(day) => {
                   if (day?.dateIso) {
@@ -2722,6 +3511,7 @@ function App() {
       {activeMode.id === 'academy' ? (
         <CalendarTodoDetailsDialog
           item={selectedCalendarTodoDetailsItem}
+          onOpenItem={openCalendarSourceItem}
           onOpenChange={(isOpen) => {
             if (!isOpen) {
               setSelectedCalendarTodoDetailsId(null);

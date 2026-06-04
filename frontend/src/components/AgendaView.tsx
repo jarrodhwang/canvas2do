@@ -1,5 +1,5 @@
 import type { AgendaItem } from '../data/mockWorkspaceData';
-import { Check, EyeOff, MoreHorizontal, Pencil, Star, Trash2 } from 'lucide-react';
+import { Check, ExternalLink, EyeOff, MoreHorizontal, Pencil, Star, Trash2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { EventPill } from './EventPill';
 import { Button } from './ui/button';
@@ -15,6 +15,7 @@ import { useLanguage } from '../context/LanguageContext';
 interface AgendaViewProps {
   emptyLabel?: string;
   items: AgendaItem[];
+  onOpenItem?: (item: AgendaItem) => void;
   onOpenItemDetails?: (item: AgendaItem) => void;
   onRemoveItem?: (item: AgendaItem) => void;
   onSelectItem: () => void;
@@ -53,6 +54,7 @@ function CurrentTimeLine() {
 export function AgendaView({
   emptyLabel,
   items,
+  onOpenItem,
   onOpenItemDetails,
   onRemoveItem,
   onSelectItem,
@@ -94,6 +96,12 @@ export function AgendaView({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-56">
+          {onOpenItem ? (
+            <DropdownMenuItem onSelect={() => onOpenItem(item)}>
+              <ExternalLink className="size-4" />
+              <span>{dictionary.courseOverviewOpenCanvas}</span>
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuItem onSelect={() => onOpenItemDetails(item)}>
             <Pencil className="size-4" />
             <span>{dictionary.courseworkOpenDetails}</span>

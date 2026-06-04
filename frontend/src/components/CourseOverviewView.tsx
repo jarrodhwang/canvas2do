@@ -15,7 +15,7 @@ import {
   Users,
   Video,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent } from 'react';
 
 import { workspaceApi } from '../api/workspaceApi';
 import type {
@@ -30,6 +30,8 @@ import type {
   CanvasCourseQuiz,
   CanvasCourseTab,
   CanvasCourseUser,
+  CanvasRubricCriterion,
+  CanvasRubricSettings,
 } from '../api/workspaceApi';
 import { useLanguage } from '../context/LanguageContext';
 import { badgeColorClasses, dotColorClasses } from '../lib/colorStyles';
@@ -480,7 +482,7 @@ function sortRows(firstRow: CourseOverviewRow, secondRow: CourseOverviewRow) {
 
 function CourseSkeletonRow() {
   return (
-    <div className="grid gap-3 rounded-lg border bg-background p-3 md:grid-cols-[minmax(0,1fr)_320px_120px]">
+    <div className="grid animate-pulse gap-3 rounded-lg border bg-background p-3 md:grid-cols-[minmax(0,1fr)_320px_120px]">
       <div className="min-w-0 space-y-3">
         <div className="h-5 w-28 rounded-md bg-muted" />
         <div className="h-4 w-3/4 rounded-md bg-muted" />
@@ -491,6 +493,33 @@ function CourseSkeletonRow() {
         <div className="h-12 rounded-md bg-muted" />
       </div>
       <div className="h-12 rounded-md bg-muted" />
+    </div>
+  );
+}
+
+function CanvasLoadingBanner({
+  className,
+  label,
+  size = 'default',
+}: {
+  className?: string;
+  label: string;
+  size?: 'compact' | 'default';
+}) {
+  return (
+    <div
+      className={cn(
+        'flex min-w-0 items-center gap-2 rounded-lg border bg-primary/5 font-semibold text-muted-foreground',
+        size === 'compact' ? 'px-2.5 py-2 text-xs' : 'px-3 py-3 text-sm',
+        className,
+      )}
+    >
+      <LoaderCircle
+        aria-hidden="true"
+        className={cn('shrink-0 animate-spin text-primary', size === 'compact' ? 'size-3.5' : 'size-4')}
+        strokeWidth={2.4}
+      />
+      <span className="truncate">{label}</span>
     </div>
   );
 }
@@ -1259,6 +1288,7 @@ function CourseDetailView({
   content,
   contentLoadStatus,
   dictionary,
+  initialResourceUrl,
   onBack,
   onSelectItem,
   row,
@@ -1267,6 +1297,7 @@ function CourseDetailView({
   content: CanvasCourseContent | null;
   contentLoadStatus: LoadStatus;
   dictionary: ReturnType<typeof useLanguage>['dictionary'];
+  initialResourceUrl?: string | null;
   onBack: () => void;
   onSelectItem: (item: CourseNavigationItem) => void;
   row: CourseOverviewRow;
@@ -1287,22 +1318,45 @@ function CourseDetailView({
   const [activeIntegratedResource, setActiveIntegratedResource] = useState<IntegratedCourseResource | null>(null);
   const [integratedCanvasPage, setIntegratedCanvasPage] = useState<CanvasCoursePage | null>(null);
   const [integratedAssignment, setIntegratedAssignment] = useState<CanvasCourseAssignment | null>(null);
+  const [linkedRubricAssignment, setLinkedRubricAssignment] = useState<CanvasCourseAssignment | null>(null);
+  const [linkedRubricStatus, setLinkedRubricStatus] = useState<LoadStatus>('idle');
   const [integratedQuiz, setIntegratedQuiz] = useState<CanvasCourseQuiz | null>(null);
   const [integratedDiscussion, setIntegratedDiscussion] = useState<CanvasCourseDiscussion | null>(null);
   const [integratedFile, setIntegratedFile] = useState<CanvasCourseFile | null>(null);
   const [integratedModuleItem, setIntegratedModuleItem] = useState<CanvasCourseModuleItem | null>(null);
   const [integratedResourceStatus, setIntegratedResourceStatus] = useState<LoadStatus>('idle');
+  const [coursePeople, setCoursePeople] = useState<CanvasCourseUser[]>(content?.people ?? []);
+  const [coursePeopleStatus, setCoursePeopleStatus] = useState<LoadStatus>(content?.people?.length ? 'loaded' : 'idle');
   const [integratedHistory, setIntegratedHistory] = useState<IntegratedCourseResource[]>([]);
   const [integratedHistoryIndex, setIntegratedHistoryIndex] = useState(-1);
+  const [assignmentSubmissionType, setAssignmentSubmissionType] = useState('online_text_entry');
+  const [assignmentSubmissionBody, setAssignmentSubmissionBody] = useState('');
+  const [assignmentSubmissionUrl, setAssignmentSubmissionUrl] = useState('');
+  const [assignmentSubmissionComment, setAssignmentSubmissionComment] = useState('');
+  const [assignmentSubmissionStatus, setAssignmentSubmissionStatus] = useState('');
+  const [assignmentSubmissionError, setAssignmentSubmissionError] = useState('');
+  const [isAssignmentSubmitting, setIsAssignmentSubmitting] = useState(false);
+  const [discussionMessage, setDiscussionMessage] = useState('');
+  const [discussionSubmitStatus, setDiscussionSubmitStatus] = useState('');
+  const [discussionSubmitError, setDiscussionSubmitError] = useState('');
+  const [isDiscussionSubmitting, setIsDiscussionSubmitting] = useState(false);
+  const [quizAccessCode, setQuizAccessCode] = useState('');
+  const [quizSubmissionStatus, setQuizSubmissionStatus] = useState('');
+  const [quizSubmissionError, setQuizSubmissionError] = useState('');
+  const [isQuizStarting, setIsQuizStarting] = useState(false);
   const [manualEmbedHeight, setManualEmbedHeight] = useState(640);
   const manualEmbedResizeRef = useRef({ startHeight: 640, startY: 0 });
   const integratedRequestRef = useRef(0);
+  const initialResourceKeyRef = useRef('');
+  const coursePeopleRequestKeyRef = useRef('');
 
   const resetIntegratedResource = () => {
     integratedRequestRef.current += 1;
     setActiveIntegratedResource(null);
     setIntegratedCanvasPage(null);
     setIntegratedAssignment(null);
+    setLinkedRubricAssignment(null);
+    setLinkedRubricStatus('idle');
     setIntegratedQuiz(null);
     setIntegratedDiscussion(null);
     setIntegratedFile(null);
@@ -1318,6 +1372,8 @@ function CourseDetailView({
     setActiveIntegratedResource(resource);
     setIntegratedCanvasPage(null);
     setIntegratedAssignment(null);
+    setLinkedRubricAssignment(null);
+    setLinkedRubricStatus('idle');
     setIntegratedQuiz(null);
     setIntegratedDiscussion(null);
     setIntegratedFile(null);
@@ -1455,10 +1511,138 @@ function CourseDetailView({
         onIntegratedLink: openIntegratedResource,
       }
     : {};
+  const shouldLoadCoursePeople = row.source === 'canvas' &&
+    Boolean(row.canvasCourseId) &&
+    (activeSection === 'people' || activeIntegratedResource?.kind === 'canvas-people-index');
 
   useEffect(() => {
     resetIntegratedResource();
   }, [row.id]);
+
+  useEffect(() => {
+    setCoursePeople([]);
+    setCoursePeopleStatus('idle');
+    coursePeopleRequestKeyRef.current = '';
+  }, [row.id]);
+
+  useEffect(() => {
+    if (coursePeople.length > 0 || !content?.people?.length) {
+      return;
+    }
+
+    setCoursePeople(content.people);
+    setCoursePeopleStatus('loaded');
+  }, [content?.people, coursePeople.length]);
+
+  useEffect(() => {
+    if (!shouldLoadCoursePeople || !row.canvasCourseId) {
+      return;
+    }
+
+    const requestKey = `${row.id}:${row.canvasCourseId}`;
+
+    if (coursePeopleRequestKeyRef.current === requestKey) {
+      return;
+    }
+
+    coursePeopleRequestKeyRef.current = requestKey;
+    setCoursePeopleStatus('loading');
+
+    workspaceApi
+      .getCanvasCoursePeople(row.canvasCourseId)
+      .then(({ people }) => {
+        setCoursePeople(people);
+        setCoursePeopleStatus('loaded');
+      })
+      .catch(() => {
+        setCoursePeopleStatus('failed');
+      });
+  }, [row.canvasCourseId, row.id, shouldLoadCoursePeople]);
+
+  useEffect(() => {
+    const supportedType = integratedAssignment?.submissionTypes.find((submissionType) => (
+      submissionType === 'online_text_entry' || submissionType === 'online_url'
+    ));
+
+    setAssignmentSubmissionType(supportedType ?? 'online_text_entry');
+    setAssignmentSubmissionBody('');
+    setAssignmentSubmissionUrl('');
+    setAssignmentSubmissionComment('');
+    setAssignmentSubmissionStatus('');
+    setAssignmentSubmissionError('');
+  }, [integratedAssignment?.id]);
+
+  useEffect(() => {
+    setDiscussionMessage('');
+    setDiscussionSubmitStatus('');
+    setDiscussionSubmitError('');
+  }, [integratedDiscussion?.id]);
+
+  useEffect(() => {
+    setQuizAccessCode('');
+    setQuizSubmissionStatus('');
+    setQuizSubmissionError('');
+  }, [integratedQuiz?.id]);
+
+  useEffect(() => {
+    const assignmentId = integratedQuiz?.assignmentId ?? integratedDiscussion?.assignmentId;
+    let isCancelled = false;
+
+    setLinkedRubricAssignment(null);
+
+    if (!assignmentId || !row.canvasCourseId) {
+      setLinkedRubricStatus('idle');
+      return undefined;
+    }
+
+    setLinkedRubricStatus('loading');
+
+    workspaceApi
+      .getCanvasCourseAssignment(row.canvasCourseId, assignmentId)
+      .then((assignment) => {
+        if (isCancelled) {
+          return;
+        }
+
+        setLinkedRubricAssignment(assignment);
+        setLinkedRubricStatus('loaded');
+      })
+      .catch(() => {
+        if (isCancelled) {
+          return;
+        }
+
+        setLinkedRubricStatus('failed');
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [integratedDiscussion?.assignmentId, integratedQuiz?.assignmentId, row.canvasCourseId]);
+
+  useEffect(() => {
+    if (!initialResourceUrl) {
+      return;
+    }
+
+    const initialResourceKey = `${row.id}:${initialResourceUrl}`;
+
+    if (initialResourceKeyRef.current === initialResourceKey) {
+      return;
+    }
+
+    initialResourceKeyRef.current = initialResourceKey;
+
+    const resource = getIntegratedCourseResourceFromLink(initialResourceUrl, {
+      baseUrl: canvasBaseUrl,
+      courseId: row.canvasCourseId,
+      label: activeItem.label,
+    });
+
+    if (resource) {
+      openIntegratedResource(resource);
+    }
+  }, [activeItem.label, canvasBaseUrl, initialResourceUrl, row.canvasCourseId, row.id]);
 
   const handleManualEmbedResizePointerDown = (event: PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -1701,43 +1885,87 @@ function CourseDetailView({
   };
 
   const renderPeople = () => {
-    const people = content?.people ?? [];
+    const people = coursePeople.length > 0 ? coursePeople : content?.people ?? [];
+
+    if (coursePeopleStatus === 'loading' && people.length === 0) {
+      return <CanvasLoadingBanner label={dictionary.courseDetailLoading} />;
+    }
+
+    if (coursePeopleStatus === 'failed' && people.length === 0) {
+      return renderEmpty(dictionary.courseDetailUnavailable);
+    }
 
     if (people.length === 0) {
       return renderEmpty(dictionary.courseDetailNoPeople);
     }
 
     const sortedPeople = [...people].sort((firstPerson: CanvasCourseUser, secondPerson: CanvasCourseUser) => (
-      (firstPerson.sortableName ?? firstPerson.name).localeCompare(secondPerson.sortableName ?? secondPerson.name)
+      (firstPerson.sortableName ?? firstPerson.name).localeCompare(
+        secondPerson.sortableName ?? secondPerson.name,
+        undefined,
+        { numeric: true, sensitivity: 'base' },
+      )
     ));
 
     return (
-      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-        {sortedPeople.map((person) => (
-          <div className="flex min-w-0 items-center gap-3 rounded-lg border bg-background p-3" key={person.id}>
-            {person.avatarUrl ? (
-              <img
-                alt=""
-                className="size-10 shrink-0 rounded-full border object-cover"
-                src={person.avatarUrl}
-              />
-            ) : (
-              <span className="grid size-10 shrink-0 place-items-center rounded-full border bg-muted text-sm font-semibold text-muted-foreground">
-                {(person.shortName ?? person.name).slice(0, 1).toUpperCase()}
-              </span>
-            )}
-            <div className="min-w-0">
-              <div className="truncate text-sm font-semibold text-foreground">{person.name}</div>
-              <div className="mt-1 flex flex-wrap gap-1">
-                {(person.roles.length > 0 ? person.roles : ['Student']).slice(0, 2).map((role) => (
-                  <Badge className="rounded-md" key={`${person.id}-${role}`} variant="outline">
-                    {formatStatus(role)}
-                  </Badge>
-                ))}
-              </div>
-            </div>
-          </div>
-        ))}
+      <div className="grid gap-3">
+        {coursePeopleStatus === 'loading' ? (
+          <CanvasLoadingBanner label={dictionary.courseDetailLoading} size="compact" />
+        ) : null}
+        <div className="grid gap-px overflow-hidden rounded-xl border bg-border sm:grid-cols-2 xl:grid-cols-3">
+          {sortedPeople.map((person) => {
+            const visibleRoles = (person.roles?.length ? person.roles : ['StudentEnrollment']).slice(0, 3);
+            const visibleContact = person.email || person.loginId;
+
+            return (
+              <article className="min-w-0 bg-background p-3" key={person.id}>
+                <div className="flex min-w-0 items-start gap-3">
+                  {person.avatarUrl ? (
+                    <img
+                      alt=""
+                      className="size-11 shrink-0 rounded-full border object-cover"
+                      src={person.avatarUrl}
+                    />
+                  ) : (
+                    <span className="grid size-11 shrink-0 place-items-center rounded-full border bg-muted text-sm font-black text-muted-foreground">
+                      {(person.shortName ?? person.name).slice(0, 2).toUpperCase()}
+                    </span>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-semibold text-foreground">{person.name}</div>
+                    {visibleContact ? (
+                      <div className="mt-1 truncate text-xs font-semibold text-muted-foreground">
+                        {visibleContact}
+                      </div>
+                    ) : null}
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {visibleRoles.map((role) => (
+                        <Badge className="rounded-md" key={`${person.id}-${role}`} variant="outline">
+                          {formatStatus(role.replace(/Enrollment$/i, ''))}
+                        </Badge>
+                      ))}
+                      {(person.enrollmentStates ?? []).slice(0, 1).map((state) => (
+                        <Badge className="rounded-md" key={`${person.id}-${state}`} variant="secondary">
+                          {formatStatus(state)}
+                        </Badge>
+                      ))}
+                      {(person.sectionIds ?? []).slice(0, 1).map((sectionId) => (
+                        <Badge className="rounded-md" key={`${person.id}-${sectionId}`} variant="outline">
+                          {`Section ${sectionId}`}
+                        </Badge>
+                      ))}
+                    </div>
+                    {person.bio ? (
+                      <p className="mt-2 line-clamp-2 text-xs font-semibold leading-5 text-muted-foreground">
+                        {stripHtml(person.bio)}
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </div>
       </div>
     );
   };
@@ -2001,6 +2229,289 @@ function CourseDetailView({
     ) : renderEmpty(dictionary.courseDetailNoLinks)
   );
 
+  const handleSubmitIntegratedAssignment = async (
+    event: FormEvent<HTMLFormElement>,
+    assignment: CanvasCourseAssignment,
+  ) => {
+    event.preventDefault();
+
+    if (!row.canvasCourseId || isAssignmentSubmitting) {
+      return;
+    }
+
+    setIsAssignmentSubmitting(true);
+    setAssignmentSubmissionStatus('');
+    setAssignmentSubmissionError('');
+
+    try {
+      await workspaceApi.submitCanvasCourseAssignment(row.canvasCourseId, assignment.id, {
+        body: assignmentSubmissionBody,
+        comment: assignmentSubmissionComment,
+        submissionType: assignmentSubmissionType,
+        url: assignmentSubmissionUrl,
+      });
+      const refreshedAssignment = await workspaceApi.getCanvasCourseAssignment(row.canvasCourseId, assignment.id);
+
+      setIntegratedAssignment(refreshedAssignment);
+      setAssignmentSubmissionBody('');
+      setAssignmentSubmissionUrl('');
+      setAssignmentSubmissionComment('');
+      setAssignmentSubmissionStatus('Submission sent to Canvas.');
+    } catch (error) {
+      setAssignmentSubmissionError(error instanceof Error ? error.message : 'Unable to submit to Canvas.');
+    } finally {
+      setIsAssignmentSubmitting(false);
+    }
+  };
+
+  const handleSubmitIntegratedDiscussion = async (
+    event: FormEvent<HTMLFormElement>,
+    discussion: CanvasCourseDiscussion,
+  ) => {
+    event.preventDefault();
+
+    if (!row.canvasCourseId || isDiscussionSubmitting) {
+      return;
+    }
+
+    setIsDiscussionSubmitting(true);
+    setDiscussionSubmitStatus('');
+    setDiscussionSubmitError('');
+
+    try {
+      await workspaceApi.submitCanvasCourseDiscussionEntry(row.canvasCourseId, discussion.id, {
+        message: discussionMessage,
+      });
+      const refreshedDiscussion = await workspaceApi.getCanvasCourseDiscussion(row.canvasCourseId, discussion.id);
+
+      setIntegratedDiscussion(refreshedDiscussion);
+      setDiscussionMessage('');
+      setDiscussionSubmitStatus('Discussion post sent to Canvas.');
+    } catch (error) {
+      setDiscussionSubmitError(error instanceof Error ? error.message : 'Unable to post to Canvas.');
+    } finally {
+      setIsDiscussionSubmitting(false);
+    }
+  };
+
+  const handleStartIntegratedQuiz = async (
+    event: FormEvent<HTMLFormElement>,
+    quiz: CanvasCourseQuiz,
+  ) => {
+    event.preventDefault();
+
+    if (!row.canvasCourseId || isQuizStarting) {
+      return;
+    }
+
+    setIsQuizStarting(true);
+    setQuizSubmissionStatus('');
+    setQuizSubmissionError('');
+
+    try {
+      const quizSubmission = await workspaceApi.startCanvasCourseQuiz(row.canvasCourseId, quiz.id, {
+        accessCode: quizAccessCode,
+      });
+
+      setQuizSubmissionStatus(
+        quizSubmission.attempt
+          ? `Classic quiz attempt ${quizSubmission.attempt} is ready in Canvas.`
+          : 'Classic quiz attempt is ready in Canvas.',
+      );
+    } catch (error) {
+      setQuizSubmissionError(error instanceof Error ? error.message : 'Unable to start Canvas quiz.');
+    } finally {
+      setIsQuizStarting(false);
+    }
+  };
+
+  const renderAssignmentSubmissionPanel = (assignment: CanvasCourseAssignment) => {
+    const supportedSubmissionTypes = assignment.submissionTypes.filter((submissionType) => (
+      submissionType === 'online_text_entry' || submissionType === 'online_url'
+    ));
+
+    if (supportedSubmissionTypes.length === 0) {
+      return (
+        <div className="rounded-lg border border-dashed bg-muted/25 p-4 text-sm font-semibold text-muted-foreground">
+          This assignment uses Canvas-only submission types. Open Canvas for uploads, media, annotations, or external tools.
+        </div>
+      );
+    }
+
+    return (
+      <form className="grid gap-3 rounded-lg border bg-background p-4" onSubmit={(event) => handleSubmitIntegratedAssignment(event, assignment)}>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold text-foreground">Submit to Canvas</h3>
+          <div className="flex rounded-lg border bg-muted/35 p-1">
+            {supportedSubmissionTypes.map((submissionType) => (
+              <button
+                className={cn(
+                  'rounded-md px-2 py-1 text-xs font-semibold transition-colors',
+                  assignmentSubmissionType === submissionType
+                    ? 'bg-background text-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+                key={submissionType}
+                onClick={() => setAssignmentSubmissionType(submissionType)}
+                type="button"
+              >
+                {formatSubmissionType(submissionType)}
+              </button>
+            ))}
+          </div>
+        </div>
+        {assignmentSubmissionType === 'online_url' ? (
+          <input
+            className="h-10 rounded-lg border bg-background px-3 text-sm font-medium text-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+            onChange={(event) => setAssignmentSubmissionUrl(event.target.value)}
+            placeholder="https://..."
+            type="url"
+            value={assignmentSubmissionUrl}
+          />
+        ) : (
+          <textarea
+            className="min-h-32 rounded-lg border bg-background p-3 text-sm font-medium text-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+            onChange={(event) => setAssignmentSubmissionBody(event.target.value)}
+            placeholder="Write your submission text..."
+            value={assignmentSubmissionBody}
+          />
+        )}
+        <textarea
+          className="min-h-20 rounded-lg border bg-background p-3 text-sm font-medium text-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+          onChange={(event) => setAssignmentSubmissionComment(event.target.value)}
+          placeholder="Optional comment to instructor"
+          value={assignmentSubmissionComment}
+        />
+        {assignmentSubmissionError ? (
+          <p className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm font-semibold text-red-600 dark:text-red-200">
+            {assignmentSubmissionError}
+          </p>
+        ) : null}
+        {assignmentSubmissionStatus ? (
+          <p className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm font-semibold text-emerald-700 dark:text-emerald-100">
+            {assignmentSubmissionStatus}
+          </p>
+        ) : null}
+        <Button disabled={isAssignmentSubmitting} type="submit">
+          {isAssignmentSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
+          Submit
+        </Button>
+      </form>
+    );
+  };
+
+  const renderRubric = ({
+    criteria,
+    isLoading = false,
+    isUnavailable = false,
+    settings,
+    useForGrading,
+  }: {
+    criteria?: CanvasRubricCriterion[];
+    isLoading?: boolean;
+    isUnavailable?: boolean;
+    settings?: CanvasRubricSettings;
+    useForGrading?: boolean;
+  }) => {
+    const visibleCriteria = criteria ?? [];
+
+    if (isLoading && visibleCriteria.length === 0) {
+      return (
+        <div className="flex items-center gap-2 rounded-lg border bg-muted/30 p-4 text-sm font-semibold text-muted-foreground">
+          <LoaderCircle className="size-4 animate-spin text-primary" />
+          {dictionary.courseDetailRubricLoading}
+        </div>
+      );
+    }
+
+    if (isUnavailable && visibleCriteria.length === 0) {
+      return (
+        <div className="rounded-lg border border-dashed bg-muted/35 p-4 text-sm font-bold text-muted-foreground">
+          {dictionary.courseDetailRubricUnavailable}
+        </div>
+      );
+    }
+
+    if (visibleCriteria.length === 0 && !settings) {
+      return null;
+    }
+
+    return (
+      <section className="overflow-hidden rounded-lg border bg-background">
+        <div className="flex min-w-0 flex-wrap items-start justify-between gap-3 border-b bg-muted/25 p-4">
+          <div className="min-w-0">
+            <h3 className="text-sm font-black uppercase text-foreground">{dictionary.courseDetailRubric}</h3>
+            {settings?.title ? (
+              <p className="mt-1 truncate text-sm font-semibold text-muted-foreground">{settings.title}</p>
+            ) : null}
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {typeof useForGrading === 'boolean' ? (
+              <Badge className="rounded-md" variant={useForGrading ? 'default' : 'outline'}>
+                {useForGrading ? dictionary.courseDetailRubricUsedForGrading : dictionary.courseDetailRubricAdvisory}
+              </Badge>
+            ) : null}
+            {settings?.pointsPossible !== undefined && settings.pointsPossible !== null ? (
+              <Badge className="rounded-md" variant="secondary">
+                {settings.pointsPossible} {dictionary.courseDetailPoints}
+              </Badge>
+            ) : null}
+          </div>
+        </div>
+        <div className="divide-y">
+          {visibleCriteria.map((criterion, criterionIndex) => {
+            const description = stripHtml(criterion.description || `Criterion ${criterionIndex + 1}`);
+            const longDescription = stripHtml(criterion.longDescription);
+
+            return (
+              <article className="grid gap-3 p-4" key={criterion.id}>
+                <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h4 className="text-sm font-black text-foreground">{description}</h4>
+                    {longDescription ? (
+                      <p className="mt-1 text-sm font-semibold leading-6 text-muted-foreground">{longDescription}</p>
+                    ) : null}
+                  </div>
+                  {criterion.points !== undefined && criterion.points !== null ? (
+                    <Badge className="rounded-md" variant="secondary">
+                      {criterion.points} {dictionary.courseDetailPoints}
+                    </Badge>
+                  ) : null}
+                </div>
+                {criterion.ratings.length > 0 ? (
+                  <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                    {criterion.ratings.map((rating) => {
+                      const ratingDescription = stripHtml(rating.description) || rating.id;
+                      const ratingLongDescription = stripHtml(rating.longDescription);
+
+                      return (
+                        <div className="rounded-lg border bg-card p-3" key={rating.id}>
+                          <div className="flex min-w-0 items-start justify-between gap-2">
+                            <p className="min-w-0 text-sm font-bold text-foreground">{ratingDescription}</p>
+                            {rating.points !== undefined && rating.points !== null ? (
+                              <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-black text-muted-foreground">
+                                {rating.points}
+                              </span>
+                            ) : null}
+                          </div>
+                          {ratingLongDescription ? (
+                            <p className="mt-1 text-xs font-semibold leading-5 text-muted-foreground">
+                              {ratingLongDescription}
+                            </p>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </article>
+            );
+          })}
+        </div>
+      </section>
+    );
+  };
+
   const renderIntegratedAssignment = (assignment: CanvasCourseAssignment) => (
     <div className="space-y-3">
       <div className="rounded-lg border bg-background p-4">
@@ -2033,6 +2544,12 @@ function CourseDetailView({
       {assignment.description && stripHtml(assignment.description) ? (
         <RichCourseContent html={assignment.description} {...richCanvasPageProps} />
       ) : renderEmpty(dictionary.courseDetailEmpty)}
+      {renderRubric({
+        criteria: assignment.rubric,
+        settings: assignment.rubricSettings,
+        useForGrading: assignment.useRubricForGrading,
+      })}
+      {renderAssignmentSubmissionPanel(assignment)}
     </div>
   );
 
@@ -2063,6 +2580,52 @@ function CourseDetailView({
       {quiz.description && stripHtml(quiz.description) ? (
         <RichCourseContent html={quiz.description} {...richCanvasPageProps} />
       ) : renderEmpty(dictionary.courseDetailEmpty)}
+      {quiz.assignmentId ? renderRubric({
+        criteria: linkedRubricAssignment?.rubric,
+        isLoading: linkedRubricStatus === 'loading',
+        isUnavailable: linkedRubricStatus === 'failed',
+        settings: linkedRubricAssignment?.rubricSettings,
+        useForGrading: linkedRubricAssignment?.useRubricForGrading,
+      }) : null}
+      <form className="grid gap-3 rounded-lg border bg-background p-4" onSubmit={(event) => handleStartIntegratedQuiz(event, quiz)}>
+        <div>
+          <h3 className="text-sm font-semibold text-foreground">Start or resume quiz</h3>
+          <p className="mt-1 text-sm font-medium text-muted-foreground">
+            Classic Canvas quizzes can be started from here. Answer and final-submit the quiz in Canvas so timed quiz behavior, access rules, and question types stay intact.
+          </p>
+        </div>
+        <input
+          className="h-10 rounded-lg border bg-background px-3 text-sm font-medium text-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+          onChange={(event) => setQuizAccessCode(event.target.value)}
+          placeholder="Access code, if required"
+          type="text"
+          value={quizAccessCode}
+        />
+        {quizSubmissionError ? (
+          <p className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm font-semibold text-red-600 dark:text-red-200">
+            {quizSubmissionError}
+          </p>
+        ) : null}
+        {quizSubmissionStatus ? (
+          <p className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm font-semibold text-emerald-700 dark:text-emerald-100">
+            {quizSubmissionStatus}
+          </p>
+        ) : null}
+        <div className="flex flex-wrap gap-2">
+          <Button disabled={isQuizStarting} type="submit">
+            {isQuizStarting ? <LoaderCircle className="size-4 animate-spin" /> : null}
+            Start / resume
+          </Button>
+          {quiz.htmlUrl ? (
+            <Button asChild type="button" variant="outline">
+              <a href={quiz.htmlUrl} rel="noreferrer" target="_blank">
+                <ExternalLink className="size-4" />
+                Open quiz
+              </a>
+            </Button>
+          ) : null}
+        </div>
+      </form>
     </div>
   );
 
@@ -2085,6 +2648,38 @@ function CourseDetailView({
       {discussion.message && stripHtml(discussion.message) ? (
         <RichCourseContent html={discussion.message} {...richCanvasPageProps} />
       ) : renderEmpty(dictionary.courseDetailEmpty)}
+      {discussion.assignmentId ? renderRubric({
+        criteria: linkedRubricAssignment?.rubric,
+        isLoading: linkedRubricStatus === 'loading',
+        isUnavailable: linkedRubricStatus === 'failed',
+        settings: linkedRubricAssignment?.rubricSettings,
+        useForGrading: linkedRubricAssignment?.useRubricForGrading,
+      }) : null}
+      {!discussion.isAnnouncement ? (
+        <form className="grid gap-3 rounded-lg border bg-background p-4" onSubmit={(event) => handleSubmitIntegratedDiscussion(event, discussion)}>
+          <h3 className="text-sm font-semibold text-foreground">Post to discussion</h3>
+          <textarea
+            className="min-h-32 rounded-lg border bg-background p-3 text-sm font-medium text-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+            onChange={(event) => setDiscussionMessage(event.target.value)}
+            placeholder="Write your discussion post..."
+            value={discussionMessage}
+          />
+          {discussionSubmitError ? (
+            <p className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm font-semibold text-red-600 dark:text-red-200">
+              {discussionSubmitError}
+            </p>
+          ) : null}
+          {discussionSubmitStatus ? (
+            <p className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm font-semibold text-emerald-700 dark:text-emerald-100">
+              {discussionSubmitStatus}
+            </p>
+          ) : null}
+          <Button disabled={isDiscussionSubmitting} type="submit">
+            {isDiscussionSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
+            Post
+          </Button>
+        </form>
+      ) : null}
     </div>
   );
 
@@ -2125,12 +2720,7 @@ function CourseDetailView({
 
   const renderActiveSection = () => {
     if (integratedResourceStatus === 'loading') {
-      return (
-        <div className="flex items-center gap-2 rounded-lg border bg-muted/30 p-4 text-sm font-semibold text-muted-foreground">
-          <LoaderCircle className="size-4 animate-spin text-primary" />
-          {dictionary.courseDetailLoading}
-        </div>
-      );
+      return <CanvasLoadingBanner label={dictionary.courseDetailLoading} />;
     }
 
     if (integratedResourceStatus === 'failed') {
@@ -2189,12 +2779,7 @@ function CourseDetailView({
     }
 
     if (isCanvasLoading) {
-      return (
-        <div className="flex items-center gap-2 rounded-lg border bg-muted/30 p-4 text-sm font-semibold text-muted-foreground">
-          <LoaderCircle className="size-4 animate-spin text-primary" />
-          {dictionary.courseDetailLoading}
-        </div>
-      );
+      return <CanvasLoadingBanner label={dictionary.courseDetailLoading} />;
     }
 
     if (isCanvasFailed) {
@@ -2311,6 +2896,9 @@ function CourseDetailView({
           </div>
           <h2 className="line-clamp-2 text-sm font-semibold text-foreground">{row.name}</h2>
         </div>
+        {isCanvasLoading ? (
+          <CanvasLoadingBanner className="mb-3" label={dictionary.courseDetailLoading} size="compact" />
+        ) : null}
         <nav className="space-y-1">
           {navigationItems.map((item) => {
             const Icon = getSectionIcon(item.section);
@@ -2365,28 +2953,36 @@ function CourseDetailView({
             <h1 className="truncate text-xl font-semibold text-foreground">{activeTitle}</h1>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
+            {isCanvasLoading || integratedResourceStatus === 'loading' ? (
+              <Badge className="hidden gap-1.5 rounded-md lg:inline-flex" variant="outline">
+                <LoaderCircle aria-hidden="true" className="animate-spin text-primary" size={13} strokeWidth={2.4} />
+                {dictionary.courseDetailLoading}
+              </Badge>
+            ) : null}
             <Button
               aria-label={dictionary.courseDetailPrevious}
-              className="size-8 rounded-md"
+              className="h-9 rounded-md px-3"
               disabled={!canGoBackInIntegratedContent}
               onClick={() => navigateIntegratedHistory(integratedHistoryIndex - 1)}
-              size="icon-sm"
+              size="sm"
               title={dictionary.courseDetailPrevious}
               type="button"
               variant="outline"
             >
               <ArrowLeft className="size-4" />
+              <span className="hidden sm:inline">{dictionary.courseDetailPrevious}</span>
             </Button>
             <Button
               aria-label={dictionary.courseDetailNext}
-              className="size-8 rounded-md"
+              className="h-9 rounded-md px-3"
               disabled={!canGoForwardInIntegratedContent}
               onClick={() => navigateIntegratedHistory(integratedHistoryIndex + 1)}
-              size="icon-sm"
+              size="sm"
               title={dictionary.courseDetailNext}
               type="button"
               variant="outline"
             >
+              <span className="hidden sm:inline">{dictionary.courseDetailNext}</span>
               <ArrowRight className="size-4" />
             </Button>
             {activeCanvasUrl ? (
@@ -2399,13 +2995,24 @@ function CourseDetailView({
             ) : null}
           </div>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-4">{renderActiveSection()}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          {isCanvasLoading || integratedResourceStatus === 'loading' ? (
+            <CanvasLoadingBanner className="mb-3 lg:hidden" label={dictionary.courseDetailLoading} size="compact" />
+          ) : null}
+          {renderActiveSection()}
+        </div>
       </section>
     </div>
   );
 }
 
-export function CourseOverviewView({ initialSelectedCourseRowId }: { initialSelectedCourseRowId?: string | null } = {}) {
+export function CourseOverviewView({
+  initialResourceUrl,
+  initialSelectedCourseRowId,
+}: {
+  initialResourceUrl?: string | null;
+  initialSelectedCourseRowId?: string | null;
+} = {}) {
   const { dictionary } = useLanguage();
   const [canvasCourses, setCanvasCourses] = useState<CanvasCourse[]>([]);
   const [canvasLecturePreferences, setCanvasLecturePreferences] = useState<CanvasLecturePreferences>(() => getStoredCanvasLecturePreferences());
@@ -2533,7 +3140,7 @@ export function CourseOverviewView({ initialSelectedCourseRowId }: { initialSele
     [allRows, selectedSemester],
   );
   const selectedCourseRow = selectedCourseRowId
-    ? rows.find((row) => row.id === selectedCourseRowId)
+    ? allRows.find((row) => row.id === selectedCourseRowId)
     : undefined;
   const isLoading = courseLoadStatus === 'loading' && rows.length === 0;
   const isUnavailable = courseLoadStatus === 'failed' && rows.length === 0;
@@ -2545,11 +3152,17 @@ export function CourseOverviewView({ initialSelectedCourseRowId }: { initialSele
   };
 
   useEffect(() => {
-    if (selectedCourseRowId && rows.length > 0 && !rows.some((row) => row.id === selectedCourseRowId)) {
-      setSelectedCourseRowId(null);
-      setActiveCourseItem(null);
+    if (!selectedCourseRow) {
+      return;
     }
-  }, [rows, selectedCourseRowId]);
+
+    const selectedRowSemester = normalizeSemesterName(selectedCourseRow.semester);
+
+    if (selectedRowSemester !== normalizeSemesterName(selectedSemester)) {
+      setSelectedSemester(selectedRowSemester);
+      storeSelectedAcademySemester(selectedRowSemester);
+    }
+  }, [selectedCourseRow, selectedSemester]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -2609,6 +3222,7 @@ export function CourseOverviewView({ initialSelectedCourseRowId }: { initialSele
         content={canvasCourseContent}
         contentLoadStatus={canvasCourseContentStatus}
         dictionary={dictionary}
+        initialResourceUrl={initialResourceUrl}
         onBack={() => {
           setSelectedCourseRowId(null);
           setActiveCourseItem(null);
@@ -2659,10 +3273,7 @@ export function CourseOverviewView({ initialSelectedCourseRowId }: { initialSele
 
       <CardContent className="space-y-2">
         {courseLoadStatus === 'loading' ? (
-          <div className="flex min-w-0 items-center gap-2 rounded-lg border bg-muted/35 px-3 py-2 text-xs font-semibold text-muted-foreground">
-            <LoaderCircle aria-hidden="true" className="shrink-0 animate-spin text-primary" size={15} strokeWidth={2.4} />
-            <span className="truncate">{dictionary.canvasCoursesLoading}</span>
-          </div>
+          <CanvasLoadingBanner label={dictionary.canvasCoursesLoading} size="compact" />
         ) : null}
 
         {isLoading ? (

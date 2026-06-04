@@ -1,4 +1,5 @@
 import type { CalendarDay } from '../data/mockWorkspaceData';
+import { forwardRef } from 'react';
 import { useLanguage } from '../context/LanguageContext';
 import { getHolidayForDate } from '../i18n';
 import { badgeColorClasses, timelineTextClasses } from '@/lib/colorStyles';
@@ -54,14 +55,14 @@ function getTodayIsoDate() {
   return `${year}-${month}-${day}`;
 }
 
-export function DayCell({
+export const DayCell = forwardRef<HTMLButtonElement, DayCellProps>(function DayCell({
   day,
   isExpanded = false,
   isSelected = false,
   onSelect,
   progressDisplay = 'linear',
   progressThresholds = defaultCalendarProgressThresholds,
-}: DayCellProps) {
+}, ref) {
   const { language } = useLanguage();
   const dateIso = day.dateIso ?? getDateIsoFromDayId(day.id);
   const holiday = dateIso ? getHolidayForDate(language, dateIso) : undefined;
@@ -72,6 +73,7 @@ export function DayCell({
 
   return (
     <button
+      ref={ref}
       className={cn(
         'relative h-full min-h-0 w-full min-w-0 overflow-hidden rounded-none border-0 border-r border-b bg-card p-0 text-left text-foreground shadow-none transition hover:z-10 hover:bg-muted',
         'block whitespace-normal align-top outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50',
@@ -141,4 +143,4 @@ export function DayCell({
       </div>
     </button>
   );
-}
+});

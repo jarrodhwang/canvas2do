@@ -175,11 +175,34 @@ export interface CanvasIntegrationStatus {
   label: string;
   configured: boolean;
   connected: boolean;
-  status: 'connected' | 'needs_connection';
+  status: 'connected' | 'needs_connection' | 'pending' | 'expired' | 'invalid';
   connectUrl: string;
   instanceUrl?: string;
   userName?: string;
   scopes: string[];
+  tokenSource?: string;
+  tokenStartsAt?: string;
+  tokenExpiresAt?: string;
+  tokenUpdatedAt?: string;
+}
+
+export interface CanvasTokenStatus {
+  configured: boolean;
+  connected: boolean;
+  status: 'connected' | 'needs_connection' | 'pending' | 'expired' | 'invalid';
+  instanceUrl?: string;
+  tokenSource: 'user' | 'environment' | 'none' | string;
+  startsAt?: string;
+  expiresAt?: string;
+  updatedAt?: string;
+  userName?: string;
+}
+
+export interface UpdateCanvasTokenRequest {
+  instanceUrl: string;
+  accessToken: string;
+  startsAt?: string;
+  expiresAt?: string;
 }
 
 export interface CanvasCourse {
@@ -237,6 +260,32 @@ export interface CanvasCourseAnnouncement {
   htmlUrl?: string;
 }
 
+export interface CanvasRubricRating {
+  id: string;
+  description?: string;
+  longDescription?: string;
+  points?: number;
+}
+
+export interface CanvasRubricCriterion {
+  id: string;
+  description?: string;
+  longDescription?: string;
+  points?: number;
+  criterionUseRange: boolean;
+  ignoreForScoring: boolean;
+  ratings: CanvasRubricRating[];
+}
+
+export interface CanvasRubricSettings {
+  id?: string;
+  title?: string;
+  pointsPossible?: number;
+  hideScoreTotal?: boolean;
+  hidePoints?: boolean;
+  freeFormCriterionComments?: boolean;
+}
+
 export interface CanvasCourseAssignment {
   id: string;
   name: string;
@@ -250,6 +299,24 @@ export interface CanvasCourseAssignment {
   grade?: string;
   submittedAt?: string;
   workflowState?: string;
+  useRubricForGrading?: boolean;
+  rubricSettings?: CanvasRubricSettings;
+  rubric: CanvasRubricCriterion[];
+}
+
+export interface CanvasAssignmentSubmissionRequest {
+  submissionType: string;
+  body?: string;
+  url?: string;
+  comment?: string;
+}
+
+export interface CanvasSubmissionResult {
+  success: boolean;
+  status: string;
+  message?: string;
+  htmlUrl?: string;
+  submittedAt?: string;
 }
 
 export interface CanvasCourseQuiz {
@@ -265,6 +332,23 @@ export interface CanvasCourseQuiz {
   assignmentId?: string;
 }
 
+export interface CanvasQuizStartRequest {
+  accessCode?: string;
+}
+
+export interface CanvasQuizSubmission {
+  id: string;
+  quizId: string;
+  submissionId?: string;
+  attempt?: number;
+  workflowState?: string;
+  validationToken?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  endAt?: string;
+  htmlUrl?: string;
+}
+
 export interface CanvasCourseDiscussion {
   id: string;
   title: string;
@@ -273,6 +357,20 @@ export interface CanvasCourseDiscussion {
   htmlUrl?: string;
   authorName?: string;
   isAnnouncement: boolean;
+  assignmentId?: string;
+}
+
+export interface CanvasDiscussionEntryRequest {
+  message: string;
+  parentEntryId?: string;
+}
+
+export interface CanvasDiscussionEntry {
+  id: string;
+  message?: string;
+  createdAt?: string;
+  authorName?: string;
+  htmlUrl?: string;
 }
 
 export interface CanvasCourseUser {
@@ -282,6 +380,15 @@ export interface CanvasCourseUser {
   sortableName?: string;
   avatarUrl?: string;
   roles: string[];
+  loginId?: string;
+  email?: string;
+  bio?: string;
+  enrollmentStates: string[];
+  sectionIds: string[];
+}
+
+export interface CanvasCoursePeople {
+  people: CanvasCourseUser[];
 }
 
 export interface CanvasCourseContent {
@@ -671,6 +778,39 @@ export const workspaceApi = {
     return response.json() as Promise<CanvasIntegrationStatus>;
   },
 
+  async getCanvasTokenStatus() {
+    const response = await fetch(`${apiBaseUrl}/canvas/token`, {
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to load Canvas token status.');
+
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<CanvasTokenStatus>;
+  },
+
+  async updateCanvasToken(request: UpdateCanvasTokenRequest) {
+    const response = await fetch(`${apiBaseUrl}/canvas/token`, {
+      body: JSON.stringify(request),
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'PUT',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to update Canvas API token.');
+
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<CanvasTokenStatus>;
+  },
+
   async getCanvasCourses(pageSize = 5) {
     const params = new URLSearchParams({ pageSize: String(Math.min(Math.max(pageSize, 1), 50)) });
     const response = await fetch(`${apiBaseUrl}/canvas/courses?${params.toString()}`, {
@@ -715,6 +855,20 @@ export const workspaceApi = {
     return response.json() as Promise<CanvasCoursePage>;
   },
 
+  async getCanvasCoursePeople(courseId: string) {
+    const response = await fetch(`${apiBaseUrl}/canvas/courses/${encodeURIComponent(courseId)}/people`, {
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to load Canvas course people.');
+
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<CanvasCoursePeople>;
+  },
+
   async getCanvasCourseAssignment(courseId: string, assignmentId: string) {
     const response = await fetch(`${apiBaseUrl}/canvas/courses/${encodeURIComponent(courseId)}/assignments/${encodeURIComponent(assignmentId)}`, {
       credentials: 'include',
@@ -727,6 +881,25 @@ export const workspaceApi = {
     }
 
     return response.json() as Promise<CanvasCourseAssignment>;
+  },
+
+  async submitCanvasCourseAssignment(courseId: string, assignmentId: string, request: CanvasAssignmentSubmissionRequest) {
+    const response = await fetch(`${apiBaseUrl}/canvas/courses/${encodeURIComponent(courseId)}/assignments/${encodeURIComponent(assignmentId)}/submit`, {
+      body: JSON.stringify(request),
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to submit Canvas assignment.');
+
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<CanvasSubmissionResult>;
   },
 
   async getCanvasCourseQuiz(courseId: string, quizId: string) {
@@ -743,6 +916,25 @@ export const workspaceApi = {
     return response.json() as Promise<CanvasCourseQuiz>;
   },
 
+  async startCanvasCourseQuiz(courseId: string, quizId: string, request: CanvasQuizStartRequest = {}) {
+    const response = await fetch(`${apiBaseUrl}/canvas/courses/${encodeURIComponent(courseId)}/quizzes/${encodeURIComponent(quizId)}/submissions`, {
+      body: JSON.stringify(request),
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to start Canvas quiz.');
+
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<CanvasQuizSubmission>;
+  },
+
   async getCanvasCourseDiscussion(courseId: string, topicId: string) {
     const response = await fetch(`${apiBaseUrl}/canvas/courses/${encodeURIComponent(courseId)}/discussion-topics/${encodeURIComponent(topicId)}`, {
       credentials: 'include',
@@ -755,6 +947,25 @@ export const workspaceApi = {
     }
 
     return response.json() as Promise<CanvasCourseDiscussion>;
+  },
+
+  async submitCanvasCourseDiscussionEntry(courseId: string, topicId: string, request: CanvasDiscussionEntryRequest) {
+    const response = await fetch(`${apiBaseUrl}/canvas/courses/${encodeURIComponent(courseId)}/discussion-topics/${encodeURIComponent(topicId)}/entries`, {
+      body: JSON.stringify(request),
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to submit Canvas discussion entry.');
+
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<CanvasDiscussionEntry>;
   },
 
   async getCanvasCourseFile(courseId: string, fileId: string) {

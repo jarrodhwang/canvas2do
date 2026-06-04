@@ -1,41 +1,36 @@
 using Incos.Workspace.Api.Contracts;
+using Incos.Workspace.Api.Data;
+using Incos.Workspace.Api.Domain.Entities;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.EntityFrameworkCore;
 using System.Globalization;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Security.Claims;
 using System.Text.Json;
 
 namespace Incos.Workspace.Api.Endpoints;
 
 public static class CanvasIntegrationEndpoints
 {
+    private const string CanvasTokenSettingKey = "canvas.token";
+    private const string CanvasTokenProtectorPurpose = "incos.workspace.canvas-token.v1";
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
     public static IEndpointRouteBuilder MapCanvasIntegrationEndpoints(this IEndpointRouteBuilder app)
     {
         var canvas = app.MapGroup("/api/canvas")
             .RequireAuthorization();
 
-        canvas.MapGet("/integration", (IConfiguration configuration) =>
-            {
-                var instanceUrl = NormalizeCanvasInstanceUrl(configuration["Authentication:Canvas:InstanceUrl"]);
-                var accessToken = configuration["Authentication:Canvas:AccessToken"];
-                var isConfigured =
-                    !string.IsNullOrWhiteSpace(instanceUrl) &&
-                    !string.IsNullOrWhiteSpace(accessToken);
-
-                return Results.Ok(new
-                {
-                    provider = "canvas_lms",
-                    label = "Canvas LMS",
-                    configured = isConfigured,
-                    connected = isConfigured,
-                    status = isConfigured ? "connected" : "needs_connection",
-                    connectUrl = "",
-                    instanceUrl,
-                    userName = (string?)null,
-                    scopes = Array.Empty<string>(),
-                });
-            })
+        canvas.MapGet("/integration", GetCanvasIntegrationStatusAsync)
             .WithName("GetCanvasIntegrationStatus");
+
+        canvas.MapGet("/token", GetCanvasTokenStatusAsync)
+            .WithName("GetCanvasTokenStatus");
+
+        canvas.MapPut("/token", UpdateCanvasTokenAsync)
+            .WithName("UpdateCanvasToken");
 
         canvas.MapGet("/courses", GetCanvasCoursesAsync)
             .WithName("GetCanvasCourses");
@@ -46,14 +41,26 @@ public static class CanvasIntegrationEndpoints
         canvas.MapGet("/courses/{courseId}/pages", GetCanvasCoursePageAsync)
             .WithName("GetCanvasCoursePage");
 
+        canvas.MapGet("/courses/{courseId}/people", GetCanvasCoursePeopleAsync)
+            .WithName("GetCanvasCoursePeople");
+
         canvas.MapGet("/courses/{courseId}/assignments/{assignmentId}", GetCanvasCourseAssignmentAsync)
             .WithName("GetCanvasCourseAssignment");
+
+        canvas.MapPost("/courses/{courseId}/assignments/{assignmentId}/submit", SubmitCanvasCourseAssignmentAsync)
+            .WithName("SubmitCanvasCourseAssignment");
 
         canvas.MapGet("/courses/{courseId}/quizzes/{quizId}", GetCanvasCourseQuizAsync)
             .WithName("GetCanvasCourseQuiz");
 
+        canvas.MapPost("/courses/{courseId}/quizzes/{quizId}/submissions", StartCanvasCourseQuizAsync)
+            .WithName("StartCanvasCourseQuiz");
+
         canvas.MapGet("/courses/{courseId}/discussion-topics/{topicId}", GetCanvasCourseDiscussionAsync)
             .WithName("GetCanvasCourseDiscussion");
+
+        canvas.MapPost("/courses/{courseId}/discussion-topics/{topicId}/entries", SubmitCanvasCourseDiscussionEntryAsync)
+            .WithName("SubmitCanvasCourseDiscussionEntry");
 
         canvas.MapGet("/courses/{courseId}/files/{fileId}", GetCanvasCourseFileAsync)
             .WithName("GetCanvasCourseFile");
@@ -70,23 +77,214 @@ public static class CanvasIntegrationEndpoints
         return app;
     }
 
+    private static async Task<IResult> GetCanvasIntegrationStatusAsync(
+        HttpContext context,
+        IncosWorkspaceDbContext db,
+        IConfiguration configuration,
+        IDataProtectionProvider dataProtectionProvider,
+        CancellationToken cancellationToken)
+    {
+        var connection = await ResolveCanvasConnectionAsync(
+            context,
+            db,
+            configuration,
+            dataProtectionProvider,
+            cancellationToken);
+
+        return Results.Ok(new CanvasIntegrationStatusDto(
+            "canvas_lms",
+            "Canvas LMS",
+            connection.Configured,
+            connection.Connected,
+            connection.Status,
+            "",
+            connection.InstanceUrl,
+            connection.UserName,
+            Array.Empty<string>(),
+            connection.TokenSource,
+            connection.StartsAt,
+            connection.ExpiresAt,
+            connection.UpdatedAt));
+    }
+
+    private static async Task<IResult> GetCanvasTokenStatusAsync(
+        HttpContext context,
+        IncosWorkspaceDbContext db,
+        IConfiguration configuration,
+        IDataProtectionProvider dataProtectionProvider,
+        CancellationToken cancellationToken)
+    {
+        var connection = await ResolveCanvasConnectionAsync(
+            context,
+            db,
+            configuration,
+            dataProtectionProvider,
+            cancellationToken);
+
+        return Results.Ok(new CanvasTokenStatusDto(
+            connection.Configured,
+            connection.Connected,
+            connection.Status,
+            connection.InstanceUrl,
+            connection.TokenSource,
+            connection.StartsAt,
+            connection.ExpiresAt,
+            connection.UpdatedAt,
+            connection.UserName));
+    }
+
+    private static async Task<IResult> UpdateCanvasTokenAsync(
+        HttpContext context,
+        IHttpClientFactory httpClientFactory,
+        IncosWorkspaceDbContext db,
+        IConfiguration configuration,
+        IDataProtectionProvider dataProtectionProvider,
+        UpdateCanvasTokenRequest request,
+        CancellationToken cancellationToken)
+    {
+        var userKey = GetUserKey(context);
+
+        if (string.IsNullOrWhiteSpace(userKey))
+        {
+            return Results.Unauthorized();
+        }
+
+        var instanceUrl = NormalizeCanvasInstanceUrl(request.InstanceUrl);
+        var accessToken = request.AccessToken.Trim();
+
+        if (string.IsNullOrWhiteSpace(instanceUrl) || !IsSecureCanvasInstanceUrl(instanceUrl))
+        {
+            return Results.BadRequest(new
+            {
+                title = "Canvas instance URL is invalid.",
+                detail = "Use the HTTPS root URL for your institution Canvas instance.",
+            });
+        }
+
+        if (string.IsNullOrWhiteSpace(accessToken) || accessToken.Length > 8192)
+        {
+            return Results.BadRequest(new
+            {
+                title = "Canvas API token is invalid.",
+                detail = "Enter a Canvas API access token.",
+            });
+        }
+
+        var startsAt = request.StartsAt ?? DateTimeOffset.UtcNow;
+        var expiresAt = request.ExpiresAt;
+
+        if (expiresAt.HasValue && expiresAt <= startsAt)
+        {
+            return Results.BadRequest(new
+            {
+                title = "Canvas token expiration is invalid.",
+                detail = "The expiration date must be after the start date.",
+            });
+        }
+
+        string? userName;
+
+        try
+        {
+            var profile = await GetCanvasObjectAsync(
+                httpClientFactory,
+                accessToken,
+                $"{instanceUrl}/api/v1/users/self/profile",
+                cancellationToken);
+
+            userName =
+                GetJsonString(profile, "name") ??
+                GetJsonString(profile, "short_name") ??
+                GetJsonString(profile, "login_id");
+        }
+        catch (CanvasApiRequestException exception)
+        {
+            return Results.Problem(
+                title: "Canvas token could not be verified.",
+                detail: "Canvas rejected the token or the instance URL. The token was not stored.",
+                statusCode: exception.StatusCode is StatusCodes.Status401Unauthorized or StatusCodes.Status403Forbidden
+                    ? StatusCodes.Status401Unauthorized
+                    : StatusCodes.Status502BadGateway);
+        }
+
+        await WorkspaceEndpoints.EnsureUserSettingsTableAsync(db, cancellationToken);
+
+        var now = DateTimeOffset.UtcNow;
+        var setting = await db.UserSettings
+            .FirstOrDefaultAsync(
+                userSetting =>
+                    userSetting.UserKey == userKey &&
+                    userSetting.SettingKey == CanvasTokenSettingKey,
+                cancellationToken);
+
+        if (setting is null)
+        {
+            setting = new UserSetting
+            {
+                Id = Guid.NewGuid(),
+                CreatedAt = now,
+                UserKey = userKey,
+                SettingKey = CanvasTokenSettingKey,
+            };
+            db.UserSettings.Add(setting);
+        }
+
+        var protector = dataProtectionProvider.CreateProtector(CanvasTokenProtectorPurpose);
+        setting.SettingJson = JsonSerializer.Serialize(
+            new StoredCanvasToken(
+                instanceUrl,
+                protector.Protect(accessToken),
+                startsAt,
+                expiresAt,
+                now,
+                userName),
+            JsonOptions);
+        setting.UpdatedAt = now;
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        var connection = await ResolveCanvasConnectionAsync(
+            context,
+            db,
+            configuration,
+            dataProtectionProvider,
+            cancellationToken);
+
+        return Results.Ok(new CanvasTokenStatusDto(
+            connection.Configured,
+            connection.Connected,
+            connection.Status,
+            connection.InstanceUrl,
+            connection.TokenSource,
+            connection.StartsAt,
+            connection.ExpiresAt,
+            connection.UpdatedAt,
+            connection.UserName));
+    }
+
     private static async Task<IResult> GetCanvasCoursesAsync(
         IHttpClientFactory httpClientFactory,
+        HttpContext context,
+        IncosWorkspaceDbContext db,
         IConfiguration configuration,
+        IDataProtectionProvider dataProtectionProvider,
         int? pageSize,
         CancellationToken cancellationToken)
     {
-        var instanceUrl = NormalizeCanvasInstanceUrl(configuration["Authentication:Canvas:InstanceUrl"]);
-        var accessToken = configuration["Authentication:Canvas:AccessToken"];
+        var connection = await ResolveCanvasConnectionAsync(
+            context,
+            db,
+            configuration,
+            dataProtectionProvider,
+            cancellationToken);
 
-        if (string.IsNullOrWhiteSpace(instanceUrl) || string.IsNullOrWhiteSpace(accessToken))
+        if (!connection.Connected)
         {
-            return Results.Problem(
-                title: "Canvas LMS is not connected.",
-                detail: "Add CANVAS_INSTANCE_URL and CANVAS_ACCESS_TOKEN to the API environment.",
-                statusCode: StatusCodes.Status409Conflict);
+            return CreateCanvasConnectionProblem(connection);
         }
 
+        var instanceUrl = connection.InstanceUrl!;
+        var accessToken = connection.AccessToken!;
         var safePageSize = Math.Clamp(pageSize ?? 5, 1, 50);
 
         try
@@ -111,23 +309,29 @@ public static class CanvasIntegrationEndpoints
 
     private static async Task<IResult> GetCanvasCalendarItemsAsync(
         IHttpClientFactory httpClientFactory,
+        HttpContext context,
+        IncosWorkspaceDbContext db,
         IConfiguration configuration,
+        IDataProtectionProvider dataProtectionProvider,
         string? startDate,
         string? endDate,
         int? pageSize,
         CancellationToken cancellationToken)
     {
-        var instanceUrl = NormalizeCanvasInstanceUrl(configuration["Authentication:Canvas:InstanceUrl"]);
-        var accessToken = configuration["Authentication:Canvas:AccessToken"];
+        var connection = await ResolveCanvasConnectionAsync(
+            context,
+            db,
+            configuration,
+            dataProtectionProvider,
+            cancellationToken);
 
-        if (string.IsNullOrWhiteSpace(instanceUrl) || string.IsNullOrWhiteSpace(accessToken))
+        if (!connection.Connected)
         {
-            return Results.Problem(
-                title: "Canvas LMS is not connected.",
-                detail: "Add CANVAS_INSTANCE_URL and CANVAS_ACCESS_TOKEN to the API environment.",
-                statusCode: StatusCodes.Status409Conflict);
+            return CreateCanvasConnectionProblem(connection);
         }
 
+        var instanceUrl = connection.InstanceUrl!;
+        var accessToken = connection.AccessToken!;
         var startAt = ParseCanvasDate(startDate) ?? DateTimeOffset.UtcNow.AddDays(-30);
         var endAt = ParseCanvasDate(endDate)?.AddDays(1).AddTicks(-1) ?? startAt.AddDays(60);
         var safePageSize = Math.Clamp(pageSize ?? 100, 1, 100);
@@ -196,19 +400,23 @@ public static class CanvasIntegrationEndpoints
 
     private static async Task<IResult> GetCanvasCourseContentAsync(
         IHttpClientFactory httpClientFactory,
+        HttpContext context,
+        IncosWorkspaceDbContext db,
         IConfiguration configuration,
+        IDataProtectionProvider dataProtectionProvider,
         string courseId,
         CancellationToken cancellationToken)
     {
-        var instanceUrl = NormalizeCanvasInstanceUrl(configuration["Authentication:Canvas:InstanceUrl"]);
-        var accessToken = configuration["Authentication:Canvas:AccessToken"];
+        var connection = await ResolveCanvasConnectionAsync(
+            context,
+            db,
+            configuration,
+            dataProtectionProvider,
+            cancellationToken);
 
-        if (string.IsNullOrWhiteSpace(instanceUrl) || string.IsNullOrWhiteSpace(accessToken))
+        if (!connection.Connected)
         {
-            return Results.Problem(
-                title: "Canvas LMS is not connected.",
-                detail: "Add CANVAS_INSTANCE_URL and CANVAS_ACCESS_TOKEN to the API environment.",
-                statusCode: StatusCodes.Status409Conflict);
+            return CreateCanvasConnectionProblem(connection);
         }
 
         if (string.IsNullOrWhiteSpace(courseId))
@@ -218,6 +426,8 @@ public static class CanvasIntegrationEndpoints
 
         try
         {
+            var instanceUrl = connection.InstanceUrl!;
+            var accessToken = connection.AccessToken!;
             var encodedCourseId = Uri.EscapeDataString(courseId);
             var courseQuery = new List<KeyValuePair<string, string?>>
             {
@@ -335,20 +545,24 @@ public static class CanvasIntegrationEndpoints
 
     private static async Task<IResult> GetCanvasCoursePageAsync(
         IHttpClientFactory httpClientFactory,
+        HttpContext context,
+        IncosWorkspaceDbContext db,
         IConfiguration configuration,
+        IDataProtectionProvider dataProtectionProvider,
         string courseId,
         string pageUrl,
         CancellationToken cancellationToken)
     {
-        var instanceUrl = NormalizeCanvasInstanceUrl(configuration["Authentication:Canvas:InstanceUrl"]);
-        var accessToken = configuration["Authentication:Canvas:AccessToken"];
+        var connection = await ResolveCanvasConnectionAsync(
+            context,
+            db,
+            configuration,
+            dataProtectionProvider,
+            cancellationToken);
 
-        if (string.IsNullOrWhiteSpace(instanceUrl) || string.IsNullOrWhiteSpace(accessToken))
+        if (!connection.Connected)
         {
-            return Results.Problem(
-                title: "Canvas LMS is not connected.",
-                detail: "Add CANVAS_INSTANCE_URL and CANVAS_ACCESS_TOKEN to the API environment.",
-                statusCode: StatusCodes.Status409Conflict);
+            return CreateCanvasConnectionProblem(connection);
         }
 
         var normalizedPageUrl = NormalizeCanvasPageUrl(pageUrl);
@@ -360,6 +574,8 @@ public static class CanvasIntegrationEndpoints
 
         try
         {
+            var instanceUrl = connection.InstanceUrl!;
+            var accessToken = connection.AccessToken!;
             var encodedCourseId = Uri.EscapeDataString(courseId);
             var encodedPageUrl = Uri.EscapeDataString(normalizedPageUrl);
             var page = await GetCanvasObjectAsync(
@@ -386,22 +602,90 @@ public static class CanvasIntegrationEndpoints
         }
     }
 
+    private static async Task<IResult> GetCanvasCoursePeopleAsync(
+        IHttpClientFactory httpClientFactory,
+        HttpContext context,
+        IncosWorkspaceDbContext db,
+        IConfiguration configuration,
+        IDataProtectionProvider dataProtectionProvider,
+        string courseId,
+        CancellationToken cancellationToken)
+    {
+        var connection = await ResolveCanvasConnectionAsync(
+            context,
+            db,
+            configuration,
+            dataProtectionProvider,
+            cancellationToken);
+
+        if (!connection.Connected)
+        {
+            return CreateCanvasConnectionProblem(connection);
+        }
+
+        if (string.IsNullOrWhiteSpace(courseId))
+        {
+            return Results.BadRequest();
+        }
+
+        try
+        {
+            var instanceUrl = connection.InstanceUrl!;
+            var accessToken = connection.AccessToken!;
+            var encodedCourseId = Uri.EscapeDataString(courseId);
+            var requestUri = QueryHelpers.AddQueryString(
+                $"{instanceUrl}/api/v1/courses/{encodedCourseId}/users",
+                new List<KeyValuePair<string, string?>>
+                {
+                    new("include[]", "avatar_url"),
+                    new("include[]", "bio"),
+                    new("include[]", "enrollments"),
+                    new("include[]", "uuid"),
+                    new("per_page", "100"),
+                });
+            var people = await GetCanvasArrayAsync(
+                httpClientFactory,
+                accessToken,
+                requestUri,
+                cancellationToken);
+
+            return Results.Ok(new CanvasCoursePeopleDto(
+                people
+                    .Select(ParseCanvasCourseUser)
+                    .Where(user => user is not null)
+                    .Select(user => user!)
+                    .OrderBy(user => user.SortableName ?? user.Name, StringComparer.OrdinalIgnoreCase)
+                    .ToArray()));
+        }
+        catch (CanvasApiRequestException exception)
+        {
+            return Results.Problem(
+                title: exception.Title,
+                detail: exception.Detail,
+                statusCode: exception.StatusCode);
+        }
+    }
+
     private static async Task<IResult> GetCanvasCourseAssignmentAsync(
         IHttpClientFactory httpClientFactory,
+        HttpContext context,
+        IncosWorkspaceDbContext db,
         IConfiguration configuration,
+        IDataProtectionProvider dataProtectionProvider,
         string courseId,
         string assignmentId,
         CancellationToken cancellationToken)
     {
-        var instanceUrl = NormalizeCanvasInstanceUrl(configuration["Authentication:Canvas:InstanceUrl"]);
-        var accessToken = configuration["Authentication:Canvas:AccessToken"];
+        var connection = await ResolveCanvasConnectionAsync(
+            context,
+            db,
+            configuration,
+            dataProtectionProvider,
+            cancellationToken);
 
-        if (string.IsNullOrWhiteSpace(instanceUrl) || string.IsNullOrWhiteSpace(accessToken))
+        if (!connection.Connected)
         {
-            return Results.Problem(
-                title: "Canvas LMS is not connected.",
-                detail: "Add CANVAS_INSTANCE_URL and CANVAS_ACCESS_TOKEN to the API environment.",
-                statusCode: StatusCodes.Status409Conflict);
+            return CreateCanvasConnectionProblem(connection);
         }
 
         if (string.IsNullOrWhiteSpace(courseId) || string.IsNullOrWhiteSpace(assignmentId))
@@ -411,6 +695,8 @@ public static class CanvasIntegrationEndpoints
 
         try
         {
+            var instanceUrl = connection.InstanceUrl!;
+            var accessToken = connection.AccessToken!;
             var encodedCourseId = Uri.EscapeDataString(courseId);
             var encodedAssignmentId = Uri.EscapeDataString(assignmentId);
             var requestUri = QueryHelpers.AddQueryString(
@@ -442,22 +728,118 @@ public static class CanvasIntegrationEndpoints
         }
     }
 
+    private static async Task<IResult> SubmitCanvasCourseAssignmentAsync(
+        IHttpClientFactory httpClientFactory,
+        HttpContext context,
+        IncosWorkspaceDbContext db,
+        IConfiguration configuration,
+        IDataProtectionProvider dataProtectionProvider,
+        string courseId,
+        string assignmentId,
+        CanvasAssignmentSubmissionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var connection = await ResolveCanvasConnectionAsync(
+            context,
+            db,
+            configuration,
+            dataProtectionProvider,
+            cancellationToken);
+
+        if (!connection.Connected)
+        {
+            return CreateCanvasConnectionProblem(connection);
+        }
+
+        var submissionType = request.SubmissionType.Trim();
+        var fields = new List<KeyValuePair<string, string>>();
+
+        if (submissionType == "online_text_entry")
+        {
+            if (string.IsNullOrWhiteSpace(request.Body))
+            {
+                return Results.BadRequest(new
+                {
+                    title = "Assignment submission is empty.",
+                    detail = "Enter text before submitting this assignment.",
+                });
+            }
+
+            fields.Add(new("submission[submission_type]", submissionType));
+            fields.Add(new("submission[body]", request.Body.Trim()));
+        }
+        else if (submissionType == "online_url")
+        {
+            var url = request.Url?.Trim();
+
+            if (string.IsNullOrWhiteSpace(url) ||
+                !Uri.TryCreate(url, UriKind.Absolute, out var parsedUrl) ||
+                (parsedUrl.Scheme != Uri.UriSchemeHttps && parsedUrl.Scheme != Uri.UriSchemeHttp))
+            {
+                return Results.BadRequest(new
+                {
+                    title = "Assignment submission URL is invalid.",
+                    detail = "Enter a full http or https URL before submitting this assignment.",
+                });
+            }
+
+            fields.Add(new("submission[submission_type]", submissionType));
+            fields.Add(new("submission[url]", parsedUrl.ToString()));
+        }
+        else
+        {
+            return Results.BadRequest(new
+            {
+                title = "Submission type is not supported yet.",
+                detail = "This integrated submission form supports text entry and URL submissions. Use Canvas for uploads, media recordings, annotations, or external tool submissions.",
+            });
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.Comment))
+        {
+            fields.Add(new("comment[text_comment]", request.Comment.Trim()));
+        }
+
+        try
+        {
+            var submission = await PostCanvasFormObjectAsync(
+                httpClientFactory,
+                connection.AccessToken!,
+                $"{connection.InstanceUrl}/api/v1/courses/{Uri.EscapeDataString(courseId)}/assignments/{Uri.EscapeDataString(assignmentId)}/submissions",
+                fields,
+                cancellationToken);
+
+            return Results.Ok(ParseCanvasSubmissionResult(submission));
+        }
+        catch (CanvasApiRequestException exception)
+        {
+            return Results.Problem(
+                title: exception.Title,
+                detail: exception.Detail,
+                statusCode: exception.StatusCode);
+        }
+    }
+
     private static async Task<IResult> GetCanvasCourseQuizAsync(
         IHttpClientFactory httpClientFactory,
+        HttpContext context,
+        IncosWorkspaceDbContext db,
         IConfiguration configuration,
+        IDataProtectionProvider dataProtectionProvider,
         string courseId,
         string quizId,
         CancellationToken cancellationToken)
     {
-        var instanceUrl = NormalizeCanvasInstanceUrl(configuration["Authentication:Canvas:InstanceUrl"]);
-        var accessToken = configuration["Authentication:Canvas:AccessToken"];
+        var connection = await ResolveCanvasConnectionAsync(
+            context,
+            db,
+            configuration,
+            dataProtectionProvider,
+            cancellationToken);
 
-        if (string.IsNullOrWhiteSpace(instanceUrl) || string.IsNullOrWhiteSpace(accessToken))
+        if (!connection.Connected)
         {
-            return Results.Problem(
-                title: "Canvas LMS is not connected.",
-                detail: "Add CANVAS_INSTANCE_URL and CANVAS_ACCESS_TOKEN to the API environment.",
-                statusCode: StatusCodes.Status409Conflict);
+            return CreateCanvasConnectionProblem(connection);
         }
 
         if (string.IsNullOrWhiteSpace(courseId) || string.IsNullOrWhiteSpace(quizId))
@@ -467,6 +849,8 @@ public static class CanvasIntegrationEndpoints
 
         try
         {
+            var instanceUrl = connection.InstanceUrl!;
+            var accessToken = connection.AccessToken!;
             var quiz = await GetCanvasObjectAsync(
                 httpClientFactory,
                 accessToken,
@@ -490,22 +874,108 @@ public static class CanvasIntegrationEndpoints
         }
     }
 
+    private static async Task<IResult> StartCanvasCourseQuizAsync(
+        IHttpClientFactory httpClientFactory,
+        HttpContext context,
+        IncosWorkspaceDbContext db,
+        IConfiguration configuration,
+        IDataProtectionProvider dataProtectionProvider,
+        string courseId,
+        string quizId,
+        CanvasQuizStartRequest request,
+        CancellationToken cancellationToken)
+    {
+        var connection = await ResolveCanvasConnectionAsync(
+            context,
+            db,
+            configuration,
+            dataProtectionProvider,
+            cancellationToken);
+
+        if (!connection.Connected)
+        {
+            return CreateCanvasConnectionProblem(connection);
+        }
+
+        var fields = new List<KeyValuePair<string, string>>();
+
+        if (!string.IsNullOrWhiteSpace(request.AccessCode))
+        {
+            fields.Add(new("access_code", request.AccessCode.Trim()));
+        }
+
+        try
+        {
+            var submissionResponse = await PostCanvasFormObjectAsync(
+                httpClientFactory,
+                connection.AccessToken!,
+                $"{connection.InstanceUrl}/api/v1/courses/{Uri.EscapeDataString(courseId)}/quizzes/{Uri.EscapeDataString(quizId)}/submissions",
+                fields,
+                cancellationToken);
+            var submission = ParseCanvasQuizSubmissionWrapper(submissionResponse);
+
+            return submission is null
+                ? Results.Problem(
+                    title: "Canvas quiz attempt failed to start.",
+                    detail: "Canvas returned an unexpected quiz submission response.",
+                    statusCode: StatusCodes.Status502BadGateway)
+                : Results.Ok(submission);
+        }
+        catch (CanvasApiRequestException exception) when (exception.StatusCode == StatusCodes.Status409Conflict)
+        {
+            try
+            {
+                var currentSubmissionResponse = await GetCanvasObjectAsync(
+                    httpClientFactory,
+                    connection.AccessToken!,
+                    $"{connection.InstanceUrl}/api/v1/courses/{Uri.EscapeDataString(courseId)}/quizzes/{Uri.EscapeDataString(quizId)}/submission",
+                    cancellationToken);
+                var submission = ParseCanvasQuizSubmissionWrapper(currentSubmissionResponse);
+
+                return submission is null
+                    ? Results.Problem(
+                        title: "Canvas quiz attempt failed to resume.",
+                        detail: "Canvas returned an unexpected quiz submission response.",
+                        statusCode: StatusCodes.Status502BadGateway)
+                    : Results.Ok(submission);
+            }
+            catch (CanvasApiRequestException currentException)
+            {
+                return Results.Problem(
+                    title: currentException.Title,
+                    detail: currentException.Detail,
+                    statusCode: currentException.StatusCode);
+            }
+        }
+        catch (CanvasApiRequestException exception)
+        {
+            return Results.Problem(
+                title: exception.Title,
+                detail: exception.Detail,
+                statusCode: exception.StatusCode);
+        }
+    }
+
     private static async Task<IResult> GetCanvasCourseDiscussionAsync(
         IHttpClientFactory httpClientFactory,
+        HttpContext context,
+        IncosWorkspaceDbContext db,
         IConfiguration configuration,
+        IDataProtectionProvider dataProtectionProvider,
         string courseId,
         string topicId,
         CancellationToken cancellationToken)
     {
-        var instanceUrl = NormalizeCanvasInstanceUrl(configuration["Authentication:Canvas:InstanceUrl"]);
-        var accessToken = configuration["Authentication:Canvas:AccessToken"];
+        var connection = await ResolveCanvasConnectionAsync(
+            context,
+            db,
+            configuration,
+            dataProtectionProvider,
+            cancellationToken);
 
-        if (string.IsNullOrWhiteSpace(instanceUrl) || string.IsNullOrWhiteSpace(accessToken))
+        if (!connection.Connected)
         {
-            return Results.Problem(
-                title: "Canvas LMS is not connected.",
-                detail: "Add CANVAS_INSTANCE_URL and CANVAS_ACCESS_TOKEN to the API environment.",
-                statusCode: StatusCodes.Status409Conflict);
+            return CreateCanvasConnectionProblem(connection);
         }
 
         if (string.IsNullOrWhiteSpace(courseId) || string.IsNullOrWhiteSpace(topicId))
@@ -515,6 +985,8 @@ public static class CanvasIntegrationEndpoints
 
         try
         {
+            var instanceUrl = connection.InstanceUrl!;
+            var accessToken = connection.AccessToken!;
             var discussion = await GetCanvasObjectAsync(
                 httpClientFactory,
                 accessToken,
@@ -538,22 +1010,82 @@ public static class CanvasIntegrationEndpoints
         }
     }
 
+    private static async Task<IResult> SubmitCanvasCourseDiscussionEntryAsync(
+        IHttpClientFactory httpClientFactory,
+        HttpContext context,
+        IncosWorkspaceDbContext db,
+        IConfiguration configuration,
+        IDataProtectionProvider dataProtectionProvider,
+        string courseId,
+        string topicId,
+        CanvasDiscussionEntryRequest request,
+        CancellationToken cancellationToken)
+    {
+        var connection = await ResolveCanvasConnectionAsync(
+            context,
+            db,
+            configuration,
+            dataProtectionProvider,
+            cancellationToken);
+
+        if (!connection.Connected)
+        {
+            return CreateCanvasConnectionProblem(connection);
+        }
+
+        if (string.IsNullOrWhiteSpace(request.Message))
+        {
+            return Results.BadRequest(new
+            {
+                title = "Discussion reply is empty.",
+                detail = "Enter a message before posting to this discussion.",
+            });
+        }
+
+        var endpoint = string.IsNullOrWhiteSpace(request.ParentEntryId)
+            ? $"{connection.InstanceUrl}/api/v1/courses/{Uri.EscapeDataString(courseId)}/discussion_topics/{Uri.EscapeDataString(topicId)}/entries"
+            : $"{connection.InstanceUrl}/api/v1/courses/{Uri.EscapeDataString(courseId)}/discussion_topics/{Uri.EscapeDataString(topicId)}/entries/{Uri.EscapeDataString(request.ParentEntryId.Trim())}/replies";
+
+        try
+        {
+            var entry = await PostCanvasFormObjectAsync(
+                httpClientFactory,
+                connection.AccessToken!,
+                endpoint,
+                [new("message", request.Message.Trim())],
+                cancellationToken);
+
+            return Results.Ok(ParseCanvasDiscussionEntry(entry));
+        }
+        catch (CanvasApiRequestException exception)
+        {
+            return Results.Problem(
+                title: exception.Title,
+                detail: exception.Detail,
+                statusCode: exception.StatusCode);
+        }
+    }
+
     private static async Task<IResult> GetCanvasCourseFileAsync(
         IHttpClientFactory httpClientFactory,
+        HttpContext context,
+        IncosWorkspaceDbContext db,
         IConfiguration configuration,
+        IDataProtectionProvider dataProtectionProvider,
         string courseId,
         string fileId,
         CancellationToken cancellationToken)
     {
-        var instanceUrl = NormalizeCanvasInstanceUrl(configuration["Authentication:Canvas:InstanceUrl"]);
-        var accessToken = configuration["Authentication:Canvas:AccessToken"];
+        var connection = await ResolveCanvasConnectionAsync(
+            context,
+            db,
+            configuration,
+            dataProtectionProvider,
+            cancellationToken);
 
-        if (string.IsNullOrWhiteSpace(instanceUrl) || string.IsNullOrWhiteSpace(accessToken))
+        if (!connection.Connected)
         {
-            return Results.Problem(
-                title: "Canvas LMS is not connected.",
-                detail: "Add CANVAS_INSTANCE_URL and CANVAS_ACCESS_TOKEN to the API environment.",
-                statusCode: StatusCodes.Status409Conflict);
+            return CreateCanvasConnectionProblem(connection);
         }
 
         if (string.IsNullOrWhiteSpace(courseId) || string.IsNullOrWhiteSpace(fileId))
@@ -563,6 +1095,8 @@ public static class CanvasIntegrationEndpoints
 
         try
         {
+            var instanceUrl = connection.InstanceUrl!;
+            var accessToken = connection.AccessToken!;
             var encodedCourseId = Uri.EscapeDataString(courseId);
             var encodedFileId = Uri.EscapeDataString(fileId);
             var file = await GetCanvasObjectAsync(
@@ -590,20 +1124,24 @@ public static class CanvasIntegrationEndpoints
 
     private static async Task<IResult> GetCanvasCourseModuleItemAsync(
         IHttpClientFactory httpClientFactory,
+        HttpContext context,
+        IncosWorkspaceDbContext db,
         IConfiguration configuration,
+        IDataProtectionProvider dataProtectionProvider,
         string courseId,
         string moduleItemId,
         CancellationToken cancellationToken)
     {
-        var instanceUrl = NormalizeCanvasInstanceUrl(configuration["Authentication:Canvas:InstanceUrl"]);
-        var accessToken = configuration["Authentication:Canvas:AccessToken"];
+        var connection = await ResolveCanvasConnectionAsync(
+            context,
+            db,
+            configuration,
+            dataProtectionProvider,
+            cancellationToken);
 
-        if (string.IsNullOrWhiteSpace(instanceUrl) || string.IsNullOrWhiteSpace(accessToken))
+        if (!connection.Connected)
         {
-            return Results.Problem(
-                title: "Canvas LMS is not connected.",
-                detail: "Add CANVAS_INSTANCE_URL and CANVAS_ACCESS_TOKEN to the API environment.",
-                statusCode: StatusCodes.Status409Conflict);
+            return CreateCanvasConnectionProblem(connection);
         }
 
         if (string.IsNullOrWhiteSpace(courseId) || string.IsNullOrWhiteSpace(moduleItemId))
@@ -613,6 +1151,8 @@ public static class CanvasIntegrationEndpoints
 
         try
         {
+            var instanceUrl = connection.InstanceUrl!;
+            var accessToken = connection.AccessToken!;
             var item = await GetCanvasObjectAsync(
                 httpClientFactory,
                 accessToken,
@@ -638,21 +1178,27 @@ public static class CanvasIntegrationEndpoints
 
     private static async Task<IResult> GetCanvasInboxItemsAsync(
         IHttpClientFactory httpClientFactory,
+        HttpContext context,
+        IncosWorkspaceDbContext db,
         IConfiguration configuration,
+        IDataProtectionProvider dataProtectionProvider,
         int? pageSize,
         CancellationToken cancellationToken)
     {
-        var instanceUrl = NormalizeCanvasInstanceUrl(configuration["Authentication:Canvas:InstanceUrl"]);
-        var accessToken = configuration["Authentication:Canvas:AccessToken"];
+        var connection = await ResolveCanvasConnectionAsync(
+            context,
+            db,
+            configuration,
+            dataProtectionProvider,
+            cancellationToken);
 
-        if (string.IsNullOrWhiteSpace(instanceUrl) || string.IsNullOrWhiteSpace(accessToken))
+        if (!connection.Connected)
         {
-            return Results.Problem(
-                title: "Canvas LMS is not connected.",
-                detail: "Add CANVAS_INSTANCE_URL and CANVAS_ACCESS_TOKEN to the API environment.",
-                statusCode: StatusCodes.Status409Conflict);
+            return CreateCanvasConnectionProblem(connection);
         }
 
+        var instanceUrl = connection.InstanceUrl!;
+        var accessToken = connection.AccessToken!;
         var safePageSize = Math.Clamp(pageSize ?? 50, 1, 100);
 
         try
@@ -717,6 +1263,151 @@ public static class CanvasIntegrationEndpoints
                 statusCode: exception.StatusCode);
         }
     }
+
+    private static async Task<CanvasConnection> ResolveCanvasConnectionAsync(
+        HttpContext context,
+        IncosWorkspaceDbContext db,
+        IConfiguration configuration,
+        IDataProtectionProvider dataProtectionProvider,
+        CancellationToken cancellationToken)
+    {
+        var userKey = GetUserKey(context);
+
+        if (!string.IsNullOrWhiteSpace(userKey))
+        {
+            await WorkspaceEndpoints.EnsureUserSettingsTableAsync(db, cancellationToken);
+
+            var setting = await db.UserSettings
+                .AsNoTracking()
+                .FirstOrDefaultAsync(
+                    userSetting =>
+                        userSetting.UserKey == userKey &&
+                        userSetting.SettingKey == CanvasTokenSettingKey,
+                    cancellationToken);
+
+            if (setting is not null)
+            {
+                var storedToken = TryReadStoredCanvasToken(setting.SettingJson);
+
+                if (storedToken is null)
+                {
+                    return CanvasConnection.Invalid();
+                }
+
+                try
+                {
+                    var protector = dataProtectionProvider.CreateProtector(CanvasTokenProtectorPurpose);
+                    var accessToken = protector.Unprotect(storedToken.ProtectedAccessToken);
+                    var now = DateTimeOffset.UtcNow;
+                    var status = GetCanvasTokenStatus(storedToken.StartsAt, storedToken.ExpiresAt, now);
+                    var usableAccessToken = status == "connected" ? accessToken : null;
+
+                    return new CanvasConnection(
+                        storedToken.InstanceUrl,
+                        usableAccessToken,
+                        "user",
+                        status,
+                        storedToken.StartsAt,
+                        storedToken.ExpiresAt,
+                        storedToken.UpdatedAt,
+                        storedToken.UserName);
+                }
+                catch
+                {
+                    return CanvasConnection.Invalid();
+                }
+            }
+        }
+
+        var instanceUrl = NormalizeCanvasInstanceUrl(configuration["Authentication:Canvas:InstanceUrl"]);
+        var accessTokenFromConfig = configuration["Authentication:Canvas:AccessToken"];
+
+        if (!string.IsNullOrWhiteSpace(instanceUrl) && !string.IsNullOrWhiteSpace(accessTokenFromConfig))
+        {
+            return new CanvasConnection(
+                instanceUrl,
+                accessTokenFromConfig,
+                "environment",
+                "connected",
+                null,
+                null,
+                null,
+                null);
+        }
+
+        return CanvasConnection.None();
+    }
+
+    private static StoredCanvasToken? TryReadStoredCanvasToken(string settingJson)
+    {
+        if (string.IsNullOrWhiteSpace(settingJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<StoredCanvasToken>(settingJson, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string GetCanvasTokenStatus(
+        DateTimeOffset? startsAt,
+        DateTimeOffset? expiresAt,
+        DateTimeOffset now)
+    {
+        if (startsAt.HasValue && startsAt > now)
+        {
+            return "pending";
+        }
+
+        if (expiresAt.HasValue && expiresAt <= now)
+        {
+            return "expired";
+        }
+
+        return "connected";
+    }
+
+    private static IResult CreateCanvasConnectionProblem(CanvasConnection connection)
+    {
+        var detail = connection.Status switch
+        {
+            "pending" => "The stored Canvas API token has a future start date.",
+            "expired" => "The stored Canvas API token is expired. Update it in Academy Settings.",
+            "invalid" => "The stored Canvas API token could not be decrypted. Update it in Academy Settings.",
+            _ => "Add a Canvas API token in Academy Settings.",
+        };
+
+        return Results.Problem(
+            title: "Canvas LMS is not connected.",
+            detail: detail,
+            statusCode: StatusCodes.Status409Conflict);
+    }
+
+    private static bool IsSecureCanvasInstanceUrl(string instanceUrl)
+    {
+        if (!Uri.TryCreate(instanceUrl, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        if (uri.Scheme == Uri.UriSchemeHttps)
+        {
+            return true;
+        }
+
+        return uri.Scheme == Uri.UriSchemeHttp &&
+               (uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+                uri.Host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string? GetUserKey(HttpContext context) =>
+        context.User.FindFirstValue(ClaimTypes.Email);
 
     private static async Task<CanvasCourseDto[]> GetActiveStudentCoursesAsync(
         IHttpClientFactory httpClientFactory,
@@ -1199,7 +1890,10 @@ public static class CanvasIntegrationEndpoints
             submission.HasValue ? GetJsonDouble(submission.Value, "score") : null,
             submission.HasValue ? GetJsonString(submission.Value, "grade") : null,
             submission.HasValue ? GetJsonDateTimeOffset(submission.Value, "submitted_at") : null,
-            submission.HasValue ? GetJsonString(submission.Value, "workflow_state") : null);
+            submission.HasValue ? GetJsonString(submission.Value, "workflow_state") : null,
+            GetJsonBool(assignment, "use_rubric_for_grading"),
+            ParseCanvasRubricSettings(GetJsonObject(assignment, "rubric_settings")),
+            ParseCanvasRubricCriteria(assignment));
     }
 
     private static CanvasCourseQuizDto? ParseCanvasCourseQuiz(JsonElement quiz)
@@ -1245,7 +1939,160 @@ public static class CanvasIntegrationEndpoints
             GetJsonDateTimeOffset(discussion, "created_at"),
             GetJsonString(discussion, "html_url"),
             author.HasValue ? GetJsonString(author.Value, "display_name") ?? GetJsonString(author.Value, "name") : null,
-            GetJsonBool(discussion, "is_announcement") ?? fallbackAnnouncement);
+            GetJsonBool(discussion, "is_announcement") ?? fallbackAnnouncement,
+            GetJsonStringOrNumber(discussion, "assignment_id"));
+    }
+
+    private static CanvasRubricSettingsDto? ParseCanvasRubricSettings(JsonElement? settings)
+    {
+        if (!settings.HasValue)
+        {
+            return null;
+        }
+
+        return new CanvasRubricSettingsDto(
+            GetJsonStringOrNumber(settings.Value, "id") ??
+            GetJsonStringOrNumber(settings.Value, "rubric_id"),
+            GetJsonString(settings.Value, "title"),
+            GetJsonDouble(settings.Value, "points_possible"),
+            GetJsonBool(settings.Value, "hide_score_total"),
+            GetJsonBool(settings.Value, "hide_points"),
+            GetJsonBool(settings.Value, "free_form_criterion_comments"));
+    }
+
+    private static CanvasRubricCriterionDto[] ParseCanvasRubricCriteria(JsonElement assignment)
+    {
+        var rubric = GetJsonArray(assignment, "rubric");
+
+        if (!rubric.HasValue)
+        {
+            return [];
+        }
+
+        return rubric.Value
+            .EnumerateArray()
+            .Where(criterion => criterion.ValueKind == JsonValueKind.Object)
+            .Select(ParseCanvasRubricCriterion)
+            .Where(criterion => criterion is not null)
+            .Select(criterion => criterion!)
+            .ToArray();
+    }
+
+    private static CanvasRubricCriterionDto? ParseCanvasRubricCriterion(JsonElement criterion)
+    {
+        var id = GetJsonStringOrNumber(criterion, "id");
+
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return null;
+        }
+
+        return new CanvasRubricCriterionDto(
+            id,
+            GetJsonString(criterion, "description"),
+            GetJsonString(criterion, "long_description"),
+            GetJsonDouble(criterion, "points"),
+            GetJsonBool(criterion, "criterion_use_range") == true,
+            GetJsonBool(criterion, "ignore_for_scoring") == true,
+            ParseCanvasRubricRatings(criterion));
+    }
+
+    private static CanvasRubricRatingDto[] ParseCanvasRubricRatings(JsonElement criterion)
+    {
+        var ratings = GetJsonArray(criterion, "ratings");
+
+        if (!ratings.HasValue)
+        {
+            return [];
+        }
+
+        return ratings.Value
+            .EnumerateArray()
+            .Where(rating => rating.ValueKind == JsonValueKind.Object)
+            .Select(ParseCanvasRubricRating)
+            .Where(rating => rating is not null)
+            .Select(rating => rating!)
+            .ToArray();
+    }
+
+    private static CanvasRubricRatingDto? ParseCanvasRubricRating(JsonElement rating)
+    {
+        var id =
+            GetJsonStringOrNumber(rating, "id") ??
+            GetJsonStringOrNumber(rating, "criterion_id") ??
+            GetJsonString(rating, "description");
+
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return null;
+        }
+
+        return new CanvasRubricRatingDto(
+            id,
+            GetJsonString(rating, "description"),
+            GetJsonString(rating, "long_description"),
+            GetJsonDouble(rating, "points"));
+    }
+
+    private static CanvasSubmissionResultDto ParseCanvasSubmissionResult(JsonElement submission)
+    {
+        var workflowState = GetJsonString(submission, "workflow_state") ?? "submitted";
+        var submittedAt = GetJsonDateTimeOffset(submission, "submitted_at") ?? DateTimeOffset.UtcNow;
+
+        return new CanvasSubmissionResultDto(
+            true,
+            workflowState,
+            "Submission sent to Canvas.",
+            GetJsonString(submission, "html_url") ?? GetJsonString(submission, "preview_url"),
+            submittedAt);
+    }
+
+    private static CanvasDiscussionEntryDto ParseCanvasDiscussionEntry(JsonElement entry)
+    {
+        var author = GetJsonObject(entry, "author");
+
+        return new CanvasDiscussionEntryDto(
+            GetJsonStringOrNumber(entry, "id") ?? "",
+            GetJsonString(entry, "message"),
+            GetJsonDateTimeOffset(entry, "created_at") ?? GetJsonDateTimeOffset(entry, "updated_at"),
+            author.HasValue ? GetJsonString(author.Value, "display_name") ?? GetJsonString(author.Value, "name") : null,
+            GetJsonString(entry, "html_url"));
+    }
+
+    private static CanvasQuizSubmissionDto? ParseCanvasQuizSubmissionWrapper(JsonElement response)
+    {
+        var submissions = GetJsonArray(response, "quiz_submissions");
+        var submission = submissions?.EnumerateArray().FirstOrDefault();
+
+        if (submission is null || submission.Value.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        return ParseCanvasQuizSubmission(submission.Value);
+    }
+
+    private static CanvasQuizSubmissionDto? ParseCanvasQuizSubmission(JsonElement submission)
+    {
+        var id = GetJsonStringOrNumber(submission, "id");
+        var quizId = GetJsonStringOrNumber(submission, "quiz_id");
+
+        if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(quizId))
+        {
+            return null;
+        }
+
+        return new CanvasQuizSubmissionDto(
+            id,
+            quizId,
+            GetJsonStringOrNumber(submission, "submission_id"),
+            GetJsonInt(submission, "attempt"),
+            GetJsonString(submission, "workflow_state"),
+            GetJsonString(submission, "validation_token"),
+            GetJsonDateTimeOffset(submission, "started_at"),
+            GetJsonDateTimeOffset(submission, "finished_at"),
+            GetJsonDateTimeOffset(submission, "end_at"),
+            GetJsonString(submission, "html_url"));
     }
 
     private static CanvasCoursePageDto? ParseCanvasCoursePage(JsonElement page)
@@ -1305,16 +2152,28 @@ public static class CanvasIntegrationEndpoints
             return null;
         }
 
-        var roles = user.TryGetProperty("enrollments", out var enrollments) &&
-                    enrollments.ValueKind == JsonValueKind.Array
-            ? enrollments
-                .EnumerateArray()
-                .Select(enrollment => GetJsonString(enrollment, "role") ?? GetJsonString(enrollment, "type"))
-                .Where(role => !string.IsNullOrWhiteSpace(role))
-                .Select(role => role!)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray()
+        var enrollments = user.TryGetProperty("enrollments", out var enrollmentsElement) &&
+                          enrollmentsElement.ValueKind == JsonValueKind.Array
+            ? enrollmentsElement.EnumerateArray().ToArray()
             : [];
+        var roles = enrollments
+            .Select(enrollment => GetJsonString(enrollment, "role") ?? GetJsonString(enrollment, "type"))
+            .Where(role => !string.IsNullOrWhiteSpace(role))
+            .Select(role => role!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var enrollmentStates = enrollments
+            .Select(enrollment => GetJsonString(enrollment, "enrollment_state"))
+            .Where(state => !string.IsNullOrWhiteSpace(state))
+            .Select(state => state!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var sectionIds = enrollments
+            .Select(enrollment => GetJsonStringOrNumber(enrollment, "course_section_id"))
+            .Where(sectionId => !string.IsNullOrWhiteSpace(sectionId))
+            .Select(sectionId => sectionId!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
         return new CanvasCourseUserDto(
             id,
@@ -1322,7 +2181,12 @@ public static class CanvasIntegrationEndpoints
             GetJsonString(user, "short_name"),
             GetJsonString(user, "sortable_name"),
             GetJsonString(user, "avatar_url"),
-            roles);
+            roles,
+            GetJsonString(user, "login_id"),
+            GetJsonString(user, "email"),
+            GetJsonString(user, "bio"),
+            enrollmentStates,
+            sectionIds);
     }
 
     private static string NormalizeCanvasPageUrl(string pageUrl)
@@ -1494,6 +2358,43 @@ public static class CanvasIntegrationEndpoints
         return new CanvasApiPage(payload, GetNextLinkUrl(response));
     }
 
+    private static async Task<JsonElement> PostCanvasFormObjectAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        string requestUri,
+        IEnumerable<KeyValuePair<string, string>> fields,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, requestUri);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        request.Content = new FormUrlEncodedContent(fields);
+
+        var response = await httpClientFactory
+            .CreateClient()
+            .SendAsync(request, cancellationToken);
+        var payload = await response.Content.ReadAsStringAsync(cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new CanvasApiRequestException(
+                "Canvas request failed.",
+                string.IsNullOrWhiteSpace(payload) ? response.ReasonPhrase ?? "Canvas returned an error." : payload,
+                (int)response.StatusCode);
+        }
+
+        using var document = JsonDocument.Parse(payload);
+
+        if (document.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            throw new CanvasApiRequestException(
+                "Canvas request failed.",
+                "Canvas returned an unexpected response.",
+                StatusCodes.Status502BadGateway);
+        }
+
+        return document.RootElement.Clone();
+    }
+
     private static string? GetNextLinkUrl(HttpResponseMessage response)
     {
         if (!response.Headers.TryGetValues("Link", out var linkHeaders))
@@ -1596,6 +2497,14 @@ public static class CanvasIntegrationEndpoints
     {
         return element.TryGetProperty(propertyName, out var property) &&
                property.ValueKind == JsonValueKind.Object
+            ? property
+            : null;
+    }
+
+    private static JsonElement? GetJsonArray(JsonElement element, string propertyName)
+    {
+        return element.TryGetProperty(propertyName, out var property) &&
+               property.ValueKind == JsonValueKind.Array
             ? property
             : null;
     }
@@ -1800,6 +2709,36 @@ public static class CanvasIntegrationEndpoints
             out var parsedValue)
             ? parsedValue
             : null;
+    }
+
+    private sealed record StoredCanvasToken(
+        string InstanceUrl,
+        string ProtectedAccessToken,
+        DateTimeOffset? StartsAt,
+        DateTimeOffset? ExpiresAt,
+        DateTimeOffset? UpdatedAt,
+        string? UserName);
+
+    private sealed record CanvasConnection(
+        string? InstanceUrl,
+        string? AccessToken,
+        string TokenSource,
+        string Status,
+        DateTimeOffset? StartsAt,
+        DateTimeOffset? ExpiresAt,
+        DateTimeOffset? UpdatedAt,
+        string? UserName)
+    {
+        public bool Configured => !string.IsNullOrWhiteSpace(InstanceUrl) && Status != "needs_connection";
+        public bool Connected => !string.IsNullOrWhiteSpace(InstanceUrl) &&
+                                 !string.IsNullOrWhiteSpace(AccessToken) &&
+                                 Status == "connected";
+
+        public static CanvasConnection None() =>
+            new(null, null, "none", "needs_connection", null, null, null, null);
+
+        public static CanvasConnection Invalid() =>
+            new(null, null, "user", "invalid", null, null, null, null);
     }
 
     private sealed record CanvasApiPage(string Payload, string? NextUrl);

@@ -93,6 +93,38 @@ public sealed record GoogleIntegrationStatusDto(
     string ConnectUrl,
     string[] Scopes);
 
+public sealed record CanvasIntegrationStatusDto(
+    string Provider,
+    string Label,
+    bool Configured,
+    bool Connected,
+    string Status,
+    string ConnectUrl,
+    string? InstanceUrl,
+    string? UserName,
+    string[] Scopes,
+    string TokenSource,
+    DateTimeOffset? TokenStartsAt,
+    DateTimeOffset? TokenExpiresAt,
+    DateTimeOffset? TokenUpdatedAt);
+
+public sealed record CanvasTokenStatusDto(
+    bool Configured,
+    bool Connected,
+    string Status,
+    string? InstanceUrl,
+    string TokenSource,
+    DateTimeOffset? StartsAt,
+    DateTimeOffset? ExpiresAt,
+    DateTimeOffset? UpdatedAt,
+    string? UserName);
+
+public sealed record UpdateCanvasTokenRequest(
+    string InstanceUrl,
+    string AccessToken,
+    DateTimeOffset? StartsAt,
+    DateTimeOffset? ExpiresAt);
+
 public sealed record GoogleDriveFileDto(
     string Id,
     string Name,
@@ -342,6 +374,29 @@ public sealed record CanvasCourseAnnouncementDto(
     DateTimeOffset? PostedAt,
     string? HtmlUrl);
 
+public sealed record CanvasRubricRatingDto(
+    string Id,
+    string? Description,
+    string? LongDescription,
+    double? Points);
+
+public sealed record CanvasRubricCriterionDto(
+    string Id,
+    string? Description,
+    string? LongDescription,
+    double? Points,
+    bool CriterionUseRange,
+    bool IgnoreForScoring,
+    CanvasRubricRatingDto[] Ratings);
+
+public sealed record CanvasRubricSettingsDto(
+    string? Id,
+    string? Title,
+    double? PointsPossible,
+    bool? HideScoreTotal,
+    bool? HidePoints,
+    bool? FreeFormCriterionComments);
+
 public sealed record CanvasCourseAssignmentDto(
     string Id,
     string Name,
@@ -354,7 +409,23 @@ public sealed record CanvasCourseAssignmentDto(
     double? Score,
     string? Grade,
     DateTimeOffset? SubmittedAt,
-    string? WorkflowState);
+    string? WorkflowState,
+    bool? UseRubricForGrading,
+    CanvasRubricSettingsDto? RubricSettings,
+    CanvasRubricCriterionDto[] Rubric);
+
+public sealed record CanvasAssignmentSubmissionRequest(
+    string SubmissionType,
+    string? Body,
+    string? Url,
+    string? Comment);
+
+public sealed record CanvasSubmissionResultDto(
+    bool Success,
+    string Status,
+    string? Message,
+    string? HtmlUrl,
+    DateTimeOffset? SubmittedAt);
 
 public sealed record CanvasCourseQuizDto(
     string Id,
@@ -368,6 +439,21 @@ public sealed record CanvasCourseQuizDto(
     int? AllowedAttempts,
     string? AssignmentId);
 
+public sealed record CanvasQuizStartRequest(
+    string? AccessCode);
+
+public sealed record CanvasQuizSubmissionDto(
+    string Id,
+    string QuizId,
+    string? SubmissionId,
+    int? Attempt,
+    string? WorkflowState,
+    string? ValidationToken,
+    DateTimeOffset? StartedAt,
+    DateTimeOffset? FinishedAt,
+    DateTimeOffset? EndAt,
+    string? HtmlUrl);
+
 public sealed record CanvasCourseDiscussionDto(
     string Id,
     string Title,
@@ -375,7 +461,19 @@ public sealed record CanvasCourseDiscussionDto(
     DateTimeOffset? PostedAt,
     string? HtmlUrl,
     string? AuthorName,
-    bool IsAnnouncement);
+    bool IsAnnouncement,
+    string? AssignmentId);
+
+public sealed record CanvasDiscussionEntryRequest(
+    string Message,
+    string? ParentEntryId);
+
+public sealed record CanvasDiscussionEntryDto(
+    string Id,
+    string? Message,
+    DateTimeOffset? CreatedAt,
+    string? AuthorName,
+    string? HtmlUrl);
 
 public sealed record CanvasCourseUserDto(
     string Id,
@@ -383,7 +481,15 @@ public sealed record CanvasCourseUserDto(
     string? ShortName,
     string? SortableName,
     string? AvatarUrl,
-    string[] Roles);
+    string[] Roles,
+    string? LoginId,
+    string? Email,
+    string? Bio,
+    string[] EnrollmentStates,
+    string[] SectionIds);
+
+public sealed record CanvasCoursePeopleDto(
+    CanvasCourseUserDto[] People);
 
 public sealed record CanvasCourseContentDto(
     CanvasCourseDto Course,

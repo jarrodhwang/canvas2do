@@ -52,11 +52,14 @@ interface CalendarShellProps {
   onNextMonth?: () => void;
   onFinishTodoTitleEdit?: () => void;
   onOpenAddItem?: (column: WorkspaceModeConfig['board']['columns'][number]) => void;
+  onOpenTodo?: (item: CalendarActionItem) => void;
   onOpenTodoDetails?: (item: CalendarActionItem) => void;
   onNextAgendaDay?: () => void;
   onPreviousAgendaDay?: () => void;
+  onAddCourseworkForDay?: (day: WorkspaceModeMockData['days'][number]) => void;
   onPreviousMonth?: () => void;
   onRemoveTodo?: (item: CalendarActionItem) => void;
+  onStartTodoTitleEdit?: (item: CalendarActionItem) => void;
   onToday?: () => void;
   onToggleCourseFilter?: (courseId: string) => void;
   onToggleExpanded?: () => void;
@@ -85,11 +88,14 @@ export function CalendarShell({
   onNextMonth,
   onFinishTodoTitleEdit,
   onOpenAddItem,
+  onOpenTodo,
   onOpenTodoDetails,
   onNextAgendaDay,
   onPreviousAgendaDay,
+  onAddCourseworkForDay,
   onPreviousMonth,
   onRemoveTodo,
+  onStartTodoTitleEdit,
   onToday,
   onToggleCourseFilter,
   onToggleExpanded,
@@ -338,6 +344,7 @@ export function CalendarShell({
                 <MonthCalendar
                   days={data.days}
                   isExpanded={isExpanded}
+                  onAddCourseworkForDay={onAddCourseworkForDay}
                   onSelectItem={onSelectItem}
                   progressDisplay={progressDisplay}
                   progressThresholds={progressThresholds}
@@ -348,6 +355,7 @@ export function CalendarShell({
               <AgendaView
                 emptyLabel={dictionary.selectedDayTodoEmpty}
                 items={data.agenda}
+                onOpenItem={onOpenTodo}
                 onOpenItemDetails={onOpenTodoDetails}
                 onRemoveItem={onRemoveTodo}
                 onSelectItem={onSelectItem}
@@ -363,8 +371,10 @@ export function CalendarShell({
                 items={data.boardItems}
                 onAddItem={onOpenAddItem}
                 onFinishItemTitleEdit={onFinishTodoTitleEdit}
+                onOpenItem={onOpenTodo}
                 onOpenItemDetails={onOpenTodoDetails}
                 onRemoveItem={onRemoveTodo}
+                onStartItemTitleEdit={onStartTodoTitleEdit}
                 onToggleItemDone={onToggleTodoDone}
                 onToggleItemStar={onToggleTodoStar}
                 onUpdateItemTitle={onUpdateTodoTitle}
@@ -376,6 +386,7 @@ export function CalendarShell({
                 items={data.timeline}
                 label={mode.timeline.label}
                 monthLabel={data.monthLabel}
+                onOpenItem={onOpenTodo}
                 onOpenItemDetails={onOpenTodoDetails}
                 onRemoveItem={onRemoveTodo}
                 onToggleItemDone={onToggleTodoDone}

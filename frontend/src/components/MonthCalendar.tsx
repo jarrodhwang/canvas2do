@@ -1,4 +1,5 @@
 import type { CalendarDay } from '../data/mockWorkspaceData';
+import { Plus } from 'lucide-react';
 import { useState } from 'react';
 import { useLanguage } from '../context/LanguageContext';
 import { getWeekdayLabels } from '../i18n';
@@ -6,10 +7,18 @@ import { cn } from '../lib/utils';
 import type { CalendarProgressDisplay, CalendarProgressThresholds } from './CalendarProgressIndicator';
 import { DayCell } from './DayCell';
 import { Card } from './ui/card';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuLabel,
+  ContextMenuTrigger,
+} from './ui/context-menu';
 
 interface MonthCalendarProps {
   days: CalendarDay[];
   isExpanded?: boolean;
+  onAddCourseworkForDay?: (day: CalendarDay) => void;
   onSelectItem: (day: CalendarDay) => void;
   progressDisplay: CalendarProgressDisplay;
   progressThresholds: CalendarProgressThresholds;
@@ -18,13 +27,28 @@ interface MonthCalendarProps {
 export function MonthCalendar({
   days,
   isExpanded = false,
+  onAddCourseworkForDay,
   onSelectItem,
   progressDisplay,
   progressThresholds,
 }: MonthCalendarProps) {
-  const { language } = useLanguage();
+  const { dictionary, language } = useLanguage();
   const weekdays = getWeekdayLabels(language);
   const [selectedDayId, setSelectedDayId] = useState<string | null>(null);
+  const renderDayCell = (day: CalendarDay) => (
+    <DayCell
+      day={day}
+      isExpanded={isExpanded}
+      isSelected={day.id === selectedDayId}
+      key={day.id}
+      onSelect={() => {
+        setSelectedDayId(day.id);
+        onSelectItem(day);
+      }}
+      progressDisplay={progressDisplay}
+      progressThresholds={progressThresholds}
+    />
+  );
 
   return (
     <Card className="h-full gap-0 overflow-visible rounded-xl bg-card p-0 shadow-none">
@@ -49,18 +73,26 @@ export function MonthCalendar({
         )}
       >
         {days.map((day) => (
-          <DayCell
-            day={day}
-            isExpanded={isExpanded}
-            isSelected={day.id === selectedDayId}
-            key={day.id}
-            onSelect={() => {
-              setSelectedDayId(day.id);
-              onSelectItem(day);
-            }}
-            progressDisplay={progressDisplay}
-            progressThresholds={progressThresholds}
-          />
+          onAddCourseworkForDay ? (
+            <ContextMenu key={day.id}>
+              <ContextMenuTrigger asChild>
+                <div className="h-full min-h-0">{renderDayCell(day)}</div>
+              </ContextMenuTrigger>
+              <ContextMenuContent className="w-56">
+                <ContextMenuLabel>{day.dateNumber}</ContextMenuLabel>
+                <ContextMenuItem
+                  onSelect={() => {
+                    setSelectedDayId(day.id);
+                    onSelectItem(day);
+                    onAddCourseworkForDay(day);
+                  }}
+                >
+                  <Plus className="size-4" />
+                  <span>{dictionary.courseworkAdd}</span>
+                </ContextMenuItem>
+              </ContextMenuContent>
+            </ContextMenu>
+          ) : renderDayCell(day)
         ))}
       </div>
     </Card>

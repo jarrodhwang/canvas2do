@@ -88,6 +88,7 @@ export interface CalendarItemTypeConfig {
 }
 
 export interface BoardColumnConfig {
+  canAdd?: boolean;
   id: string;
   label: string;
   color: ColorToken;

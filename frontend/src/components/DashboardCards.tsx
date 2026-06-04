@@ -2,6 +2,7 @@ import {
   BookOpen,
   CalendarPlus,
   ChevronDown,
+  ExternalLink,
   Eye,
   EyeOff,
   MoreHorizontal,
@@ -351,6 +352,47 @@ function getCanvasItemSemester(
 
 function semesterMatches(value: string | undefined, selectedSemester: string | undefined, fallbackSemester: string) {
   return !selectedSemester || normalizeSemesterName(value, fallbackSemester) === selectedSemester;
+}
+
+function lectureMatchesCourseCode(lecture: ManualLecture, courseCode?: string) {
+  return (
+    codesMatch(courseCode, lecture.code) ||
+    codesMatch(courseCode, lecture.friendlyCourseCode)
+  );
+}
+
+function lectureSemesterMatches(lecture: ManualLecture, semester: string | undefined, fallbackSemester: string) {
+  return normalizeSemesterName(lecture.semester, fallbackSemester) === normalizeSemesterName(semester, fallbackSemester);
+}
+
+function findArchivedCanvasCourseId(lecture: ManualLecture, preferences: CanvasLecturePreferences) {
+  return Object.entries(preferences).find(([, preference]) => (
+    preference.archivedAsManualLectureId === lecture.id
+  ))?.[0];
+}
+
+function isManualCourseworkForLecture(
+  item: Pick<ManualCourseworkItem | ManualAssessmentItem, 'courseCode' | 'semester'>,
+  lecture: ManualLecture,
+  fallbackSemester: string,
+) {
+  return lectureSemesterMatches(lecture, item.semester, fallbackSemester) &&
+    lectureMatchesCourseCode(lecture, item.courseCode);
+}
+
+function isCanvasCourseworkPreferenceForLecture(
+  preference: CanvasCourseworkPreferences[string] | CanvasAssessmentPreferences[string],
+  lecture: ManualLecture,
+  archivedCanvasCourseId: string | undefined,
+  fallbackSemester: string,
+) {
+  const courseMatches = (
+    Boolean(archivedCanvasCourseId && preference.courseId === archivedCanvasCourseId) ||
+    lectureMatchesCourseCode(lecture, preference.courseCode) ||
+    lectureMatchesCourseCode(lecture, preference.originalCourseCode)
+  );
+
+  return courseMatches && lectureSemesterMatches(lecture, preference.semester, fallbackSemester);
 }
 
 function mergeDefinedSnapshot<TPreference extends object>(
@@ -721,6 +763,7 @@ function createCanvasAssessmentRows(
         assessmentSource: 'canvas',
         assessmentType: formatCourseworkType(assessmentType),
         canvasAssessmentId: item.id,
+        canvasCourseId: item.courseId,
         chipColor: coursePreferences?.chipColor ??
           getCourseChipColorForCode(courseCode, manualLectures, lecturePreferences),
         description: formatCourseworkDue(dueAt, locale),
@@ -768,6 +811,7 @@ function createManualAssessmentRows(
       isCompleted: Boolean(item.completed),
       isStarred: Boolean(item.starred),
       manualAssessmentId: item.id,
+      originalCourseCode: item.courseCode,
       semester: normalizeSemesterName(item.semester, fallbackSemester),
     }));
 }
@@ -834,6 +878,7 @@ function createCanvasCourseworkRows(
           getFriendlyCourseCodeForCode(courseCode, manualLectures, lecturePreferences) ||
           courseCode,
         value: itemPreferences.title?.trim() || item.title,
+        canvasCourseId: item.courseId,
         canvasCourseworkId: item.id,
         chipColor: coursePreferences?.chipColor ??
           getCourseChipColorForCode(courseCode, manualLectures, lecturePreferences),
@@ -886,6 +931,7 @@ function createManualCourseworkRows(
       isCompleted: Boolean(item.completed),
       isStarred: Boolean(item.starred),
       manualCourseworkId: item.id,
+      originalCourseCode: item.courseCode,
       semester: normalizeSemesterName(item.semester, fallbackSemester),
       submissionType: formatSubmissionType(item.submissionType),
     }));
@@ -922,6 +968,7 @@ function createStoredCanvasCourseworkRows(
           getFriendlyCourseCodeForCode(courseCode, manualLectures, lecturePreferences) ||
           courseCode,
         value: preference.title?.trim() || '',
+        canvasCourseId: preference.courseId,
         canvasCourseworkId: itemId,
         chipColor: coursePreferences?.chipColor ??
           getCourseChipColorForCode(courseCode, manualLectures, lecturePreferences),
@@ -977,6 +1024,7 @@ function createStoredCanvasAssessmentRows(
         assessmentSource: 'canvas',
         assessmentType: formatCourseworkType(preference.assessmentType),
         canvasAssessmentId: itemId,
+        canvasCourseId: preference.courseId,
         chipColor: coursePreferences?.chipColor ??
           getCourseChipColorForCode(courseCode, manualLectures, lecturePreferences),
         description: formatCourseworkDue(preference.dueAt, locale),
@@ -1030,6 +1078,16 @@ function getManualLectureScheduleEntries(lecture: ManualLecture): ManualLectureS
   }
 
   return [];
+}
+
+function getManualLectureLinkUrl(lecture: ManualLecture, linkId: string) {
+  const url = lecture.links.find((link) => link.id === linkId)?.url.trim();
+
+  if (!url) {
+    return undefined;
+  }
+
+  return /^https?:\/\//i.test(url) ? url : `https://${url}`;
 }
 
 function createManualLectureRows(lectures: ManualLecture[]): RenderableDashboardRow[] {
@@ -1517,15 +1575,19 @@ function getCourseworkDueChipClass(state?: CourseworkDueState) {
 
 interface DashboardRowsProps {
   card: RenderableDashboardCard;
+  focusedCourseworkKey?: string | null;
   onHideLecture: (row: RenderableDashboardRow) => void;
+  onFinishCourseworkRename: () => void;
   onOpenAssessment: (row: RenderableDashboardRow) => void;
   onOpenCoursework: (row: RenderableDashboardRow) => void;
+  onOpenCourseworkLink: (row: RenderableDashboardRow) => void;
   onOpenLecture: (row: RenderableDashboardRow) => void;
   onOpenLectureFriendlyName: (row: RenderableDashboardRow) => void;
-  onOpenLectureInCourses: (row: RenderableDashboardRow) => void;
+  onRenameCoursework: (row: RenderableDashboardRow, title: string) => void;
   onRemoveAssessment: (row: RenderableDashboardRow) => void;
   onRemoveCoursework: (row: RenderableDashboardRow) => void;
   onSetLectureChipColor: (row: RenderableDashboardRow, color: ColorToken) => void;
+  onStartCourseworkRename: (row: RenderableDashboardRow) => void;
   onToggleAssessmentDone: (row: RenderableDashboardRow) => void;
   onToggleAssessmentStar: (row: RenderableDashboardRow) => void;
   onToggleCourseworkDone: (row: RenderableDashboardRow) => void;
@@ -1535,15 +1597,19 @@ interface DashboardRowsProps {
 
 function DashboardRows({
   card,
+  focusedCourseworkKey,
   onHideLecture,
+  onFinishCourseworkRename,
   onOpenAssessment,
   onOpenCoursework,
+  onOpenCourseworkLink,
   onOpenLecture,
   onOpenLectureFriendlyName,
-  onOpenLectureInCourses,
+  onRenameCoursework,
   onRemoveAssessment,
   onRemoveCoursework,
   onSetLectureChipColor,
+  onStartCourseworkRename,
   onToggleAssessmentDone,
   onToggleAssessmentStar,
   onToggleCourseworkDone,
@@ -1551,6 +1617,8 @@ function DashboardRows({
   onToggleLectureStar,
 }: DashboardRowsProps) {
   const { dictionary } = useLanguage();
+  const courseworkLongPressTimeoutRef = useRef<number | null>(null);
+  const courseworkLongPressTriggeredRef = useRef(false);
   const rows = card.id === 'upcoming-coursework'
     ? card.rows
     : card.rows.slice(0, card.maxRows ?? card.rows.length);
@@ -1569,6 +1637,43 @@ function DashboardRows({
   const stopTouchMenuPropagation = (event: MouseEvent | PointerEvent) => {
     event.stopPropagation();
   };
+  const clearCourseworkLongPress = () => {
+    if (courseworkLongPressTimeoutRef.current) {
+      window.clearTimeout(courseworkLongPressTimeoutRef.current);
+      courseworkLongPressTimeoutRef.current = null;
+    }
+  };
+  const isDashboardRowActionTarget = (target: EventTarget | null) => (
+    target instanceof Element &&
+      Boolean(target.closest('button,a,input,textarea,select,[role="menuitem"],[data-dashboard-row-action]'))
+  );
+  const startCourseworkRename = (row: RenderableDashboardRow) => {
+    if (!row.courseworkKey && !row.assessmentKey) {
+      return;
+    }
+
+    if (row.isCanvasSubmitted) {
+      return;
+    }
+
+    onStartCourseworkRename(row);
+  };
+  const handleCourseworkPointerDown = (event: PointerEvent, row: RenderableDashboardRow) => {
+    if (row.isCanvasSubmitted || isDashboardRowActionTarget(event.target)) {
+      return;
+    }
+
+    clearCourseworkLongPress();
+    courseworkLongPressTriggeredRef.current = false;
+    courseworkLongPressTimeoutRef.current = window.setTimeout(() => {
+      courseworkLongPressTriggeredRef.current = true;
+      startCourseworkRename(row);
+    }, 520);
+  };
+
+  useEffect(() => () => {
+    clearCourseworkLongPress();
+  }, []);
   const renderTouchMenuTrigger = () => (
     <DropdownMenuTrigger asChild>
       <Button
@@ -1637,6 +1742,10 @@ function DashboardRows({
       <DropdownMenu>
         {renderTouchMenuTrigger()}
         <DropdownMenuContent align="end" className="w-56">
+          <DropdownMenuItem onSelect={() => onOpenCourseworkLink(row)}>
+            <ExternalLink className="size-4" />
+            <span>{dictionary.courseOverviewOpenCanvas}</span>
+          </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => onOpenCoursework(row)}>
             <Pencil className="size-4" />
             <span>{dictionary.courseworkOpenDetails}</span>
@@ -1688,6 +1797,10 @@ function DashboardRows({
       <DropdownMenu>
         {renderTouchMenuTrigger()}
         <DropdownMenuContent align="end" className="w-56">
+          <DropdownMenuItem onSelect={() => onOpenCourseworkLink(row)}>
+            <ExternalLink className="size-4" />
+            <span>{dictionary.courseOverviewOpenCanvas}</span>
+          </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => onOpenAssessment(row)}>
             <Pencil className="size-4" />
             <span>{dictionary.assessmentOpenDetails}</span>
@@ -1785,6 +1898,10 @@ function DashboardRows({
         <ContextMenuTrigger asChild>{trigger}</ContextMenuTrigger>
         <ContextMenuContent className="w-56">
           <ContextMenuLabel>{row.label}</ContextMenuLabel>
+          <ContextMenuItem onSelect={() => onOpenCourseworkLink(row)}>
+            <ExternalLink className="size-4" />
+            <span>{dictionary.courseOverviewOpenCanvas}</span>
+          </ContextMenuItem>
           <ContextMenuItem onSelect={() => onOpenCoursework(row)}>
             <Pencil className="size-4" />
             <span>{dictionary.courseworkOpenDetails}</span>
@@ -1837,6 +1954,10 @@ function DashboardRows({
         <ContextMenuTrigger asChild>{trigger}</ContextMenuTrigger>
         <ContextMenuContent className="w-56">
           <ContextMenuLabel>{row.label}</ContextMenuLabel>
+          <ContextMenuItem onSelect={() => onOpenCourseworkLink(row)}>
+            <ExternalLink className="size-4" />
+            <span>{dictionary.courseOverviewOpenCanvas}</span>
+          </ContextMenuItem>
           <ContextMenuItem onSelect={() => onOpenAssessment(row)}>
             <Pencil className="size-4" />
             <span>{dictionary.assessmentOpenDetails}</span>
@@ -1883,6 +2004,8 @@ function DashboardRows({
   if (card.id === 'upcoming-coursework' || card.id === 'upcoming-assessments') {
     const renderedRows = rows.map((row) => {
       const isCheckableRow = Boolean(row.courseworkKey || row.assessmentKey);
+      const renameKey = row.courseworkKey ?? row.assessmentKey;
+      const isRenamingRow = Boolean(renameKey && focusedCourseworkKey === renameKey && !row.isCanvasSubmitted);
       const touchActionMenu = row.assessmentKey && !row.courseworkKey
         ? renderAssessmentTouchMenu(row)
         : renderCourseworkTouchMenu(row);
@@ -1893,6 +2016,23 @@ function DashboardRows({
             isCheckableRow && 'rounded-md px-1 transition-colors hover:bg-muted/45',
           )}
           key={`${card.id}-${row.label}-${row.value}`}
+          onDoubleClick={(event) => {
+            if (!isCheckableRow) {
+              return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+            startCourseworkRename(row);
+          }}
+          onPointerCancel={clearCourseworkLongPress}
+          onPointerDown={(event) => {
+            if (isCheckableRow) {
+              handleCourseworkPointerDown(event, row);
+            }
+          }}
+          onPointerLeave={clearCourseworkLongPress}
+          onPointerUp={clearCourseworkLongPress}
         >
           {row.id === 'loading' ? (
             <RefreshCw className="size-4 shrink-0 animate-spin text-muted-foreground" />
@@ -1902,7 +2042,40 @@ function DashboardRows({
             <EventPill className="h-6 min-w-8 px-2 text-xs" color={row.chipColor ?? card.color} compact label={row.label} />
           )}
           <div className="min-w-0">
-            <strong className="block min-w-0 max-w-full truncate">{row.value}</strong>
+            {isRenamingRow ? (
+              <input
+                aria-label={dictionary.boardAddTodoItem}
+                autoFocus
+                className="block min-w-0 max-w-full rounded-md border bg-background px-2 py-1 text-sm font-black text-foreground outline-none transition focus-visible:ring-2 focus-visible:ring-ring/45"
+                onBlur={onFinishCourseworkRename}
+                onChange={(event) => onRenameCoursework(row, event.target.value)}
+                onClick={(event) => event.stopPropagation()}
+                onFocus={(event) => event.currentTarget.select()}
+                onKeyDown={(event) => {
+                  event.stopPropagation();
+                  if (event.key === 'Enter' || event.key === 'Escape') {
+                    event.currentTarget.blur();
+                  }
+                }}
+                placeholder={dictionary.boardAddTodoItem}
+                value={row.value}
+              />
+            ) : (
+              <strong
+                className="block min-w-0 max-w-full truncate"
+                onClick={(event) => {
+                  if (!isCheckableRow || row.isCanvasSubmitted) {
+                    return;
+                  }
+
+                  event.preventDefault();
+                  event.stopPropagation();
+                  startCourseworkRename(row);
+                }}
+              >
+                {row.value || dictionary.boardAddTodoItem}
+              </strong>
+            )}
           </div>
           <div className="col-start-2 flex min-w-0 items-center justify-start gap-1.5 sm:col-start-auto sm:justify-end">
             {row.courseworkType ? (
@@ -1997,7 +2170,7 @@ function DashboardRows({
             }
 
             event.stopPropagation();
-            onOpenLectureInCourses(row);
+            onOpenLecture(row);
           }}
           onKeyDown={(event) => {
             if (!isLectureRow || (event.key !== 'Enter' && event.key !== ' ')) {
@@ -2006,7 +2179,7 @@ function DashboardRows({
 
             event.preventDefault();
             event.stopPropagation();
-            onOpenLectureInCourses(row);
+            onOpenLecture(row);
           }}
           role={isLectureRow ? 'button' : undefined}
           tabIndex={isLectureRow ? 0 : undefined}
@@ -2577,7 +2750,7 @@ function AssessmentDialog({
 
 interface DashboardCardsProps {
   onOpenAddItem?: () => void;
-  onOpenCourse?: (courseRowId?: string) => void;
+  onOpenCourse?: (courseRowId?: string | null, resourceUrl?: string | null) => void;
   onPlanMeeting?: () => void;
   onStartMeetingNow?: () => void;
   onWriteInPersonMeetingReport?: () => void;
@@ -2628,6 +2801,8 @@ export function DashboardCards({
   const [selectedCanvasCourseworkId, setSelectedCanvasCourseworkId] = useState<string | null>(null);
   const [selectedManualLectureId, setSelectedManualLectureId] = useState<string | null>(null);
   const [selectedCanvasCourseId, setSelectedCanvasCourseId] = useState<string | null>(null);
+  const [focusedCourseworkKey, setFocusedCourseworkKey] = useState<string | null>(null);
+  const [lecturePendingDelete, setLecturePendingDelete] = useState<ManualLecture | null>(null);
   const [friendlyNameRow, setFriendlyNameRow] = useState<RenderableDashboardRow | null>(null);
   const [friendlyCourseCodeInput, setFriendlyCourseCodeInput] = useState('');
   const [friendlyNameInput, setFriendlyNameInput] = useState('');
@@ -3706,6 +3881,62 @@ export function DashboardCards({
     )));
   };
 
+  const handleDeleteManualLecture = (lecture: ManualLecture, shouldDeleteCoursework: boolean) => {
+    const archivedCanvasCourseId = findArchivedCanvasCourseId(lecture, canvasLecturePreferencesRef.current);
+    const nextManualLectures = manualLecturesRef.current.filter((storedLecture) => storedLecture.id !== lecture.id);
+    const nextCanvasLecturePreferences = { ...canvasLecturePreferencesRef.current };
+    let nextManualCoursework = manualCourseworkRef.current;
+    let nextCanvasCourseworkPreferences = canvasCourseworkPreferencesRef.current;
+    let nextManualAssessments = manualAssessmentsRef.current;
+    let nextCanvasAssessmentPreferences = canvasAssessmentPreferencesRef.current;
+
+    if (archivedCanvasCourseId) {
+      delete nextCanvasLecturePreferences[archivedCanvasCourseId];
+    }
+
+    if (shouldDeleteCoursework) {
+      nextManualCoursework = manualCourseworkRef.current.filter((item) => (
+        !isManualCourseworkForLecture(item, lecture, fallbackCourseSemester)
+      ));
+      nextManualAssessments = manualAssessmentsRef.current.filter((item) => (
+        !isManualCourseworkForLecture(item, lecture, fallbackCourseSemester)
+      ));
+      nextCanvasCourseworkPreferences = Object.fromEntries(
+        Object.entries(canvasCourseworkPreferencesRef.current).filter(([, preference]) => (
+          !isCanvasCourseworkPreferenceForLecture(preference, lecture, archivedCanvasCourseId, fallbackCourseSemester)
+        )),
+      );
+      nextCanvasAssessmentPreferences = Object.fromEntries(
+        Object.entries(canvasAssessmentPreferencesRef.current).filter(([, preference]) => (
+          !isCanvasCourseworkPreferenceForLecture(preference, lecture, archivedCanvasCourseId, fallbackCourseSemester)
+        )),
+      );
+    }
+
+    manualLecturesRef.current = nextManualLectures;
+    canvasLecturePreferencesRef.current = nextCanvasLecturePreferences;
+    manualCourseworkRef.current = nextManualCoursework;
+    canvasCourseworkPreferencesRef.current = nextCanvasCourseworkPreferences;
+    manualAssessmentsRef.current = nextManualAssessments;
+    canvasAssessmentPreferencesRef.current = nextCanvasAssessmentPreferences;
+    setManualLectures(nextManualLectures);
+    setCanvasLecturePreferences(nextCanvasLecturePreferences);
+    setManualCoursework(nextManualCoursework);
+    setCanvasCourseworkPreferences(nextCanvasCourseworkPreferences);
+    setManualAssessments(nextManualAssessments);
+    setCanvasAssessmentPreferences(nextCanvasAssessmentPreferences);
+    persistAcademyPreferences(
+      nextManualLectures,
+      nextCanvasLecturePreferences,
+      nextManualCoursework,
+      nextCanvasCourseworkPreferences,
+      nextManualAssessments,
+      nextCanvasAssessmentPreferences,
+    );
+    setSelectedManualLectureId(null);
+    setLecturePendingDelete(null);
+  };
+
   const handleUpdateCanvasLecture = (updatedLecture: ManualLecture) => {
     if (!selectedCanvasCourseId) {
       return;
@@ -3838,6 +4069,40 @@ export function DashboardCards({
     }
   };
 
+  const handleOpenCourseworkLink = (row: RenderableDashboardRow) => {
+    if (row.courseworkSource === 'canvas' || row.assessmentSource === 'canvas') {
+      const canvasCourseId = row.canvasCourseId ||
+        Object.entries(canvasLecturePreferencesRef.current).find(([, preference]) => (
+          codesMatch(row.originalCourseCode, preference.friendlyCourseCode) ||
+          codesMatch(row.originalCourseCode, preference.originalCourseCode) ||
+          codesMatch(row.label, preference.friendlyCourseCode)
+        ))?.[0];
+
+      if (canvasCourseId) {
+        onOpenCourse?.(`canvas:${canvasCourseId}`, row.href ?? null);
+      }
+
+      return;
+    }
+
+    const manualLecture = manualLecturesRef.current.find((lecture) => (
+      codesMatch(row.originalCourseCode, lecture.friendlyCourseCode) ||
+      codesMatch(row.originalCourseCode, lecture.code) ||
+      codesMatch(row.label, lecture.friendlyCourseCode) ||
+      codesMatch(row.label, lecture.code)
+    ));
+
+    if (!manualLecture) {
+      return;
+    }
+
+    const submissionUrl = getManualLectureLinkUrl(manualLecture, 'submission-link');
+    const lectureWebsiteUrl = getManualLectureLinkUrl(manualLecture, 'lecture-website');
+    const resourceUrl = submissionUrl ?? lectureWebsiteUrl;
+
+    onOpenCourse?.(`manual:${manualLecture.id}`, resourceUrl ?? null);
+  };
+
   const handleOpenLecture = (row: RenderableDashboardRow) => {
     if (row.lectureSource === 'canvas' && row.canvasCourseId) {
       setSelectedCanvasCourseId(row.canvasCourseId);
@@ -3847,20 +4112,6 @@ export function DashboardCards({
     if (row.manualLectureId) {
       setSelectedManualLectureId(row.manualLectureId);
     }
-  };
-
-  const handleOpenLectureInCourses = (row: RenderableDashboardRow) => {
-    if (row.lectureSource === 'canvas' && row.canvasCourseId) {
-      onOpenCourse?.(`canvas:${row.canvasCourseId}`);
-      return;
-    }
-
-    if (row.manualLectureId) {
-      onOpenCourse?.(`manual:${row.manualLectureId}`);
-      return;
-    }
-
-    onOpenCourse?.();
   };
 
   const handleOpenLectureFriendlyName = (row: RenderableDashboardRow) => {
@@ -4003,6 +4254,57 @@ export function DashboardCards({
         ? { ...coursework, starred: !coursework.starred }
         : coursework
     )));
+  };
+
+  const handleStartCourseworkRename = (row: RenderableDashboardRow) => {
+    const renameKey = row.courseworkKey ?? row.assessmentKey;
+
+    if (!renameKey || row.isCanvasSubmitted) {
+      return;
+    }
+
+    setFocusedCourseworkKey(renameKey);
+  };
+
+  const handleRenameCoursework = (row: RenderableDashboardRow, title: string) => {
+    if (row.courseworkSource === 'canvas' && row.canvasCourseworkId) {
+      updateStoredCanvasCourseworkPreferences((currentPreferences) => ({
+        ...currentPreferences,
+        [row.canvasCourseworkId!]: {
+          ...(currentPreferences[row.canvasCourseworkId!] ?? {}),
+          title,
+        },
+      }));
+      return;
+    }
+
+    if (row.assessmentSource === 'canvas' && row.canvasAssessmentId) {
+      updateStoredCanvasAssessmentPreferences((currentPreferences) => ({
+        ...currentPreferences,
+        [row.canvasAssessmentId!]: {
+          ...(currentPreferences[row.canvasAssessmentId!] ?? {}),
+          title,
+        },
+      }));
+      return;
+    }
+
+    if (row.manualCourseworkId) {
+      updateStoredManualCoursework((currentCoursework) => currentCoursework.map((coursework) => (
+        coursework.id === row.manualCourseworkId
+          ? { ...coursework, title }
+          : coursework
+      )));
+      return;
+    }
+
+    if (row.manualAssessmentId) {
+      updateStoredManualAssessments((currentAssessments) => currentAssessments.map((assessment) => (
+        assessment.id === row.manualAssessmentId
+          ? { ...assessment, title }
+          : assessment
+      )));
+    }
   };
 
   const handleToggleAssessmentStar = (row: RenderableDashboardRow) => {
@@ -4435,15 +4737,19 @@ export function DashboardCards({
               <CardContent>
                 <DashboardRows
                   card={card}
+                  focusedCourseworkKey={focusedCourseworkKey}
                   onHideLecture={handleHideLecture}
+                  onFinishCourseworkRename={() => setFocusedCourseworkKey(null)}
                   onOpenAssessment={handleOpenAssessment}
                   onOpenCoursework={handleOpenCoursework}
+                  onOpenCourseworkLink={handleOpenCourseworkLink}
                   onOpenLecture={handleOpenLecture}
                   onOpenLectureFriendlyName={handleOpenLectureFriendlyName}
-                  onOpenLectureInCourses={handleOpenLectureInCourses}
+                  onRenameCoursework={handleRenameCoursework}
                   onRemoveAssessment={handleRemoveAssessment}
                   onRemoveCoursework={handleRemoveCoursework}
                   onSetLectureChipColor={handleSetLectureChipColor}
+                  onStartCourseworkRename={handleStartCourseworkRename}
                   onToggleAssessmentDone={handleToggleAssessmentDone}
                   onToggleAssessmentStar={handleToggleAssessmentStar}
                   onToggleCourseworkDone={handleToggleCourseworkDone}
@@ -4539,8 +4845,10 @@ export function DashboardCards({
         onOpenChange={(isOpen) => {
           if (!isOpen) {
             setSelectedManualLectureId(null);
+            setLecturePendingDelete(null);
           }
         }}
+        onRequestDeleteLecture={setLecturePendingDelete}
         onSaveLecture={handleUpdateManualLecture}
         open={Boolean(selectedManualLecture)}
         selectedSemester={activeCourseSemester}
@@ -4561,6 +4869,63 @@ export function DashboardCards({
         submitLabel={dictionary.manualLectureUpdate}
         title={dictionary.canvasLectureEditTitle}
       />
+      <Dialog
+        onOpenChange={(isOpen) => {
+          if (!isOpen) {
+            setLecturePendingDelete(null);
+          }
+        }}
+        open={Boolean(lecturePendingDelete)}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{dictionary.manualLectureDeleteTitle}</DialogTitle>
+            <DialogDescription>
+              {dictionary.manualLectureDeleteDescription}
+            </DialogDescription>
+          </DialogHeader>
+          {lecturePendingDelete ? (
+            <div className="rounded-md border border-border bg-muted/30 p-3 text-sm">
+              <p className="font-semibold text-foreground">
+                {lecturePendingDelete.friendlyCourseCode || lecturePendingDelete.code || dictionary.itemLabels.courses}
+              </p>
+              <p className="text-muted-foreground">
+                {lecturePendingDelete.friendlyName || lecturePendingDelete.name}
+              </p>
+            </div>
+          ) : null}
+          <DialogFooter className="gap-2 sm:justify-between">
+            <Button onClick={() => setLecturePendingDelete(null)} type="button" variant="outline">
+              {dictionary.cancel}
+            </Button>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Button
+                onClick={() => {
+                  if (lecturePendingDelete) {
+                    handleDeleteManualLecture(lecturePendingDelete, false);
+                  }
+                }}
+                type="button"
+                variant="secondary"
+              >
+                {dictionary.manualLectureDeleteKeepCoursework}
+              </Button>
+              <Button
+                onClick={() => {
+                  if (lecturePendingDelete) {
+                    handleDeleteManualLecture(lecturePendingDelete, true);
+                  }
+                }}
+                type="button"
+                variant="destructive"
+              >
+                <Trash2 className="size-4" />
+                {dictionary.manualLectureDeleteWithCoursework}
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <CourseFriendlyNameDialog
         friendlyCourseCode={friendlyCourseCodeInput}
         friendlyName={friendlyNameInput}

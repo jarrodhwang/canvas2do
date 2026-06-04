@@ -1,5 +1,5 @@
 import type { TimelineItem } from '../data/mockWorkspaceData';
-import { Check, EyeOff, MoreHorizontal, Pencil, Star, Trash2 } from 'lucide-react';
+import { Check, ExternalLink, EyeOff, MoreHorizontal, Pencil, Star, Trash2 } from 'lucide-react';
 import { trackGradientClasses } from '@/lib/colorStyles';
 import { cn } from '@/lib/utils';
 import { useLanguage } from '../context/LanguageContext';
@@ -17,6 +17,7 @@ interface TimelineViewProps {
   label: string;
   items: TimelineItem[];
   monthLabel?: string;
+  onOpenItem?: (item: TimelineItem) => void;
   onOpenItemDetails?: (item: TimelineItem) => void;
   onRemoveItem?: (item: TimelineItem) => void;
   onToggleItemDone?: (item: TimelineItem) => void;
@@ -86,6 +87,7 @@ export function TimelineView({
   label,
   items,
   monthLabel,
+  onOpenItem,
   onOpenItemDetails,
   onRemoveItem,
   onToggleItemDone,
@@ -129,6 +131,12 @@ export function TimelineView({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-56">
+          {onOpenItem ? (
+            <DropdownMenuItem onSelect={() => onOpenItem(item)}>
+              <ExternalLink className="size-4" />
+              <span>{dictionary.courseOverviewOpenCanvas}</span>
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuItem onSelect={() => onOpenItemDetails(item)}>
             <Pencil className="size-4" />
             <span>{dictionary.courseworkOpenDetails}</span>

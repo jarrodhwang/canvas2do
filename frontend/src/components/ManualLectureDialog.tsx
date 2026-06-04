@@ -84,6 +84,7 @@ interface ManualLectureDialogProps {
   initialLecture?: ManualLecture;
   onAddLecture?: (lecture: ManualLecture) => void;
   onOpenChange: (open: boolean) => void;
+  onRequestDeleteLecture?: (lecture: ManualLecture) => void;
   onSaveLecture?: (lecture: ManualLecture) => void;
   selectedSemester?: string;
   semesterOptions?: string[];
@@ -288,6 +289,7 @@ export function ManualLectureDialog({
   open,
   onAddLecture,
   onOpenChange,
+  onRequestDeleteLecture,
   onSaveLecture,
   selectedSemester,
   semesterOptions = [],
@@ -843,6 +845,17 @@ export function ManualLectureDialog({
           </section>
 
           <DialogFooter>
+            {initialLecture && onRequestDeleteLecture ? (
+              <Button
+                className="mr-auto"
+                onClick={() => onRequestDeleteLecture(initialLecture)}
+                type="button"
+                variant="destructive"
+              >
+                <Trash2 className="size-4" />
+                {dictionary.manualLectureDelete}
+              </Button>
+            ) : null}
             <Button onClick={() => onOpenChange(false)} type="button" variant="outline">
               {dictionary.cancel}
             </Button>

@@ -1,5 +1,5 @@
-import { Check, EyeOff, MoreHorizontal, Pencil, Plus, Star, Trash2 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { Check, ExternalLink, EyeOff, MoreHorizontal, Pencil, Plus, Star, Trash2 } from 'lucide-react';
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 
 import type { BoardItem } from '../data/mockWorkspaceData';
 import { useLanguage } from '../context/LanguageContext';
@@ -29,8 +29,10 @@ interface BoardViewProps {
   focusedItemId?: string | null;
   onAddItem?: (column: BoardColumnConfig) => void;
   onFinishItemTitleEdit?: () => void;
+  onOpenItem?: (item: BoardItem) => void;
   onRemoveItem?: (item: BoardItem) => void;
   onOpenItemDetails?: (item: BoardItem) => void;
+  onStartItemTitleEdit?: (item: BoardItem) => void;
   onToggleItemStar?: (item: BoardItem) => void;
   onUpdateItemTitle?: (item: BoardItem, title: string) => void;
   onToggleItemDone?: (item: BoardItem) => void;
@@ -148,6 +150,11 @@ function getItemMinutes(item: BoardItem) {
   return (Number.parseInt(match[1], 10) * 60) + Number.parseInt(match[2], 10);
 }
 
+function isTodoActionTarget(target: EventTarget | null) {
+  return target instanceof Element &&
+    Boolean(target.closest('button,a,input,textarea,select,[role="menuitem"],[data-calendar-todo-action]'));
+}
+
 function CurrentTimeLine() {
   return (
     <div className="my-2 flex items-center gap-2">
@@ -163,8 +170,10 @@ export function BoardView({
   focusedItemId,
   onAddItem,
   onFinishItemTitleEdit,
+  onOpenItem,
   onRemoveItem,
   onOpenItemDetails,
+  onStartItemTitleEdit,
   onToggleItemStar,
   onUpdateItemTitle,
   onToggleItemDone,
@@ -172,7 +181,35 @@ export function BoardView({
 }: BoardViewProps) {
   const { dictionary, translateBoardColumn } = useLanguage();
   const [, setPreferenceVersion] = useState(0);
+  const longPressTimeoutRef = useRef<number | null>(null);
+  const longPressTriggeredRef = useRef(false);
   const nowMinutes = getNowMinutes();
+
+  const clearLongPress = () => {
+    if (longPressTimeoutRef.current) {
+      window.clearTimeout(longPressTimeoutRef.current);
+      longPressTimeoutRef.current = null;
+    }
+  };
+  const startTitleEdit = (item: BoardItem) => {
+    if (item.isLocked || !item.isTitleEditable) {
+      return;
+    }
+
+    onStartItemTitleEdit?.(item);
+  };
+  const handleRowPointerDown = (event: ReactPointerEvent, item: BoardItem) => {
+    if (item.isLocked || !item.isTitleEditable || isTodoActionTarget(event.target)) {
+      return;
+    }
+
+    clearLongPress();
+    longPressTriggeredRef.current = false;
+    longPressTimeoutRef.current = window.setTimeout(() => {
+      longPressTriggeredRef.current = true;
+      startTitleEdit(item);
+    }, 520);
+  };
 
   useEffect(() => {
     const handleAcademyPreferencesUpdated = () => {
@@ -184,6 +221,10 @@ export function BoardView({
     return () => {
       window.removeEventListener(academyPreferencesUpdatedEvent, handleAcademyPreferencesUpdated);
     };
+  }, []);
+
+  useEffect(() => () => {
+    clearLongPress();
   }, []);
   const renderItemTouchMenu = (item: BoardItem, complete: boolean) => {
     if (!item.canOpenDetails || !onOpenItemDetails) {
@@ -207,6 +248,12 @@ export function BoardView({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-56">
+          {onOpenItem ? (
+            <DropdownMenuItem onSelect={() => onOpenItem(item)}>
+              <ExternalLink className="size-4" />
+              <span>{dictionary.courseOverviewOpenCanvas}</span>
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuItem onSelect={() => onOpenItemDetails(item)}>
             <Pencil className="size-4" />
             <span>{dictionary.courseworkOpenDetails}</span>
@@ -274,7 +321,7 @@ export function BoardView({
                 <Button
                   aria-label={dictionary.boardAddTodoItem}
                   className="size-7 shrink-0 rounded-md border-border bg-card text-muted-foreground hover:text-foreground"
-                  disabled={!onAddItem}
+                  disabled={!onAddItem || column.canAdd === false}
                   onClick={() => onAddItem?.(column)}
                   size="icon-sm"
                   title={dictionary.boardAddTodoItem}
@@ -296,11 +343,32 @@ export function BoardView({
                           'group flex w-full min-w-0 items-start gap-3 rounded-lg border bg-card p-2.5 text-left shadow-none transition hover:bg-muted/45',
                           !item.isLocked && 'cursor-pointer',
                         )}
-                        onClick={() => {
+                        onClick={(event) => {
+                          clearLongPress();
+
+                          if (longPressTriggeredRef.current) {
+                            longPressTriggeredRef.current = false;
+                            event.preventDefault();
+                            return;
+                          }
+
+                          if (isTodoActionTarget(event.target)) {
+                            return;
+                          }
+
                           if (!item.isLocked && !isEditingTitle) {
                             onToggleItemDone?.(item);
                           }
                         }}
+                        onDoubleClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          startTitleEdit(item);
+                        }}
+                        onPointerCancel={clearLongPress}
+                        onPointerDown={(event) => handleRowPointerDown(event, item)}
+                        onPointerLeave={clearLongPress}
+                        onPointerUp={clearLongPress}
                       >
                         <button
                           aria-label={item.isLocked ? item.title : dictionary.boardAddTodoItem}
@@ -326,6 +394,10 @@ export function BoardView({
                         <div
                           className="min-w-0 flex-1 text-left"
                           onKeyDown={(event) => {
+                            if (isTodoActionTarget(event.target)) {
+                              return;
+                            }
+
                             if (event.key === 'Enter' || event.key === ' ') {
                               event.preventDefault();
                               if (!item.isLocked && !isEditingTitle) {
@@ -356,8 +428,19 @@ export function BoardView({
                                 value={item.title}
                               />
                             ) : (
-                              <span className="min-w-0 flex-1 whitespace-normal text-sm font-semibold leading-snug text-foreground">
-                                {item.title}
+                              <span
+                                className="min-w-0 flex-1 whitespace-normal text-sm font-semibold leading-snug text-foreground"
+                                onClick={(event) => {
+                                  if (item.isLocked || !item.isTitleEditable) {
+                                    return;
+                                  }
+
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  startTitleEdit(item);
+                                }}
+                              >
+                                {item.title || dictionary.boardAddTodoItem}
                               </span>
                             )}
                             <span className="flex shrink-0 flex-wrap gap-1">
@@ -377,6 +460,12 @@ export function BoardView({
                       <ContextMenuTrigger asChild>{rowElement}</ContextMenuTrigger>
                       <ContextMenuContent className="w-56">
                         <ContextMenuLabel>{item.title || dictionary.boardAddTodoItem}</ContextMenuLabel>
+                        {onOpenItem ? (
+                          <ContextMenuItem onSelect={() => onOpenItem(item)}>
+                            <ExternalLink className="size-4" />
+                            <span>{dictionary.courseOverviewOpenCanvas}</span>
+                          </ContextMenuItem>
+                        ) : null}
                         <ContextMenuItem onSelect={() => onOpenItemDetails(item)}>
                           <Pencil className="size-4" />
                           <span>{dictionary.courseworkOpenDetails}</span>

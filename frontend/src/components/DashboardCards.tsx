@@ -241,6 +241,8 @@ type AcademyRefreshRequestedDetail = {
 };
 let academyPreferencesSaveSequence = 0;
 let academyCalendarSettingsCache: Record<string, unknown> = {};
+let academyCalendarSettingsProtectedUntil = 0;
+const academyCalendarSettingsProtectionMs = 15_000;
 const defaultAcademySemester = getDateBasedAcademySemester();
 const defaultCourseChipColor: ColorToken = 'blue';
 const lectureChipColors: ColorToken[] = [
@@ -1328,9 +1330,22 @@ function getStoredAcademyCalendarSettings() {
   return academyCalendarSettingsCache;
 }
 
-function cacheAcademyCalendarSettings(settings: unknown) {
+function cacheAcademyCalendarSettings(settings: unknown, options: { protect?: boolean; source?: 'local' | 'server' } = {}) {
   if (settings && typeof settings === 'object' && !Array.isArray(settings)) {
-    academyCalendarSettingsCache = settings as Record<string, unknown>;
+    const nextSettings = settings as Record<string, unknown>;
+    const isProtectedServerSnapshot =
+      options.source === 'server' &&
+      Date.now() < academyCalendarSettingsProtectedUntil &&
+      JSON.stringify(nextSettings) !== JSON.stringify(academyCalendarSettingsCache);
+
+    if (isProtectedServerSnapshot) {
+      return;
+    }
+
+    academyCalendarSettingsCache = nextSettings;
+    if (options.protect) {
+      academyCalendarSettingsProtectedUntil = Date.now() + academyCalendarSettingsProtectionMs;
+    }
   }
 }
 
@@ -1359,10 +1374,10 @@ function getLastCanvasTermNameFromSettings(settings: unknown) {
 }
 
 function storeAcademyCalendarSettingsPatch(patch: Record<string, unknown>) {
-  academyCalendarSettingsCache = {
+  cacheAcademyCalendarSettings({
     ...academyCalendarSettingsCache,
     ...patch,
-  };
+  }, { protect: true });
 
   return academyCalendarSettingsCache;
 }
@@ -1452,7 +1467,7 @@ function getAcademyPreferenceValues(preferences: AcademyPreferences) {
 function cacheAcademyPreferencesResponse(preferences: AcademyPreferences) {
   const values = getAcademyPreferenceValues(preferences);
 
-  cacheAcademyCalendarSettings(preferences.calendarSettings);
+  cacheAcademyCalendarSettings(preferences.calendarSettings, { source: 'server' });
   cacheAcademyPreferences(
     values.manualLectures,
     values.canvasLecturePreferences,
@@ -3703,7 +3718,9 @@ export function DashboardCards({
         !Array.isArray(event.detail) &&
         'calendarSettings' in event.detail
       ) {
-        cacheAcademyCalendarSettings((event.detail as { calendarSettings?: unknown }).calendarSettings);
+        cacheAcademyCalendarSettings((event.detail as { calendarSettings?: unknown }).calendarSettings, {
+          protect: true,
+        });
       }
       applyAcademyPreferenceValues(event.detail as AcademyPreferenceValues);
     };
@@ -3760,7 +3777,7 @@ export function DashboardCards({
 
         const values = getAcademyPreferenceValues(preferences);
         const serverSelectedSemester = getSelectedSemesterFromSettings(preferences.calendarSettings);
-        cacheAcademyCalendarSettings(preferences.calendarSettings);
+        cacheAcademyCalendarSettings(preferences.calendarSettings, { source: 'server' });
         clearLegacyAcademyPreferenceStorage();
         applyAcademyPreferenceValues(values);
         if (serverSelectedSemester) {
@@ -5085,7 +5102,7 @@ export function DashboardCards({
       const values = getAcademyPreferenceValues(preferencesResult.value);
       const serverSelectedSemester = getSelectedSemesterFromSettings(preferencesResult.value.calendarSettings);
 
-      cacheAcademyCalendarSettings(preferencesResult.value.calendarSettings);
+      cacheAcademyCalendarSettings(preferencesResult.value.calendarSettings, { source: 'server' });
       clearLegacyAcademyPreferenceStorage();
       applyAcademyPreferenceValues(values);
       if (serverSelectedSemester) {

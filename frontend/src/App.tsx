@@ -835,7 +835,39 @@ function storeHiddenCalendarCourseIds(courseIds: string[]) {
 function applyAcademyAccentColor(color: ColorToken) {
   const variables = academyAccentThemeVariables[color] ?? academyAccentThemeVariables.gold;
   const root = document.documentElement;
+  const isDarkTheme = root.classList.contains('dark');
+  const accentSoft = `color-mix(in oklch, ${variables.primary} ${isDarkTheme ? '14%' : '10%'}, ${isDarkTheme ? 'oklch(0.12 0 0)' : 'white'})`;
+  const accentSofter = `color-mix(in oklch, ${variables.primary} ${isDarkTheme ? '9%' : '6%'}, ${isDarkTheme ? 'oklch(0.12 0 0)' : 'white'})`;
+  const accentCard = `color-mix(in oklch, ${variables.primary} ${isDarkTheme ? '8%' : '4%'}, ${isDarkTheme ? 'oklch(0.17 0 0)' : 'white'})`;
+  const accentBorder = `color-mix(in oklch, ${variables.primary} ${isDarkTheme ? '28%' : '18%'}, ${isDarkTheme ? 'oklch(1 0 0 / 14%)' : 'oklch(0.88 0.035 83)'})`;
+  const accentAlphaStrong = variables.primary.replace(/\)$/, ` / ${isDarkTheme ? '0.22' : '0.26'})`);
+  const accentAlphaSoft = variables.primary.replace(/\)$/, ` / ${isDarkTheme ? '0.1' : '0.14'})`);
 
+  root.style.setProperty(
+    '--app-bg',
+    isDarkTheme
+      ? [
+          `radial-gradient(circle at 14% 10%, ${accentAlphaStrong}, transparent 30%)`,
+          `radial-gradient(circle at 88% 14%, ${accentAlphaSoft}, transparent 28%)`,
+          'linear-gradient(135deg, oklch(0.1 0 0) 0%, oklch(0.12 0 0) 52%, oklch(0.105 0 0) 100%)',
+        ].join(', ')
+      : [
+          `radial-gradient(circle at 12% 8%, ${accentAlphaStrong}, transparent 30%)`,
+          `radial-gradient(circle at 84% 18%, ${accentAlphaSoft}, transparent 28%)`,
+          `linear-gradient(135deg, ${accentSoft} 0%, ${accentSofter} 48%, oklch(0.95 0.012 88) 100%)`,
+        ].join(', '),
+  );
+  root.style.setProperty('--background', isDarkTheme ? 'oklch(0.12 0 0)' : accentSofter);
+  root.style.setProperty('--card', accentCard);
+  root.style.setProperty('--popover', accentCard);
+  root.style.setProperty('--secondary', accentSoft);
+  root.style.setProperty('--muted', accentSoft);
+  root.style.setProperty('--accent', accentSoft);
+  root.style.setProperty('--border', accentBorder);
+  root.style.setProperty('--input', accentBorder);
+  root.style.setProperty('--sidebar', accentCard);
+  root.style.setProperty('--sidebar-accent', accentSoft);
+  root.style.setProperty('--sidebar-border', accentBorder);
   root.style.setProperty('--primary', variables.primary);
   root.style.setProperty('--ring', variables.primary);
   root.style.setProperty('--sidebar-primary', variables.primary);
@@ -847,6 +879,18 @@ function clearAcademyAccentColor() {
   const root = document.documentElement;
 
   [
+    '--app-bg',
+    '--background',
+    '--card',
+    '--popover',
+    '--secondary',
+    '--muted',
+    '--accent',
+    '--border',
+    '--input',
+    '--sidebar',
+    '--sidebar-accent',
+    '--sidebar-border',
     '--primary',
     '--ring',
     '--sidebar-primary',

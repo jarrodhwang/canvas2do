@@ -68,13 +68,7 @@ function getMonthInfo(monthLabel?: string) {
   const todayPercent = today.getFullYear() === year && today.getMonth() === monthIndex
     ? ((today.getDate() - 1) / Math.max(daysInMonth - 1, 1)) * 100
     : null;
-  const roughDays = Array.from(new Set([
-    1,
-    Math.min(8, daysInMonth),
-    Math.min(15, daysInMonth),
-    Math.min(22, daysInMonth),
-    daysInMonth,
-  ]));
+  const roughDays = Array.from({ length: daysInMonth }, (_, index) => index + 1);
 
   return {
     daysInMonth,
@@ -171,7 +165,7 @@ export function TimelineView({
   };
 
   return (
-    <Card className="min-h-[440px] rounded-xl bg-card p-4 shadow-none">
+    <Card className="flex min-h-[440px] flex-col rounded-xl bg-card p-4 shadow-none lg:h-full lg:min-h-0">
       <div className="mb-4 flex min-w-0 items-center justify-between gap-3">
         <div className="text-[11px] font-black uppercase text-muted-foreground">{label}</div>
         {monthLabel ? (
@@ -185,7 +179,7 @@ export function TimelineView({
         <span className="relative h-8 rounded-lg border bg-muted/35">
           {monthInfo?.roughDays.map((day) => (
             <span
-              className="absolute top-1 -translate-x-1/2 text-[10px] font-black text-muted-foreground"
+              className="absolute top-1 -translate-x-1/2 text-[9px] font-black text-muted-foreground"
               key={day}
               style={{ left: `${((day - 1) / Math.max(monthInfo.daysInMonth - 1, 1)) * 100}%` }}
             >
@@ -204,7 +198,7 @@ export function TimelineView({
           ) : null}
         </span>
       </div>
-      <div className="max-h-[min(58vh,680px)] overflow-auto pr-1">
+      <div className="min-h-0 flex-1 overflow-auto pr-1">
         {groupedItems.length === 0 ? (
           <div className="rounded-lg border border-dashed bg-muted/35 p-4 text-sm font-bold text-muted-foreground">
             No timeline items for this month.

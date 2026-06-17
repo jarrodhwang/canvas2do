@@ -16,8 +16,12 @@ export function getInitialTheme(): AppTheme {
   return defaultTheme;
 }
 
-export function applyTheme(theme: AppTheme) {
+export function applyTheme(theme: AppTheme, options: { persist?: boolean } = {}) {
+  const shouldPersist = options.persist ?? true;
+
   document.documentElement.classList.toggle('dark', theme === 'dark');
   document.documentElement.style.colorScheme = theme;
-  window.localStorage.setItem('incos-workspace-theme', theme);
+  if (shouldPersist) {
+    window.localStorage.setItem('incos-workspace-theme', theme);
+  }
 }

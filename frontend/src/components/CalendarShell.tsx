@@ -54,6 +54,7 @@ interface CalendarShellProps {
   onOpenAddItem?: (column: WorkspaceModeConfig['board']['columns'][number]) => void;
   onOpenTodo?: (item: CalendarActionItem) => void;
   onOpenTodoDetails?: (item: CalendarActionItem) => void;
+  onMoveTodoDueDate?: (item: CalendarActionItem, target: 'today' | 'tomorrow') => void;
   onNextAgendaDay?: () => void;
   onPreviousAgendaDay?: () => void;
   onAddCourseworkForDay?: (day: WorkspaceModeMockData['days'][number]) => void;
@@ -90,6 +91,7 @@ export function CalendarShell({
   onOpenAddItem,
   onOpenTodo,
   onOpenTodoDetails,
+  onMoveTodoDueDate,
   onNextAgendaDay,
   onPreviousAgendaDay,
   onAddCourseworkForDay,
@@ -111,6 +113,7 @@ export function CalendarShell({
   const { dictionary, language } = useLanguage();
   const monthWheelLockRef = useRef(0);
   const [monthTransitionDirection, setMonthTransitionDirection] = useState<'next' | 'previous'>('next');
+  const [mobileCalendarScope, setMobileCalendarScope] = useState<'month' | 'week'>('month');
   const monthHeading = formatMonthHeading(language, data.monthLabel);
   const hasFilters = mode.id === 'academy'
     ? Boolean(courseFilterOptions?.length)
@@ -159,6 +162,10 @@ export function CalendarShell({
       return;
     }
 
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 520px)').matches) {
+      return;
+    }
+
     if (Math.abs(event.deltaY) < 60 || Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
       return;
     }
@@ -190,12 +197,12 @@ export function CalendarShell({
   };
 
   return (
-    <div className="group/calendar relative transition-all duration-300 xl:flex xl:min-h-0 xl:flex-1 xl:flex-col">
-    <Card className="gap-0 rounded-xl bg-card py-2 shadow-none transition-all duration-300 xl:flex xl:min-h-0 xl:flex-1 xl:flex-col">
+    <div className="group/calendar relative transition-all duration-300 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
+    <Card className="gap-0 rounded-xl bg-card py-2 shadow-none transition-all duration-300 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col max-[520px]:rounded-none max-[520px]:border-0 max-[520px]:bg-transparent max-[520px]:py-0">
       {onToggleExpanded ? (
         <button
           aria-label={isExpanded ? dictionary.calendarCollapse : dictionary.calendarExpand}
-          className="group/calendar-handle mx-3 flex h-2 items-center justify-center rounded-md text-muted-foreground outline-none transition-all duration-200 hover:h-5 hover:bg-muted/70 hover:text-foreground focus-visible:h-5 focus-visible:bg-muted/70 focus-visible:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+          className="group/calendar-handle mx-3 flex h-2 items-center justify-center rounded-md text-muted-foreground outline-none transition-all duration-200 hover:h-5 hover:bg-muted/70 hover:text-foreground focus-visible:h-5 focus-visible:bg-muted/70 focus-visible:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 max-[520px]:hidden"
           onClick={onToggleExpanded}
           title={isExpanded ? dictionary.calendarCollapse : dictionary.calendarExpand}
           type="button"
@@ -214,13 +221,13 @@ export function CalendarShell({
           </span>
         </button>
       ) : null}
-      <CardHeader className="flex flex-row items-start justify-between gap-3 px-3 pb-2 pt-1 max-md:flex-col">
-        <div className="min-w-0">
-          <div className="flex min-w-0 items-center gap-2">
+      <CardHeader className="flex flex-row items-start justify-between gap-3 px-3 pb-2 pt-1 max-md:flex-col max-[520px]:flex-row max-[520px]:items-center max-[520px]:gap-2 max-[520px]:px-1 max-[520px]:pb-1 max-[520px]:pt-0">
+        <div className="min-w-0 max-[520px]:w-full">
+          <div className="flex min-w-0 items-center gap-2 max-[520px]:w-full max-[520px]:justify-between">
             {showDateControls ? (
               <Button
                 aria-label={previousLabel}
-                className="size-9 shrink-0 rounded-lg border bg-muted text-muted-foreground hover:text-foreground"
+                className="size-9 shrink-0 rounded-lg border bg-muted text-muted-foreground hover:text-foreground max-[520px]:order-4 max-[520px]:size-8 max-[520px]:rounded-full"
                 onClick={handlePreviousPeriod}
                 title={previousLabel}
                 type="button"
@@ -229,7 +236,7 @@ export function CalendarShell({
                 <ChevronLeft aria-hidden="true" size={16} strokeWidth={2.4} />
               </Button>
             ) : null}
-            <h2 className="flex min-w-0 items-end gap-2 text-3xl font-black leading-none">
+            <h2 className="flex min-w-0 items-end gap-2 text-3xl font-black leading-none max-[520px]:order-1 max-[520px]:mr-auto max-[520px]:text-lg">
               <span className="truncate">{headingLabel.primary}</span>
               {headingLabel.secondary ? (
                 <span className="shrink-0 pb-0.5 text-base font-black text-muted-foreground">
@@ -240,13 +247,42 @@ export function CalendarShell({
             {showDateControls ? (
               <Button
                 aria-label={nextLabel}
-                className="size-9 shrink-0 rounded-lg border bg-muted text-muted-foreground hover:text-foreground"
+                className="size-9 shrink-0 rounded-lg border bg-muted text-muted-foreground hover:text-foreground max-[520px]:order-5 max-[520px]:size-8 max-[520px]:rounded-full"
                 onClick={handleNextPeriod}
                 title={nextLabel}
                 type="button"
                 variant="outline"
               >
                 <ChevronRight aria-hidden="true" size={16} strokeWidth={2.4} />
+              </Button>
+            ) : null}
+            {!hasDayControls && view === 'month' && onToday ? (
+              <Button
+                className={cn(
+                  'hidden h-8 shrink-0 rounded-full border px-2.5 text-xs font-black disabled:opacity-100 max-[520px]:order-2 max-[520px]:inline-flex',
+                  isSelectedDateToday
+                    ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                    : 'bg-muted text-muted-foreground hover:text-foreground',
+                )}
+                disabled={isSelectedDateToday}
+                onClick={onToday}
+                title={todayLabel}
+                type="button"
+                variant="outline"
+              >
+                {todayLabel}
+              </Button>
+            ) : null}
+            {!hasDayControls && view === 'month' ? (
+              <Button
+                aria-label={mobileCalendarScope === 'week' ? 'Month view' : 'Week view'}
+                className="hidden size-8 shrink-0 rounded-full border bg-muted text-xs font-black text-muted-foreground hover:text-foreground max-[520px]:order-3 max-[520px]:inline-flex"
+                onClick={() => setMobileCalendarScope((currentScope) => currentScope === 'week' ? 'month' : 'week')}
+                title={mobileCalendarScope === 'week' ? 'Month view' : 'Week view'}
+                type="button"
+                variant="outline"
+              >
+                {mobileCalendarScope === 'week' ? 'M' : 'W'}
               </Button>
             ) : null}
             {hasDayControls && onToday ? (
@@ -268,10 +304,10 @@ export function CalendarShell({
             ) : null}
           </div>
           {mode.calendar.subtitle ? (
-            <p className="mt-1 text-sm text-muted-foreground">{mode.calendar.subtitle}</p>
+            <p className="mt-1 text-sm text-muted-foreground max-[520px]:hidden">{mode.calendar.subtitle}</p>
           ) : null}
         </div>
-        <div className="flex max-w-full items-center gap-2">
+        <div className="flex max-w-full items-center gap-2 max-[520px]:hidden">
           {(hasFilters || courseFilterOptions?.length) ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -312,21 +348,21 @@ export function CalendarShell({
         </div>
       </CardHeader>
 
-      <CardContent className="px-3 xl:flex xl:min-h-0 xl:flex-1 xl:flex-col">
-        <div className="relative min-w-0 xl:flex xl:min-h-0 xl:flex-1 xl:flex-col">
+      <CardContent className="px-3 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col max-[520px]:px-0">
+        <div className="relative min-w-0 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
           <div
             className={cn(
               'min-w-0 overscroll-contain',
               view === 'month'
                 ? cn(
-                    'overflow-auto rounded-xl transition-[max-height] duration-300 ease-out xl:min-h-0 xl:flex-1',
+                    'overflow-auto rounded-xl transition-[max-height] duration-300 ease-out lg:min-h-0 lg:flex-1 max-[520px]:overflow-visible max-[520px]:rounded-none',
                     isExpanded
-                      ? 'max-h-[calc(100dvh-146px)] xl:h-full xl:max-h-none'
-                      : 'max-h-[clamp(320px,calc(100dvh-220px),780px)] xl:h-full xl:max-h-none max-md:max-h-[clamp(300px,calc(100dvh-190px),680px)]',
+                      ? 'max-h-[calc(100dvh-146px)] lg:h-full lg:max-h-none'
+                      : 'max-h-[clamp(320px,calc(100dvh-220px),780px)] lg:h-full lg:max-h-none max-md:max-h-[clamp(300px,calc(100dvh-190px),680px)] max-[520px]:max-h-none',
                   )
                 : view === 'agenda'
-                  ? 'max-h-[72vh] overflow-auto rounded-xl pr-1 lg:max-h-[calc(100vh-310px)]'
-                : 'overflow-x-auto',
+                  ? 'overflow-auto rounded-xl pr-1 lg:min-h-0 lg:flex-1 lg:max-h-none'
+                : 'overflow-x-auto lg:min-h-0 lg:flex-1',
               showCalendarLoading && 'opacity-35 blur-[1px]',
             )}
             onWheel={handleMonthWheel}
@@ -334,7 +370,7 @@ export function CalendarShell({
             {view === 'month' ? (
               <div
                 className={cn(
-                  'calendar-month-transition h-full',
+                  'calendar-month-transition h-full max-[520px]:h-auto',
                   monthTransitionDirection === 'next'
                     ? 'calendar-month-transition-next'
                     : 'calendar-month-transition-previous',
@@ -344,6 +380,7 @@ export function CalendarShell({
                 <MonthCalendar
                   days={data.days}
                   isExpanded={isExpanded}
+                  mobileScope={mobileCalendarScope}
                   onAddCourseworkForDay={onAddCourseworkForDay}
                   onSelectItem={onSelectItem}
                   progressDisplay={progressDisplay}
@@ -373,6 +410,7 @@ export function CalendarShell({
                 onFinishItemTitleEdit={onFinishTodoTitleEdit}
                 onOpenItem={onOpenTodo}
                 onOpenItemDetails={onOpenTodoDetails}
+                onMoveItemDueDate={onMoveTodoDueDate}
                 onRemoveItem={onRemoveTodo}
                 onStartItemTitleEdit={onStartTodoTitleEdit}
                 onToggleItemDone={onToggleTodoDone}

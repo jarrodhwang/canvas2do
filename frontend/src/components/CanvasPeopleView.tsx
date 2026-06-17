@@ -2,7 +2,7 @@ import { ChevronDown, ChevronRight, ExternalLink, LoaderCircle, Mail, RefreshCw,
 import { useEffect, useMemo, useState } from 'react';
 
 import { workspaceApi } from '../api/workspaceApi';
-import type { CanvasCourse, CanvasCourseUser } from '../api/workspaceApi';
+import type { AcademyPreferences, CanvasCourse, CanvasCourseUser } from '../api/workspaceApi';
 import { useLanguage } from '../context/LanguageContext';
 import { cn } from '../lib/utils';
 import type { ColorToken } from '../modes/types';
@@ -13,8 +13,67 @@ import { Card } from './ui/card';
 import { Input } from './ui/input';
 
 type LoadStatus = 'idle' | 'loading' | 'loaded' | 'failed';
-const canvasLecturePreferencesStorageKey = 'incos-academy-canvas-lecture-preferences';
-const colorTokens = new Set<ColorToken>(['blue', 'green', 'orange', 'red', 'purple', 'teal', 'gold', 'gray']);
+const academyPreferencesUpdatedEvent = 'incos-academy-preferences-updated';
+const colorTokens = new Set<ColorToken>([
+  'blue',
+  'sky',
+  'cyan',
+  'green',
+  'emerald',
+  'indigo',
+  'amber',
+  'yellow',
+  'lime',
+  'orange',
+  'red',
+  'rose',
+  'crimson',
+  'coral',
+  'peach',
+  'apricot',
+  'purple',
+  'violet',
+  'fuchsia',
+  'pink',
+  'magenta',
+  'lavender',
+  'lilac',
+  'plum',
+  'mauve',
+  'teal',
+  'mint',
+  'aqua',
+  'turquoise',
+  'ocean',
+  'cobalt',
+  'navy',
+  'gold',
+  'lemon',
+  'olive',
+  'moss',
+  'forest',
+  'slate',
+  'zinc',
+  'neutral',
+  'stone',
+  'graphite',
+  'cocoa',
+  'sand',
+  'midnight',
+  'ice',
+  'gray',
+]);
+
+interface CanvasLecturePreference {
+  chipColor?: ColorToken;
+  courseName?: string;
+  friendlyCourseCode?: string;
+  friendlyName?: string;
+  hidden?: boolean;
+  originalCourseCode?: string;
+}
+
+type CanvasLecturePreferences = Record<string, CanvasLecturePreference>;
 
 interface CanvasPeopleViewProps {
   onOpenCoursePeople?: (courseRowId?: string | null, resourceUrl?: string | null) => void;
@@ -62,29 +121,75 @@ function getCoursePeopleUrl(course: CanvasCourse) {
   return course.htmlUrl ? `${course.htmlUrl.replace(/\/+$/, '')}/users` : undefined;
 }
 
-function readCanvasCourseColorPreferences() {
-  if (typeof window === 'undefined') {
-    return {};
-  }
-
-  try {
-    const storedValue = window.localStorage.getItem(canvasLecturePreferencesStorageKey);
-    const preferences = storedValue ? JSON.parse(storedValue) as Record<string, { chipColor?: unknown }> : {};
-
-    return preferences && typeof preferences === 'object' && !Array.isArray(preferences)
-      ? preferences
-      : {};
-  } catch {
-    return {};
-  }
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function getCourseColor(courseId: string, preferences: Record<string, { chipColor?: unknown }>): ColorToken {
-  const storedColor = preferences[courseId]?.chipColor;
+function isCanvasLecturePreferences(value: unknown): value is CanvasLecturePreferences {
+  return isRecord(value);
+}
+
+function getCanvasLecturePreferencesFromAcademyPreferences(
+  preferences: Pick<AcademyPreferences, 'canvasLecturePreferences'>,
+) {
+  return isCanvasLecturePreferences(preferences.canvasLecturePreferences)
+    ? preferences.canvasLecturePreferences
+    : {};
+}
+
+function normalizeCourseMatchValue(value?: string) {
+  return value?.replace(/\s+/g, '').trim().toLowerCase() || '';
+}
+
+function getCoursePreference(course: CanvasCourse, preferences: CanvasLecturePreferences) {
+  const courseId = String(course.id ?? '');
+  const directPreference = preferences[courseId];
+
+  if (directPreference) {
+    return directPreference;
+  }
+
+  const normalizedCourseCode = normalizeCourseMatchValue(course.courseCode);
+  const normalizedCourseName = normalizeCourseMatchValue(course.name);
+
+  return Object.values(preferences).find((preference) => {
+    const preferenceValues = [
+      preference.originalCourseCode,
+      preference.friendlyCourseCode,
+      preference.courseName,
+      preference.friendlyName,
+    ].map(normalizeCourseMatchValue);
+
+    return Boolean(
+      normalizedCourseCode && preferenceValues.includes(normalizedCourseCode) ||
+      normalizedCourseName && preferenceValues.includes(normalizedCourseName),
+    );
+  });
+}
+
+function getCourseColor(course: CanvasCourse, preferences: CanvasLecturePreferences): ColorToken {
+  const storedColor = getCoursePreference(course, preferences)?.chipColor;
 
   return typeof storedColor === 'string' && colorTokens.has(storedColor as ColorToken)
     ? storedColor as ColorToken
-    : 'green';
+    : 'blue';
+}
+
+function getCourseLabel(course: CanvasCourse, preferences: CanvasLecturePreferences) {
+  const preference = getCoursePreference(course, preferences);
+
+  return preference?.friendlyCourseCode?.trim() ||
+    course.courseCode?.trim() ||
+    preference?.friendlyName?.trim() ||
+    course.name;
+}
+
+function getCourseName(course: CanvasCourse, preferences: CanvasLecturePreferences) {
+  return getCoursePreference(course, preferences)?.friendlyName?.trim() || course.name;
+}
+
+function isCourseHidden(course: CanvasCourse, preferences: CanvasLecturePreferences) {
+  return Boolean(getCoursePreference(course, preferences)?.hidden);
 }
 
 function personMatchesQuery(person: CanvasCourseUser, course: CanvasCourse, query: string) {
@@ -118,47 +223,100 @@ export function CanvasPeopleView({ onOpenCoursePeople }: CanvasPeopleViewProps) 
   const [loadStatus, setLoadStatus] = useState<LoadStatus>('idle');
   const [errorMessage, setErrorMessage] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const [collapsedCourseIds, setCollapsedCourseIds] = useState<Set<string>>(() => new Set());
+  const [expandedCourseIds, setExpandedCourseIds] = useState<Set<string>>(() => new Set());
+  const [canvasLecturePreferences, setCanvasLecturePreferences] = useState<CanvasLecturePreferences>({});
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
-  const colorPreferences = useMemo(readCanvasCourseColorPreferences, [courses, coursePeople]);
   const totalPeopleCount = useMemo(() => (
     Object.values(coursePeople).reduce((count, courseState) => count + courseState.people.length, 0)
   ), [coursePeople]);
   const visibleCourseGroups = useMemo(() => (
     courses
+      .filter((course) => !isCourseHidden(course, canvasLecturePreferences))
       .map((course) => {
         const state = coursePeople[course.id] ?? { people: [], status: 'idle' as LoadStatus };
         const people = [...state.people]
           .filter((person) => personMatchesQuery(person, course, normalizedSearchQuery))
           .sort(sortCanvasPeople);
+        const courseMatchesQuery = [
+          course.courseCode,
+          course.name,
+          getCourseLabel(course, canvasLecturePreferences),
+          getCourseName(course, canvasLecturePreferences),
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase()
+          .includes(normalizedSearchQuery);
 
         return {
+          courseMatchesQuery,
           course,
           people,
           state,
         };
       })
       .filter((group) => (
+        !normalizedSearchQuery ||
+        group.courseMatchesQuery ||
         group.people.length > 0 ||
-        (!normalizedSearchQuery && (group.state.status === 'failed' || loadStatus === 'loading'))
+        group.state.status === 'failed' ||
+        group.state.status === 'loading'
       ))
       .sort((firstGroup, secondGroup) => (
-        (firstGroup.course.courseCode || firstGroup.course.name)
-          .localeCompare(secondGroup.course.courseCode || secondGroup.course.name, undefined, {
+        getCourseLabel(firstGroup.course, canvasLecturePreferences)
+          .localeCompare(getCourseLabel(secondGroup.course, canvasLecturePreferences), undefined, {
             numeric: true,
             sensitivity: 'base',
           })
       ))
-  ), [coursePeople, courses, loadStatus, normalizedSearchQuery]);
+  ), [canvasLecturePreferences, coursePeople, courses, loadStatus, normalizedSearchQuery]);
   const isLoading = loadStatus === 'loading';
+  const loadCoursePeople = (courseId: string, options?: { force?: boolean }) => {
+    const currentState = coursePeople[courseId];
+
+    if (!options?.force && (currentState?.status === 'loading' || currentState?.status === 'loaded')) {
+      return;
+    }
+
+    setCoursePeople((currentPeople) => ({
+      ...currentPeople,
+      [courseId]: {
+        people: options?.force ? [] : currentPeople[courseId]?.people ?? [],
+        status: 'loading',
+      },
+    }));
+
+    workspaceApi
+      .getCanvasCoursePeople(courseId)
+      .then(({ people }) => {
+        setCoursePeople((currentPeople) => ({
+          ...currentPeople,
+          [courseId]: {
+            people,
+            status: 'loaded',
+          },
+        }));
+      })
+      .catch((error) => {
+        setCoursePeople((currentPeople) => ({
+          ...currentPeople,
+          [courseId]: {
+            error: error instanceof Error ? error.message : undefined,
+            people: [],
+            status: 'failed',
+          },
+        }));
+      });
+  };
   const toggleCourseGroup = (courseId: string) => {
-    setCollapsedCourseIds((currentIds) => {
+    setExpandedCourseIds((currentIds) => {
       const nextIds = new Set(currentIds);
 
       if (nextIds.has(courseId)) {
         nextIds.delete(courseId);
       } else {
         nextIds.add(courseId);
+        loadCoursePeople(courseId);
       }
 
       return nextIds;
@@ -169,36 +327,12 @@ export function CanvasPeopleView({ onOpenCoursePeople }: CanvasPeopleViewProps) 
     setLoadStatus('loading');
     setErrorMessage('');
     setCoursePeople({});
+    setExpandedCourseIds(new Set());
 
     workspaceApi
       .getCanvasCourses(50)
-      .then(async ({ courses: nextCourses }) => {
+      .then(({ courses: nextCourses }) => {
         setCourses(nextCourses);
-
-        const entries = await Promise.all(nextCourses.map(async (course) => {
-          try {
-            const { people } = await workspaceApi.getCanvasCoursePeople(course.id);
-
-            return [
-              course.id,
-              {
-                people,
-                status: 'loaded' as LoadStatus,
-              },
-            ] as const;
-          } catch (error) {
-            return [
-              course.id,
-              {
-                error: error instanceof Error ? error.message : undefined,
-                people: [],
-                status: 'failed' as LoadStatus,
-              },
-            ] as const;
-          }
-        }));
-
-        setCoursePeople(Object.fromEntries(entries));
         setLoadStatus('loaded');
       })
       .catch((error) => {
@@ -211,6 +345,38 @@ export function CanvasPeopleView({ onOpenCoursePeople }: CanvasPeopleViewProps) 
 
   useEffect(() => {
     loadPeople();
+  }, []);
+
+  useEffect(() => {
+    const applyAcademyPreferences = (preferences: AcademyPreferences) => {
+      setCanvasLecturePreferences(getCanvasLecturePreferencesFromAcademyPreferences(preferences));
+    };
+
+    const reloadAcademyPreferences = () => {
+      workspaceApi
+        .getAcademyPreferences()
+        .then(applyAcademyPreferences)
+        .catch(() => undefined);
+    };
+
+    const handleAcademyPreferencesUpdated = (event: Event) => {
+      if (event instanceof CustomEvent && isRecord(event.detail)) {
+        if (isCanvasLecturePreferences(event.detail.canvasLecturePreferences)) {
+          setCanvasLecturePreferences(event.detail.canvasLecturePreferences);
+        }
+
+        return;
+      }
+
+      reloadAcademyPreferences();
+    };
+
+    reloadAcademyPreferences();
+    window.addEventListener(academyPreferencesUpdatedEvent, handleAcademyPreferencesUpdated);
+
+    return () => {
+      window.removeEventListener(academyPreferencesUpdatedEvent, handleAcademyPreferencesUpdated);
+    };
   }, []);
 
   return (
@@ -282,8 +448,15 @@ export function CanvasPeopleView({ onOpenCoursePeople }: CanvasPeopleViewProps) 
             <div className="grid gap-4">
               {visibleCourseGroups.map(({ course, people, state }) => {
                 const coursePeopleUrl = getCoursePeopleUrl(course);
-                const courseColor = getCourseColor(course.id, colorPreferences);
-                const isCollapsed = collapsedCourseIds.has(course.id);
+                const courseColor = getCourseColor(course, canvasLecturePreferences);
+                const isCollapsed = !expandedCourseIds.has(course.id);
+                const courseCountLabel = state.status === 'loaded'
+                  ? `${state.people.length} ${dictionary.academyPeopleCountLabel}`
+                  : state.status === 'loading'
+                    ? dictionary.academyPeopleLoading
+                    : state.status === 'failed'
+                      ? dictionary.academyPeopleUnavailable
+                      : dictionary.academyPeopleCountLabel;
 
                 return (
                   <section className="overflow-hidden rounded-xl border bg-background" key={course.id}>
@@ -300,12 +473,14 @@ export function CanvasPeopleView({ onOpenCoursePeople }: CanvasPeopleViewProps) 
                         )}
                         <span className="min-w-0">
                           <span className="mb-1 flex min-w-0 flex-wrap items-center gap-2">
-                            <EventPill color={courseColor} compact label={course.courseCode || course.name} />
+                            <EventPill color={courseColor} compact label={getCourseLabel(course, canvasLecturePreferences)} />
                             <span className="text-xs font-black text-muted-foreground">
-                              {people.length} {dictionary.academyPeopleCountLabel}
+                              {courseCountLabel}
                             </span>
                           </span>
-                          <span className="block truncate text-sm font-black text-foreground">{course.name}</span>
+                          <span className="block truncate text-sm font-black text-foreground">
+                            {getCourseName(course, canvasLecturePreferences)}
+                          </span>
                         </span>
                       </button>
                       {onOpenCoursePeople ? (
@@ -330,6 +505,10 @@ export function CanvasPeopleView({ onOpenCoursePeople }: CanvasPeopleViewProps) 
                     ) : state.status === 'failed' && people.length === 0 ? (
                       <div className="p-4 text-sm font-bold text-muted-foreground">
                         {state.error || dictionary.academyPeopleUnavailable}
+                      </div>
+                    ) : state.status === 'loaded' && people.length === 0 ? (
+                      <div className="p-4 text-sm font-bold text-muted-foreground">
+                        {dictionary.academyPeopleEmpty}
                       </div>
                     ) : (
                       <div className="grid gap-px bg-border sm:grid-cols-2 xl:grid-cols-3">

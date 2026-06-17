@@ -180,6 +180,7 @@ export const defaultModeConfigs: WorkspaceModeConfig[] = [
           { id: 'email', label: 'Email', icon: 'gmail', feature: 'integrations' },
           { id: 'chat', label: 'Chat', icon: 'google-chat', feature: 'integrations' },
           { id: 'drive', label: 'Drive', icon: 'google-drive', feature: 'integrations' },
+          { id: 'toptrack', label: 'TopTrack', icon: 'toptrack', feature: 'integrations' },
           { id: 'links', label: 'Links', icon: 'link', feature: 'links' },
         ],
       },
@@ -353,6 +354,7 @@ export const defaultModeConfigs: WorkspaceModeConfig[] = [
         items: [
           { id: 'dashboard', label: 'Dashboard', icon: 'layout-dashboard' },
           { id: 'users', label: 'Users', icon: 'users' },
+          { id: 'groups', label: 'Groups', icon: 'users' },
           { id: 'customers', label: 'Customers', icon: 'building-2' },
           { id: 'licenses', label: 'Licenses', icon: 'key-round' },
           { id: 'products', label: 'Products', icon: 'package' },
@@ -364,7 +366,6 @@ export const defaultModeConfigs: WorkspaceModeConfig[] = [
         label: 'Setting',
         items: [
           { id: 'settings-general', label: 'General', icon: 'sliders-horizontal' },
-          { id: 'settings-users', label: 'Users', icon: 'user-cog' },
           { id: 'permissions', label: 'Permissions', icon: 'circle-alert' },
           { id: 'audit-logs', label: 'Audit Logs', icon: 'list-checks' },
           { id: 'workspace-mode', label: 'Workspace Mode', icon: 'settings' },

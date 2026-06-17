@@ -438,7 +438,7 @@ export function ManualLectureDialog({
         entries: normalizedScheduleEntries,
       },
       links,
-      chipColor: initialLecture?.chipColor ?? 'green',
+      chipColor: initialLecture?.chipColor ?? 'blue',
     };
 
     if (initialLecture) {

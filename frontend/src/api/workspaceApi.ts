@@ -165,9 +165,88 @@ export interface GoogleIntegrationStatus {
   label: string;
   configured: boolean;
   connected: boolean;
-  status: 'connected' | 'needs_connection';
+  status: 'connected' | 'disabled' | 'needs_connection';
   connectUrl: string;
   scopes: string[];
+}
+
+export type AdminUserStatus = 'active' | 'inactive' | 'pending';
+
+export interface AuthSession {
+  accountStatus?: AdminUserStatus;
+  canAccessWorkspace?: boolean;
+  displayName?: string;
+  email?: string;
+  hostedDomain?: string;
+  isAuthenticated: boolean;
+  pictureUrl?: string;
+  provider?: string;
+  requiresApproval?: boolean;
+}
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  displayName: string;
+  photoUrl?: string;
+  status: AdminUserStatus;
+  apiAccessEnabled: boolean;
+  hasLoggedIn: boolean;
+  isDirectorySuspended: boolean;
+  lastLoginAt?: string;
+  googleLastLoginAt?: string;
+  directorySyncedAt?: string;
+}
+
+export interface AdminUsersResponse {
+  users: AdminUser[];
+  syncedAt?: string;
+  syncError?: string;
+}
+
+export interface UpdateAdminUserRequest {
+  status?: AdminUserStatus;
+  apiAccessEnabled?: boolean;
+}
+
+export type AdminGroupStatus = 'active' | 'inactive';
+
+export interface AdminGroup {
+  id: string;
+  name: string;
+  description?: string;
+  photoUrl?: string;
+  status: AdminGroupStatus;
+  isProtected: boolean;
+  permissions: string[];
+  settings: string[];
+  access: string[];
+  members: AdminGroupMember[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminGroupMember {
+  userId: string;
+  email: string;
+  displayName: string;
+  photoUrl?: string;
+  status: AdminUserStatus;
+}
+
+export interface AdminGroupsResponse {
+  groups: AdminGroup[];
+}
+
+export interface UpsertAdminGroupRequest {
+  name?: string;
+  description?: string;
+  photoUrl?: string;
+  status?: AdminGroupStatus;
+  permissions?: string[];
+  settings?: string[];
+  access?: string[];
+  memberIds?: string[];
 }
 
 export interface CanvasIntegrationStatus {
@@ -441,6 +520,7 @@ export interface CanvasCalendarItem {
   submissionTypes?: string[];
   assignmentId?: string;
   isSubmitted?: boolean;
+  submittedAt?: string;
 }
 
 export interface CanvasCalendarItems {
@@ -719,7 +799,7 @@ export const workspaceApi = {
   apiBaseUrl,
 
   getGoogleLoginUrl(returnUrl = '/') {
-    return `${apiBaseUrl}/auth/google/login?returnUrl=${encodeURIComponent(returnUrl)}`;
+    return `${apiBaseUrl}/auth/google/workspace/login?returnUrl=${encodeURIComponent(returnUrl)}`;
   },
 
   async getAuthSession() {
@@ -728,10 +808,23 @@ export const workspaceApi = {
     });
 
     if (!response.ok) {
-      return { isAuthenticated: false };
+      return { isAuthenticated: false } satisfies AuthSession;
     }
 
-    return response.json() as Promise<{ isAuthenticated: boolean; displayName?: string }>;
+    return response.json() as Promise<AuthSession>;
+  },
+
+  async logout() {
+    const response = await fetch(`${apiBaseUrl}/auth/logout`, {
+      credentials: 'include',
+      method: 'POST',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to sign out.');
+
+      throw new Error(message);
+    }
   },
 
   async getAuthConfig() {
@@ -743,7 +836,7 @@ export const workspaceApi = {
       return { googleConfigured: false };
     }
 
-    return response.json() as Promise<{ googleConfigured: boolean; hostedDomain?: string }>;
+    return response.json() as Promise<{ googleConfigured: boolean; hostedDomain?: string; workspaceDataDomain?: string }>;
   },
 
   async getGoogleIntegrations() {
@@ -756,6 +849,86 @@ export const workspaceApi = {
     }
 
     return response.json() as Promise<GoogleIntegrationStatus[]>;
+  },
+
+  async getAdminUsers() {
+    const response = await fetch(`${apiBaseUrl}/admin/users`, {
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to load users.');
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<AdminUsersResponse>;
+  },
+
+  async updateAdminUser(userId: string, request: UpdateAdminUserRequest) {
+    const response = await fetch(`${apiBaseUrl}/admin/users/${encodeURIComponent(userId)}`, {
+      body: JSON.stringify(request),
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'PATCH',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to update user.');
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<AdminUser>;
+  },
+
+  async getAdminGroups() {
+    const response = await fetch(`${apiBaseUrl}/admin/groups`, {
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to load groups.');
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<AdminGroupsResponse>;
+  },
+
+  async createAdminGroup(request: UpsertAdminGroupRequest) {
+    const response = await fetch(`${apiBaseUrl}/admin/groups`, {
+      body: JSON.stringify(request),
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to create group.');
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<AdminGroup>;
+  },
+
+  async updateAdminGroup(groupId: string, request: UpsertAdminGroupRequest) {
+    const response = await fetch(`${apiBaseUrl}/admin/groups/${encodeURIComponent(groupId)}`, {
+      body: JSON.stringify(request),
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'PATCH',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to update group.');
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<AdminGroup>;
   },
 
   async getCanvasIntegration() {
@@ -804,6 +977,69 @@ export const workspaceApi = {
 
     if (!response.ok) {
       const { message } = await readErrorResponse(response, 'Unable to update Canvas API token.');
+
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<CanvasTokenStatus>;
+  },
+
+  async deleteCanvasToken() {
+    const response = await fetch(`${apiBaseUrl}/canvas/token`, {
+      credentials: 'include',
+      method: 'DELETE',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to reset Canvas API token.');
+
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<CanvasTokenStatus>;
+  },
+
+  async getAdminUserCanvasTokenStatus(userId: string) {
+    const response = await fetch(`${apiBaseUrl}/canvas/admin/users/${encodeURIComponent(userId)}/token`, {
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to load user Canvas token status.');
+
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<CanvasTokenStatus>;
+  },
+
+  async updateAdminUserCanvasToken(userId: string, request: UpdateCanvasTokenRequest) {
+    const response = await fetch(`${apiBaseUrl}/canvas/admin/users/${encodeURIComponent(userId)}/token`, {
+      body: JSON.stringify(request),
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'PUT',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to update user Canvas API token.');
+
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<CanvasTokenStatus>;
+  },
+
+  async deleteAdminUserCanvasToken(userId: string) {
+    const response = await fetch(`${apiBaseUrl}/canvas/admin/users/${encodeURIComponent(userId)}/token`, {
+      credentials: 'include',
+      method: 'DELETE',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to reset user Canvas API token.');
 
       throw new Error(message);
     }

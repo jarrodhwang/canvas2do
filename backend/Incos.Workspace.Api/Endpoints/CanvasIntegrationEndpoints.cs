@@ -4,6 +4,7 @@ using Incos.Workspace.Api.Domain.Entities;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using System.Globalization;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -31,6 +32,18 @@ public static class CanvasIntegrationEndpoints
 
         canvas.MapPut("/token", UpdateCanvasTokenAsync)
             .WithName("UpdateCanvasToken");
+
+        canvas.MapDelete("/token", DeleteCanvasTokenAsync)
+            .WithName("DeleteCanvasToken");
+
+        canvas.MapGet("/admin/users/{userId:guid}/token", GetAdminUserCanvasTokenStatusAsync)
+            .WithName("GetAdminUserCanvasTokenStatus");
+
+        canvas.MapPut("/admin/users/{userId:guid}/token", UpdateAdminUserCanvasTokenAsync)
+            .WithName("UpdateAdminUserCanvasToken");
+
+        canvas.MapDelete("/admin/users/{userId:guid}/token", DeleteAdminUserCanvasTokenAsync)
+            .WithName("DeleteAdminUserCanvasToken");
 
         canvas.MapGet("/courses", GetCanvasCoursesAsync)
             .WithName("GetCanvasCourses");
@@ -121,16 +134,7 @@ public static class CanvasIntegrationEndpoints
             dataProtectionProvider,
             cancellationToken);
 
-        return Results.Ok(new CanvasTokenStatusDto(
-            connection.Configured,
-            connection.Connected,
-            connection.Status,
-            connection.InstanceUrl,
-            connection.TokenSource,
-            connection.StartsAt,
-            connection.ExpiresAt,
-            connection.UpdatedAt,
-            connection.UserName));
+        return Results.Ok(ToCanvasTokenStatusDto(connection));
     }
 
     private static async Task<IResult> UpdateCanvasTokenAsync(
@@ -149,117 +153,100 @@ public static class CanvasIntegrationEndpoints
             return Results.Unauthorized();
         }
 
-        var instanceUrl = NormalizeCanvasInstanceUrl(request.InstanceUrl);
-        var accessToken = request.AccessToken.Trim();
-
-        if (string.IsNullOrWhiteSpace(instanceUrl) || !IsSecureCanvasInstanceUrl(instanceUrl))
-        {
-            return Results.BadRequest(new
-            {
-                title = "Canvas instance URL is invalid.",
-                detail = "Use the HTTPS root URL for your institution Canvas instance.",
-            });
-        }
-
-        if (string.IsNullOrWhiteSpace(accessToken) || accessToken.Length > 8192)
-        {
-            return Results.BadRequest(new
-            {
-                title = "Canvas API token is invalid.",
-                detail = "Enter a Canvas API access token.",
-            });
-        }
-
-        var startsAt = request.StartsAt ?? DateTimeOffset.UtcNow;
-        var expiresAt = request.ExpiresAt;
-
-        if (expiresAt.HasValue && expiresAt <= startsAt)
-        {
-            return Results.BadRequest(new
-            {
-                title = "Canvas token expiration is invalid.",
-                detail = "The expiration date must be after the start date.",
-            });
-        }
-
-        string? userName;
-
-        try
-        {
-            var profile = await GetCanvasObjectAsync(
-                httpClientFactory,
-                accessToken,
-                $"{instanceUrl}/api/v1/users/self/profile",
-                cancellationToken);
-
-            userName =
-                GetJsonString(profile, "name") ??
-                GetJsonString(profile, "short_name") ??
-                GetJsonString(profile, "login_id");
-        }
-        catch (CanvasApiRequestException exception)
-        {
-            return Results.Problem(
-                title: "Canvas token could not be verified.",
-                detail: "Canvas rejected the token or the instance URL. The token was not stored.",
-                statusCode: exception.StatusCode is StatusCodes.Status401Unauthorized or StatusCodes.Status403Forbidden
-                    ? StatusCodes.Status401Unauthorized
-                    : StatusCodes.Status502BadGateway);
-        }
-
-        await WorkspaceEndpoints.EnsureUserSettingsTableAsync(db, cancellationToken);
-
-        var now = DateTimeOffset.UtcNow;
-        var setting = await db.UserSettings
-            .FirstOrDefaultAsync(
-                userSetting =>
-                    userSetting.UserKey == userKey &&
-                    userSetting.SettingKey == CanvasTokenSettingKey,
-                cancellationToken);
-
-        if (setting is null)
-        {
-            setting = new UserSetting
-            {
-                Id = Guid.NewGuid(),
-                CreatedAt = now,
-                UserKey = userKey,
-                SettingKey = CanvasTokenSettingKey,
-            };
-            db.UserSettings.Add(setting);
-        }
-
-        var protector = dataProtectionProvider.CreateProtector(CanvasTokenProtectorPurpose);
-        setting.SettingJson = JsonSerializer.Serialize(
-            new StoredCanvasToken(
-                instanceUrl,
-                protector.Protect(accessToken),
-                startsAt,
-                expiresAt,
-                now,
-                userName),
-            JsonOptions);
-        setting.UpdatedAt = now;
-
-        await db.SaveChangesAsync(cancellationToken);
-
-        var connection = await ResolveCanvasConnectionAsync(
-            context,
+        return await UpdateCanvasTokenForUserKeyAsync(
+            userKey,
+            httpClientFactory,
             db,
-            configuration,
+            dataProtectionProvider,
+            request,
+            cancellationToken);
+    }
+
+    private static async Task<IResult> DeleteCanvasTokenAsync(
+        HttpContext context,
+        IncosWorkspaceDbContext db,
+        IConfiguration configuration,
+        IDataProtectionProvider dataProtectionProvider,
+        CancellationToken cancellationToken)
+    {
+        var userKey = GetUserKey(context);
+
+        if (string.IsNullOrWhiteSpace(userKey))
+        {
+            return Results.Unauthorized();
+        }
+
+        return await DeleteCanvasTokenForUserKeyAsync(
+            userKey,
+            db,
+            dataProtectionProvider,
+            cancellationToken);
+    }
+
+    private static async Task<IResult> GetAdminUserCanvasTokenStatusAsync(
+        Guid userId,
+        IncosWorkspaceDbContext db,
+        IDataProtectionProvider dataProtectionProvider,
+        CancellationToken cancellationToken)
+    {
+        var userKey = await GetAdminUserKeyAsync(db, userId, cancellationToken);
+
+        if (string.IsNullOrWhiteSpace(userKey))
+        {
+            return Results.NotFound();
+        }
+
+        var connection = await ResolveCanvasConnectionForUserKeyAsync(
+            userKey,
+            db,
             dataProtectionProvider,
             cancellationToken);
 
-        return Results.Ok(new CanvasTokenStatusDto(
-            connection.Configured,
-            connection.Connected,
-            connection.Status,
-            connection.InstanceUrl,
-            connection.TokenSource,
-            connection.StartsAt,
-            connection.ExpiresAt,
-            connection.UpdatedAt,
-            connection.UserName));
+        return Results.Ok(ToCanvasTokenStatusDto(connection));
+    }
+
+    private static async Task<IResult> UpdateAdminUserCanvasTokenAsync(
+        Guid userId,
+        IHttpClientFactory httpClientFactory,
+        IncosWorkspaceDbContext db,
+        IDataProtectionProvider dataProtectionProvider,
+        UpdateCanvasTokenRequest request,
+        CancellationToken cancellationToken)
+    {
+        var userKey = await GetAdminUserKeyAsync(db, userId, cancellationToken);
+
+        if (string.IsNullOrWhiteSpace(userKey))
+        {
+            return Results.NotFound();
+        }
+
+        return await UpdateCanvasTokenForUserKeyAsync(
+            userKey,
+            httpClientFactory,
+            db,
+            dataProtectionProvider,
+            request,
+            cancellationToken);
+    }
+
+    private static async Task<IResult> DeleteAdminUserCanvasTokenAsync(
+        Guid userId,
+        IncosWorkspaceDbContext db,
+        IDataProtectionProvider dataProtectionProvider,
+        CancellationToken cancellationToken)
+    {
+        var userKey = await GetAdminUserKeyAsync(db, userId, cancellationToken);
+
+        if (string.IsNullOrWhiteSpace(userKey))
+        {
+            return Results.NotFound();
+        }
+
+        return await DeleteCanvasTokenForUserKeyAsync(
+            userKey,
+            db,
+            dataProtectionProvider,
+            cancellationToken);
     }
 
     private static async Task<IResult> GetCanvasCoursesAsync(
@@ -313,6 +300,7 @@ public static class CanvasIntegrationEndpoints
         IncosWorkspaceDbContext db,
         IConfiguration configuration,
         IDataProtectionProvider dataProtectionProvider,
+        IMemoryCache memoryCache,
         string? startDate,
         string? endDate,
         int? pageSize,
@@ -335,15 +323,53 @@ public static class CanvasIntegrationEndpoints
         var startAt = ParseCanvasDate(startDate) ?? DateTimeOffset.UtcNow.AddDays(-30);
         var endAt = ParseCanvasDate(endDate)?.AddDays(1).AddTicks(-1) ?? startAt.AddDays(60);
         var safePageSize = Math.Clamp(pageSize ?? 100, 1, 100);
+        var userCacheKey = GetUserKey(context) ??
+            context.User.FindFirstValue(ClaimTypes.NameIdentifier) ??
+            "unknown";
+        var cacheKey = string.Join(
+            ':',
+            "canvas-calendar",
+            "v2",
+            userCacheKey,
+            instanceUrl,
+            startAt.UtcDateTime.ToString("O", CultureInfo.InvariantCulture),
+            endAt.UtcDateTime.ToString("O", CultureInfo.InvariantCulture),
+            safePageSize.ToString(CultureInfo.InvariantCulture));
+
+        if (memoryCache.TryGetValue(cacheKey, out CanvasCalendarItemsDto? cachedCalendarItems) &&
+            cachedCalendarItems is not null)
+        {
+            return Results.Ok(cachedCalendarItems);
+        }
 
         try
         {
-            var courses = await GetActiveStudentCoursesAsync(
-                httpClientFactory,
-                instanceUrl,
-                accessToken,
-                50,
-                cancellationToken);
+            var courseCacheKey = string.Join(
+                ':',
+                "canvas-active-courses",
+                "v1",
+                userCacheKey,
+                instanceUrl);
+
+            if (!memoryCache.TryGetValue(courseCacheKey, out CanvasCourseDto[]? courses) ||
+                courses is null)
+            {
+                courses = await GetActiveStudentCoursesAsync(
+                    httpClientFactory,
+                    instanceUrl,
+                    accessToken,
+                    50,
+                    cancellationToken);
+                memoryCache.Set(
+                    courseCacheKey,
+                    courses,
+                    new MemoryCacheEntryOptions
+                    {
+                        AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5),
+                        SlidingExpiration = TimeSpan.FromMinutes(1),
+                    });
+            }
+
             var courseLookup = courses
                 .Where(course => !string.IsNullOrWhiteSpace(course.Id))
                 .ToDictionary(course => course.Id, StringComparer.OrdinalIgnoreCase);
@@ -351,7 +377,7 @@ public static class CanvasIntegrationEndpoints
                 .Where(course => !string.IsNullOrWhiteSpace(course.Id))
                 .Select(course => $"course_{course.Id}")
                 .ToArray();
-            var assignmentEvents = await GetCanvasCalendarEventsAsync(
+            var assignmentEventsTask = GetCanvasCalendarEventsAsync(
                 httpClientFactory,
                 instanceUrl,
                 accessToken,
@@ -361,7 +387,7 @@ public static class CanvasIntegrationEndpoints
                 safePageSize,
                 contextCodes,
                 cancellationToken);
-            var calendarEvents = await GetCanvasCalendarEventsAsync(
+            var calendarEventsTask = GetCanvasCalendarEventsAsync(
                 httpClientFactory,
                 instanceUrl,
                 accessToken,
@@ -371,12 +397,17 @@ public static class CanvasIntegrationEndpoints
                 safePageSize,
                 contextCodes,
                 cancellationToken);
-            var submissionLookup = await GetCanvasAssignmentSubmissionLookupAsync(
+            await Task.WhenAll(assignmentEventsTask, calendarEventsTask);
+
+            var assignmentEvents = await assignmentEventsTask;
+            var calendarEvents = await calendarEventsTask;
+            var submissionLookupResult = await GetCanvasAssignmentSubmissionLookupBestEffortAsync(
                 httpClientFactory,
                 instanceUrl,
                 accessToken,
                 assignmentEvents,
                 cancellationToken);
+            var submissionLookup = submissionLookupResult.Lookup;
             var items = assignmentEvents
                 .Select(calendarEvent => ParseCanvasCalendarItem(calendarEvent, "assignment", courseLookup, submissionLookup))
                 .Concat(calendarEvents.Select(calendarEvent => ParseCanvasCalendarItem(calendarEvent, "event", courseLookup, submissionLookup)))
@@ -386,8 +417,21 @@ public static class CanvasIntegrationEndpoints
                 .Select(group => group.First())
                 .OrderBy(item => item.DueAt ?? item.StartAt ?? item.EndAt ?? DateTimeOffset.MaxValue)
                 .ToArray();
+            var response = new CanvasCalendarItemsDto(items);
 
-            return Results.Ok(new CanvasCalendarItemsDto(items));
+            if (submissionLookupResult.IsComplete)
+            {
+                memoryCache.Set(
+                    cacheKey,
+                    response,
+                    new MemoryCacheEntryOptions
+                    {
+                        AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(3),
+                        SlidingExpiration = TimeSpan.FromSeconds(45),
+                    });
+            }
+
+            return Results.Ok(response);
         }
         catch (CanvasApiRequestException exception)
         {
@@ -1273,70 +1317,244 @@ public static class CanvasIntegrationEndpoints
     {
         var userKey = GetUserKey(context);
 
-        if (!string.IsNullOrWhiteSpace(userKey))
-        {
-            await WorkspaceEndpoints.EnsureUserSettingsTableAsync(db, cancellationToken);
-
-            var setting = await db.UserSettings
-                .AsNoTracking()
-                .FirstOrDefaultAsync(
-                    userSetting =>
-                        userSetting.UserKey == userKey &&
-                        userSetting.SettingKey == CanvasTokenSettingKey,
-                    cancellationToken);
-
-            if (setting is not null)
-            {
-                var storedToken = TryReadStoredCanvasToken(setting.SettingJson);
-
-                if (storedToken is null)
-                {
-                    return CanvasConnection.Invalid();
-                }
-
-                try
-                {
-                    var protector = dataProtectionProvider.CreateProtector(CanvasTokenProtectorPurpose);
-                    var accessToken = protector.Unprotect(storedToken.ProtectedAccessToken);
-                    var now = DateTimeOffset.UtcNow;
-                    var status = GetCanvasTokenStatus(storedToken.StartsAt, storedToken.ExpiresAt, now);
-                    var usableAccessToken = status == "connected" ? accessToken : null;
-
-                    return new CanvasConnection(
-                        storedToken.InstanceUrl,
-                        usableAccessToken,
-                        "user",
-                        status,
-                        storedToken.StartsAt,
-                        storedToken.ExpiresAt,
-                        storedToken.UpdatedAt,
-                        storedToken.UserName);
-                }
-                catch
-                {
-                    return CanvasConnection.Invalid();
-                }
-            }
-        }
-
-        var instanceUrl = NormalizeCanvasInstanceUrl(configuration["Authentication:Canvas:InstanceUrl"]);
-        var accessTokenFromConfig = configuration["Authentication:Canvas:AccessToken"];
-
-        if (!string.IsNullOrWhiteSpace(instanceUrl) && !string.IsNullOrWhiteSpace(accessTokenFromConfig))
-        {
-            return new CanvasConnection(
-                instanceUrl,
-                accessTokenFromConfig,
-                "environment",
-                "connected",
-                null,
-                null,
-                null,
-                null);
-        }
-
-        return CanvasConnection.None();
+        return await ResolveCanvasConnectionForUserKeyAsync(
+            userKey,
+            db,
+            dataProtectionProvider,
+            cancellationToken);
     }
+
+    private static async Task<CanvasConnection> ResolveCanvasConnectionForUserKeyAsync(
+        string? userKey,
+        IncosWorkspaceDbContext db,
+        IDataProtectionProvider dataProtectionProvider,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(userKey))
+        {
+            return CanvasConnection.None();
+        }
+
+        await WorkspaceEndpoints.EnsureUserSettingsTableAsync(db, cancellationToken);
+
+        var setting = await db.UserSettings
+            .AsNoTracking()
+            .OrderBy(userSetting => userSetting.UserKey == userKey ? 0 : 1)
+            .FirstOrDefaultAsync(
+                userSetting =>
+                    userSetting.UserKey.ToLower() == userKey &&
+                    userSetting.SettingKey == CanvasTokenSettingKey,
+                cancellationToken);
+
+        if (setting is null)
+        {
+            return CanvasConnection.None();
+        }
+
+        var storedToken = TryReadStoredCanvasToken(setting.SettingJson);
+
+        if (storedToken is null)
+        {
+            return CanvasConnection.Invalid();
+        }
+
+        try
+        {
+            var protector = dataProtectionProvider.CreateProtector(CanvasTokenProtectorPurpose);
+            var accessToken = protector.Unprotect(storedToken.ProtectedAccessToken);
+            var now = DateTimeOffset.UtcNow;
+            var status = GetCanvasTokenStatus(storedToken.StartsAt, storedToken.ExpiresAt, now);
+            var usableAccessToken = status == "connected" ? accessToken : null;
+
+            return new CanvasConnection(
+                storedToken.InstanceUrl,
+                usableAccessToken,
+                "user",
+                status,
+                storedToken.StartsAt,
+                storedToken.ExpiresAt,
+                storedToken.UpdatedAt,
+                storedToken.UserName);
+        }
+        catch
+        {
+            return CanvasConnection.Invalid();
+        }
+    }
+
+    private static async Task<IResult> UpdateCanvasTokenForUserKeyAsync(
+        string userKey,
+        IHttpClientFactory httpClientFactory,
+        IncosWorkspaceDbContext db,
+        IDataProtectionProvider dataProtectionProvider,
+        UpdateCanvasTokenRequest request,
+        CancellationToken cancellationToken)
+    {
+        var normalizedUserKey = userKey.Trim().ToLowerInvariant();
+        var instanceUrl = NormalizeCanvasInstanceUrl(request.InstanceUrl);
+        var accessToken = request.AccessToken.Trim();
+
+        if (string.IsNullOrWhiteSpace(instanceUrl) || !IsSecureCanvasInstanceUrl(instanceUrl))
+        {
+            return Results.BadRequest(new
+            {
+                title = "Canvas instance URL is invalid.",
+                detail = "Use the HTTPS root URL for your institution Canvas instance.",
+            });
+        }
+
+        if (string.IsNullOrWhiteSpace(accessToken) || accessToken.Length > 8192)
+        {
+            return Results.BadRequest(new
+            {
+                title = "Canvas API token is invalid.",
+                detail = "Enter a Canvas API access token.",
+            });
+        }
+
+        var startsAt = request.StartsAt ?? DateTimeOffset.UtcNow;
+        var expiresAt = request.ExpiresAt;
+
+        if (expiresAt.HasValue && expiresAt <= startsAt)
+        {
+            return Results.BadRequest(new
+            {
+                title = "Canvas token expiration is invalid.",
+                detail = "The expiration date must be after the start date.",
+            });
+        }
+
+        string? userName;
+
+        try
+        {
+            var profile = await GetCanvasObjectAsync(
+                httpClientFactory,
+                accessToken,
+                $"{instanceUrl}/api/v1/users/self/profile",
+                cancellationToken);
+
+            userName =
+                GetJsonString(profile, "name") ??
+                GetJsonString(profile, "short_name") ??
+                GetJsonString(profile, "login_id");
+        }
+        catch (CanvasApiRequestException exception)
+        {
+            return Results.Problem(
+                title: "Canvas token could not be verified.",
+                detail: "Canvas rejected the token or the instance URL. The token was not stored.",
+                statusCode: exception.StatusCode is StatusCodes.Status401Unauthorized or StatusCodes.Status403Forbidden
+                    ? StatusCodes.Status401Unauthorized
+                    : StatusCodes.Status502BadGateway);
+        }
+
+        await WorkspaceEndpoints.EnsureUserSettingsTableAsync(db, cancellationToken);
+
+        var now = DateTimeOffset.UtcNow;
+        var setting = await db.UserSettings
+            .OrderBy(userSetting => userSetting.UserKey == normalizedUserKey ? 0 : 1)
+            .FirstOrDefaultAsync(
+                userSetting =>
+                    userSetting.UserKey.ToLower() == normalizedUserKey &&
+                    userSetting.SettingKey == CanvasTokenSettingKey,
+                cancellationToken);
+
+        if (setting is null)
+        {
+            setting = new UserSetting
+            {
+                Id = Guid.NewGuid(),
+                CreatedAt = now,
+                UserKey = normalizedUserKey,
+                SettingKey = CanvasTokenSettingKey,
+            };
+            db.UserSettings.Add(setting);
+        }
+
+        setting.UserKey = normalizedUserKey;
+        var protector = dataProtectionProvider.CreateProtector(CanvasTokenProtectorPurpose);
+        setting.SettingJson = JsonSerializer.Serialize(
+            new StoredCanvasToken(
+                instanceUrl,
+                protector.Protect(accessToken),
+                startsAt,
+                expiresAt,
+                now,
+                userName),
+            JsonOptions);
+        setting.UpdatedAt = now;
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        var connection = await ResolveCanvasConnectionForUserKeyAsync(
+            normalizedUserKey,
+            db,
+            dataProtectionProvider,
+            cancellationToken);
+
+        return Results.Ok(ToCanvasTokenStatusDto(connection));
+    }
+
+    private static async Task<IResult> DeleteCanvasTokenForUserKeyAsync(
+        string userKey,
+        IncosWorkspaceDbContext db,
+        IDataProtectionProvider dataProtectionProvider,
+        CancellationToken cancellationToken)
+    {
+        var normalizedUserKey = userKey.Trim().ToLowerInvariant();
+        await WorkspaceEndpoints.EnsureUserSettingsTableAsync(db, cancellationToken);
+
+        var setting = await db.UserSettings
+            .OrderBy(userSetting => userSetting.UserKey == normalizedUserKey ? 0 : 1)
+            .FirstOrDefaultAsync(
+                userSetting =>
+                    userSetting.UserKey.ToLower() == normalizedUserKey &&
+                    userSetting.SettingKey == CanvasTokenSettingKey,
+                cancellationToken);
+
+        if (setting is not null)
+        {
+            db.UserSettings.Remove(setting);
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
+        var connection = await ResolveCanvasConnectionForUserKeyAsync(
+            normalizedUserKey,
+            db,
+            dataProtectionProvider,
+            cancellationToken);
+
+        return Results.Ok(ToCanvasTokenStatusDto(connection));
+    }
+
+    private static async Task<string?> GetAdminUserKeyAsync(
+        IncosWorkspaceDbContext db,
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        await GoogleIntegrationEndpoints.EnsureAdminUsersTableAsync(db, cancellationToken);
+
+        var user = await db.AdminUsers
+            .AsNoTracking()
+            .FirstOrDefaultAsync(adminUser => adminUser.Id == userId, cancellationToken);
+
+        return string.IsNullOrWhiteSpace(user?.Email)
+            ? null
+            : user.Email.Trim().ToLowerInvariant();
+    }
+
+    private static CanvasTokenStatusDto ToCanvasTokenStatusDto(CanvasConnection connection) =>
+        new(
+            connection.Configured,
+            connection.Connected,
+            connection.Status,
+            connection.InstanceUrl,
+            connection.TokenSource,
+            connection.StartsAt,
+            connection.ExpiresAt,
+            connection.UpdatedAt,
+            connection.UserName);
 
     private static StoredCanvasToken? TryReadStoredCanvasToken(string settingJson)
     {
@@ -1406,8 +1624,12 @@ public static class CanvasIntegrationEndpoints
                 uri.Host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase));
     }
 
-    private static string? GetUserKey(HttpContext context) =>
-        context.User.FindFirstValue(ClaimTypes.Email);
+    private static string? GetUserKey(HttpContext context)
+    {
+        var email = context.User.FindFirstValue(ClaimTypes.Email);
+
+        return string.IsNullOrWhiteSpace(email) ? null : email.Trim().ToLowerInvariant();
+    }
 
     private static async Task<CanvasCourseDto[]> GetActiveStudentCoursesAsync(
         IHttpClientFactory httpClientFactory,
@@ -1500,58 +1722,120 @@ public static class CanvasIntegrationEndpoints
         string[] contextCodes,
         CancellationToken cancellationToken)
     {
-        var events = new List<JsonElement>();
         var contextCodeBatches = contextCodes.Length > 0
-            ? contextCodes.Chunk(10)
+            ? contextCodes.Chunk(10).Select(batch => batch.ToArray()).ToArray()
             : new[] { Array.Empty<string>() };
-
-        foreach (var contextCodeBatch in contextCodeBatches)
+        using var concurrencyGate = new SemaphoreSlim(4);
+        var batchTasks = contextCodeBatches.Select(async contextCodeBatch =>
         {
-            var query = new List<KeyValuePair<string, string?>>
-            {
-                new("type", type),
-                new("start_date", startAt.ToString("O", CultureInfo.InvariantCulture)),
-                new("end_date", endAt.ToString("O", CultureInfo.InvariantCulture)),
-                new("per_page", Math.Min(pageSize, 100).ToString(CultureInfo.InvariantCulture)),
-            };
+            await concurrencyGate.WaitAsync(cancellationToken);
 
-            foreach (var contextCode in contextCodeBatch)
+            try
             {
-                query.Add(new KeyValuePair<string, string?>("context_codes[]", contextCode));
-            }
-
-            var requestUri = QueryHelpers.AddQueryString($"{instanceUrl}/api/v1/calendar_events", query);
-
-            while (!string.IsNullOrWhiteSpace(requestUri))
-            {
-                var page = await SendCanvasGetPageAsync(
+                return await GetCanvasCalendarEventsBatchAsync(
                     httpClientFactory,
+                    instanceUrl,
                     accessToken,
-                    requestUri,
+                    type,
+                    startAt,
+                    endAt,
+                    pageSize,
+                    contextCodeBatch,
                     cancellationToken);
-
-                using var document = JsonDocument.Parse(page.Payload);
-
-                if (document.RootElement.ValueKind != JsonValueKind.Array)
-                {
-                    throw new CanvasApiRequestException(
-                        "Canvas calendar failed to load.",
-                        "Canvas returned an unexpected calendar response.",
-                        StatusCodes.Status502BadGateway);
-                }
-
-                events.AddRange(document.RootElement
-                    .EnumerateArray()
-                    .Select(calendarEvent => calendarEvent.Clone()));
-
-                requestUri = page.NextUrl;
             }
+            finally
+            {
+                concurrencyGate.Release();
+            }
+        });
+        var batchEvents = await Task.WhenAll(batchTasks);
+
+        return batchEvents.SelectMany(events => events).ToArray();
+    }
+
+    private static async Task<JsonElement[]> GetCanvasCalendarEventsBatchAsync(
+        IHttpClientFactory httpClientFactory,
+        string instanceUrl,
+        string accessToken,
+        string type,
+        DateTimeOffset startAt,
+        DateTimeOffset endAt,
+        int pageSize,
+        string[] contextCodeBatch,
+        CancellationToken cancellationToken)
+    {
+        var events = new List<JsonElement>();
+        var query = new List<KeyValuePair<string, string?>>
+        {
+            new("type", type),
+            new("start_date", startAt.ToString("O", CultureInfo.InvariantCulture)),
+            new("end_date", endAt.ToString("O", CultureInfo.InvariantCulture)),
+            new("per_page", Math.Min(pageSize, 100).ToString(CultureInfo.InvariantCulture)),
+        };
+
+        foreach (var contextCode in contextCodeBatch)
+        {
+            query.Add(new KeyValuePair<string, string?>("context_codes[]", contextCode));
+        }
+
+        var requestUri = QueryHelpers.AddQueryString($"{instanceUrl}/api/v1/calendar_events", query);
+
+        while (!string.IsNullOrWhiteSpace(requestUri))
+        {
+            var page = await SendCanvasGetPageAsync(
+                httpClientFactory,
+                accessToken,
+                requestUri,
+                cancellationToken);
+
+            using var document = JsonDocument.Parse(page.Payload);
+
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                throw new CanvasApiRequestException(
+                    "Canvas calendar failed to load.",
+                    "Canvas returned an unexpected calendar response.",
+                    StatusCodes.Status502BadGateway);
+            }
+
+            events.AddRange(document.RootElement
+                .EnumerateArray()
+                .Select(calendarEvent => calendarEvent.Clone()));
+
+            requestUri = page.NextUrl;
         }
 
         return events.ToArray();
     }
 
-    private static async Task<IReadOnlyDictionary<string, bool>> GetCanvasAssignmentSubmissionLookupAsync(
+    private static async Task<(IReadOnlyDictionary<string, CanvasSubmissionStatus> Lookup, bool IsComplete)> GetCanvasAssignmentSubmissionLookupBestEffortAsync(
+        IHttpClientFactory httpClientFactory,
+        string instanceUrl,
+        string accessToken,
+        JsonElement[] assignmentEvents,
+        CancellationToken cancellationToken)
+    {
+        using var timeoutCancellationToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCancellationToken.CancelAfter(TimeSpan.FromSeconds(3));
+
+        try
+        {
+            var lookup = await GetCanvasAssignmentSubmissionLookupAsync(
+                httpClientFactory,
+                instanceUrl,
+                accessToken,
+                assignmentEvents,
+                timeoutCancellationToken.Token);
+
+            return (lookup, true);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return (new Dictionary<string, CanvasSubmissionStatus>(StringComparer.OrdinalIgnoreCase), false);
+        }
+    }
+
+    private static async Task<IReadOnlyDictionary<string, CanvasSubmissionStatus>> GetCanvasAssignmentSubmissionLookupAsync(
         IHttpClientFactory httpClientFactory,
         string instanceUrl,
         string accessToken,
@@ -1568,7 +1852,7 @@ public static class CanvasIntegrationEndpoints
 
         if (assignmentReferences.Length == 0)
         {
-            return new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            return new Dictionary<string, CanvasSubmissionStatus>(StringComparer.OrdinalIgnoreCase);
         }
 
         var submissionTasks = assignmentReferences.Select(group => GetCanvasCourseSubmissionLookupAsync(
@@ -1579,7 +1863,7 @@ public static class CanvasIntegrationEndpoints
             group.Select(reference => reference.AssignmentId).ToArray(),
             cancellationToken));
         var submissionGroups = await Task.WhenAll(submissionTasks);
-        var lookup = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        var lookup = new Dictionary<string, CanvasSubmissionStatus>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var submissionGroup in submissionGroups)
         {
@@ -1592,7 +1876,7 @@ public static class CanvasIntegrationEndpoints
         return lookup;
     }
 
-    private static async Task<IReadOnlyDictionary<string, bool>> GetCanvasCourseSubmissionLookupAsync(
+    private static async Task<IReadOnlyDictionary<string, CanvasSubmissionStatus>> GetCanvasCourseSubmissionLookupAsync(
         IHttpClientFactory httpClientFactory,
         string instanceUrl,
         string accessToken,
@@ -1600,7 +1884,7 @@ public static class CanvasIntegrationEndpoints
         string[] assignmentIds,
         CancellationToken cancellationToken)
     {
-        var lookup = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        var lookup = new Dictionary<string, CanvasSubmissionStatus>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var assignmentIdBatch in assignmentIds.Chunk(50))
         {
@@ -1646,7 +1930,7 @@ public static class CanvasIntegrationEndpoints
                         }
 
                         lookup[GetAssignmentSubmissionLookupKey(courseId, assignmentId)] =
-                            IsCanvasSubmissionSubmitted(submission);
+                            GetCanvasSubmissionStatus(submission);
                     }
 
                     requestUri = page.NextUrl;
@@ -1679,7 +1963,7 @@ public static class CanvasIntegrationEndpoints
         JsonElement calendarEvent,
         string calendarType,
         IReadOnlyDictionary<string, CanvasCourseDto> courses,
-        IReadOnlyDictionary<string, bool> submissionLookup)
+        IReadOnlyDictionary<string, CanvasSubmissionStatus> submissionLookup)
     {
         var assignment = GetJsonObject(calendarEvent, "assignment");
         var id =
@@ -1696,11 +1980,16 @@ public static class CanvasIntegrationEndpoints
             (assignment.HasValue ? GetJsonStringOrNumber(assignment.Value, "course_id") : null);
         courses.TryGetValue(courseId ?? "", out var course);
         var assignmentId = assignment.HasValue ? GetJsonStringOrNumber(assignment.Value, "id") : null;
-        var isSubmitted = assignment.HasValue && IsCanvasAssignmentSubmitted(assignment.Value);
+        var submissionStatus = assignment.HasValue
+            ? GetCanvasAssignmentSubmissionStatus(assignment.Value)
+            : new CanvasSubmissionStatus(false, null);
 
-        if (!isSubmitted && !string.IsNullOrWhiteSpace(courseId) && !string.IsNullOrWhiteSpace(assignmentId))
+        if (!string.IsNullOrWhiteSpace(courseId) && !string.IsNullOrWhiteSpace(assignmentId) &&
+            submissionLookup.TryGetValue(GetAssignmentSubmissionLookupKey(courseId, assignmentId), out var lookupStatus))
         {
-            submissionLookup.TryGetValue(GetAssignmentSubmissionLookupKey(courseId, assignmentId), out isSubmitted);
+            submissionStatus = new CanvasSubmissionStatus(
+                submissionStatus.IsSubmitted || lookupStatus.IsSubmitted,
+                submissionStatus.SubmittedAt ?? lookupStatus.SubmittedAt);
         }
 
         var title =
@@ -1733,7 +2022,8 @@ public static class CanvasIntegrationEndpoints
             contextCode,
             submissionTypes,
             assignmentId,
-            isSubmitted);
+            submissionStatus.IsSubmitted,
+            submissionStatus.SubmittedAt);
     }
 
     private static CanvasInboxItemDto? ParseCanvasInboxItem(
@@ -2222,25 +2512,41 @@ public static class CanvasIntegrationEndpoints
 
     private static bool IsCanvasAssignmentSubmitted(JsonElement assignment)
     {
+        return GetCanvasAssignmentSubmissionStatus(assignment).IsSubmitted;
+    }
+
+    private static CanvasSubmissionStatus GetCanvasAssignmentSubmissionStatus(JsonElement assignment)
+    {
         var submission = GetJsonObject(assignment, "submission");
 
-        return submission.HasValue && IsCanvasSubmissionSubmitted(submission.Value);
+        return submission.HasValue
+            ? GetCanvasSubmissionStatus(submission.Value)
+            : new CanvasSubmissionStatus(false, null);
     }
 
     private static bool IsCanvasSubmissionSubmitted(JsonElement submission)
     {
-        if (GetJsonBool(submission, "excused") == true ||
-            GetJsonDateTimeOffset(submission, "submitted_at").HasValue)
+        return GetCanvasSubmissionStatus(submission).IsSubmitted;
+    }
+
+    private static CanvasSubmissionStatus GetCanvasSubmissionStatus(JsonElement submission)
+    {
+        var submittedAt = GetJsonDateTimeOffset(submission, "submitted_at");
+
+        if (GetJsonBool(submission, "excused") == true || submittedAt.HasValue)
         {
-            return true;
+            return new CanvasSubmissionStatus(true, submittedAt);
         }
 
         var workflowState = GetJsonString(submission, "workflow_state");
 
-        return workflowState is "submitted" or "graded" or "pending_review" or "complete";
+        return new CanvasSubmissionStatus(
+            workflowState is "submitted" or "graded" or "pending_review" or "complete",
+            null);
     }
 
     private sealed record CanvasAssignmentReference(string CourseId, string AssignmentId);
+    private sealed record CanvasSubmissionStatus(bool IsSubmitted, DateTimeOffset? SubmittedAt);
 
     private static async Task<JsonElement> GetCanvasObjectAsync(
         IHttpClientFactory httpClientFactory,

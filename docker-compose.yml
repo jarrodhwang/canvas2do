@@ -33,16 +33,20 @@ services:
       Database__EnsureCreated: "true"
       Authentication__Google__ClientId: ${GOOGLE_CLIENT_ID:-}
       Authentication__Google__ClientSecret: ${GOOGLE_CLIENT_SECRET:-}
-      Authentication__Google__HostedDomain: ${GOOGLE_WORKSPACE_DOMAIN:-}
+      Authentication__Google__HostedDomain: ${GOOGLE_WORKSPACE_DOMAIN:-incos.co.kr}
+      Authentication__Google__WorkspaceDataDomain: ${GOOGLE_WORKSPACE_DOMAIN:-incos.co.kr}
+      Authentication__Google__RestrictToHostedDomain: "true"
       Authentication__Google__CallbackPath: /signin-google
       Authentication__Canvas__InstanceUrl: ${CANVAS_INSTANCE_URL:-}
       Authentication__Canvas__AccessToken: ${CANVAS_ACCESS_TOKEN:-}
+      DataProtection__KeysPath: /var/lib/incos-workspace/data-protection-keys
       Authentication__Microsoft__ClientId: ${MICROSOFT_CLIENT_ID:-}
       Authentication__Microsoft__ClientSecret: ${MICROSOFT_CLIENT_SECRET:-}
       Authentication__Microsoft__TenantId: ${MICROSOFT_TENANT_ID:-common}
     ports:
       - "6272:6272"
     volumes:
+      - incos-data-protection-keys:/var/lib/incos-workspace/data-protection-keys
       - incos-static-images:/var/www/incos-static/images
 
   frontend:
@@ -60,4 +64,5 @@ services:
 
 volumes:
   incos-postgres-data:
+  incos-data-protection-keys:
   incos-static-images:

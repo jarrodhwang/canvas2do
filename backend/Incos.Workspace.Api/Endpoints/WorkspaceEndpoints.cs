@@ -4,6 +4,7 @@ using Incos.Workspace.Api.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Incos.Workspace.Api.Endpoints;
 
@@ -226,12 +227,24 @@ public static class WorkspaceEndpoints
         await EnsureUserSettingsTableAsync(db, cancellationToken);
 
         var setting = await db.UserSettings
-            .AsNoTracking()
+            .OrderBy(userSetting => userSetting.UserKey == userKey ? 0 : 1)
             .FirstOrDefaultAsync(
                 userSetting =>
-                    userSetting.UserKey == userKey &&
+                    userSetting.UserKey.ToLower() == userKey &&
                     userSetting.SettingKey == AcademyPreferencesSettingKey,
                 cancellationToken);
+
+        if (setting is not null)
+        {
+            var normalizedSettingJson = NormalizeAcademyPreferencesJson(setting.SettingJson);
+
+            if (!string.Equals(normalizedSettingJson, setting.SettingJson, StringComparison.Ordinal))
+            {
+                setting.SettingJson = normalizedSettingJson;
+                setting.UpdatedAt = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync(cancellationToken);
+            }
+        }
 
         return Results.Ok(ToAcademyPreferencesDto(setting?.SettingJson, setting is not null));
     }
@@ -253,9 +266,10 @@ public static class WorkspaceEndpoints
 
         var now = DateTimeOffset.UtcNow;
         var setting = await db.UserSettings
+            .OrderBy(userSetting => userSetting.UserKey == userKey ? 0 : 1)
             .FirstOrDefaultAsync(
                 userSetting =>
-                    userSetting.UserKey == userKey &&
+                    userSetting.UserKey.ToLower() == userKey &&
                     userSetting.SettingKey == AcademyPreferencesSettingKey,
                 cancellationToken);
 
@@ -271,6 +285,7 @@ public static class WorkspaceEndpoints
             db.UserSettings.Add(setting);
         }
 
+        setting.UserKey = userKey;
         setting.SettingJson = SerializeAcademyPreferences(request, setting.SettingJson);
         setting.UpdatedAt = now;
 
@@ -279,34 +294,38 @@ public static class WorkspaceEndpoints
         return Results.Ok(ToAcademyPreferencesDto(setting.SettingJson, true));
     }
 
-    private static string? GetUserKey(HttpContext context) =>
-        context.User.FindFirstValue(ClaimTypes.Email);
+    private static string? GetUserKey(HttpContext context)
+    {
+        var email = context.User.FindFirstValue(ClaimTypes.Email);
+
+        return string.IsNullOrWhiteSpace(email) ? null : email.Trim().ToLowerInvariant();
+    }
 
     private static string SerializeAcademyPreferences(SaveAcademyPreferencesRequest request, string? existingSettingJson)
     {
         var manualLectures = request.ManualLectures.ValueKind == JsonValueKind.Array
-            ? request.ManualLectures
-            : EmptyArrayElement();
+            ? MergeStoredArrayById(request.ManualLectures, existingSettingJson, "manualLectures")
+            : GetStoredArrayElement(existingSettingJson, "manualLectures");
         var canvasLecturePreferences = request.CanvasLecturePreferences.ValueKind == JsonValueKind.Object
-            ? request.CanvasLecturePreferences
-            : EmptyObjectElement();
+            ? MergeStoredObject(request.CanvasLecturePreferences, existingSettingJson, "canvasLecturePreferences")
+            : GetStoredObjectElement(existingSettingJson, "canvasLecturePreferences");
         var manualCoursework = request.ManualCoursework.ValueKind == JsonValueKind.Array
-            ? request.ManualCoursework
-            : EmptyArrayElement();
+            ? MergeStoredArrayById(request.ManualCoursework, existingSettingJson, "manualCoursework")
+            : GetStoredArrayElement(existingSettingJson, "manualCoursework");
         var canvasCourseworkPreferences = request.CanvasCourseworkPreferences.ValueKind == JsonValueKind.Object
-            ? request.CanvasCourseworkPreferences
-            : EmptyObjectElement();
+            ? MergeStoredObject(request.CanvasCourseworkPreferences, existingSettingJson, "canvasCourseworkPreferences")
+            : GetStoredObjectElement(existingSettingJson, "canvasCourseworkPreferences");
         var manualAssessments = request.ManualAssessments.ValueKind == JsonValueKind.Array
-            ? request.ManualAssessments
-            : EmptyArrayElement();
+            ? MergeStoredArrayById(request.ManualAssessments, existingSettingJson, "manualAssessments")
+            : GetStoredArrayElement(existingSettingJson, "manualAssessments");
         var canvasAssessmentPreferences = request.CanvasAssessmentPreferences.ValueKind == JsonValueKind.Object
-            ? request.CanvasAssessmentPreferences
-            : EmptyObjectElement();
+            ? MergeStoredObject(request.CanvasAssessmentPreferences, existingSettingJson, "canvasAssessmentPreferences")
+            : GetStoredObjectElement(existingSettingJson, "canvasAssessmentPreferences");
         var calendarSettings = request.CalendarSettings.ValueKind == JsonValueKind.Object
-            ? request.CalendarSettings
+            ? MergeStoredObject(request.CalendarSettings, existingSettingJson, "calendarSettings")
             : GetStoredObjectElement(existingSettingJson, "calendarSettings");
 
-        return JsonSerializer.Serialize(new
+        var serialized = JsonSerializer.Serialize(new
         {
             manualLectures,
             canvasLecturePreferences,
@@ -316,6 +335,209 @@ public static class WorkspaceEndpoints
             canvasAssessmentPreferences,
             calendarSettings,
         }, JsonOptions);
+
+        return NormalizeAcademyPreferencesJson(serialized);
+    }
+
+    private static string NormalizeAcademyPreferencesJson(string? settingJson)
+    {
+        if (string.IsNullOrWhiteSpace(settingJson))
+        {
+            return JsonSerializer.Serialize(new
+            {
+                manualLectures = EmptyArrayElement(),
+                canvasLecturePreferences = EmptyObjectElement(),
+                manualCoursework = EmptyArrayElement(),
+                canvasCourseworkPreferences = EmptyObjectElement(),
+                manualAssessments = EmptyArrayElement(),
+                canvasAssessmentPreferences = EmptyObjectElement(),
+                calendarSettings = EmptyObjectElement(),
+            }, JsonOptions);
+        }
+
+        try
+        {
+            var root = JsonNode.Parse(settingJson) as JsonObject ?? [];
+
+            BackfillCompletedAtForArray(root["manualCoursework"] as JsonArray);
+            BackfillCompletedAtForObject(root["canvasCourseworkPreferences"] as JsonObject);
+            BackfillCompletedAtForArray(root["manualAssessments"] as JsonArray);
+            BackfillCompletedAtForObject(root["canvasAssessmentPreferences"] as JsonObject);
+
+            return root.ToJsonString(JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return settingJson;
+        }
+    }
+
+    private static void BackfillCompletedAtForArray(JsonArray? items)
+    {
+        if (items is null)
+        {
+            return;
+        }
+
+        foreach (var item in items)
+        {
+            if (item is JsonObject itemObject)
+            {
+                BackfillCompletedAt(itemObject);
+            }
+        }
+    }
+
+    private static void BackfillCompletedAtForObject(JsonObject? items)
+    {
+        if (items is null)
+        {
+            return;
+        }
+
+        foreach (var item in items)
+        {
+            if (item.Value is JsonObject itemObject)
+            {
+                BackfillCompletedAt(itemObject);
+            }
+        }
+    }
+
+    private static void BackfillCompletedAt(JsonObject item)
+    {
+        if (!GetBooleanValue(item, "completed") && !GetBooleanValue(item, "isSubmitted"))
+        {
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(GetStringValue(item, "completedAt")))
+        {
+            return;
+        }
+
+        var dueAt = GetStringValue(item, "submittedAt") ?? GetStringValue(item, "dueAt");
+
+        if (string.IsNullOrWhiteSpace(dueAt))
+        {
+            return;
+        }
+
+        item["completedAt"] = dueAt;
+    }
+
+    private static bool GetBooleanValue(JsonObject item, string propertyName)
+    {
+        if (!item.TryGetPropertyValue(propertyName, out var value) || value is not JsonValue jsonValue)
+        {
+            return false;
+        }
+
+        return jsonValue.TryGetValue<bool>(out var boolValue) && boolValue;
+    }
+
+    private static string? GetStringValue(JsonObject item, string propertyName)
+    {
+        if (!item.TryGetPropertyValue(propertyName, out var value) || value is not JsonValue jsonValue)
+        {
+            return null;
+        }
+
+        return jsonValue.TryGetValue<string>(out var stringValue) ? stringValue : null;
+    }
+
+    private static JsonElement MergeStoredArrayById(JsonElement requestedArray, string? settingJson, string propertyName)
+    {
+        var mergedItems = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        var unkeyedItems = new List<JsonElement>();
+
+        foreach (var item in EnumerateStoredArray(settingJson, propertyName))
+        {
+            AddArrayItem(item, mergedItems, unkeyedItems);
+        }
+
+        foreach (var item in requestedArray.EnumerateArray())
+        {
+            AddArrayItem(item, mergedItems, unkeyedItems);
+        }
+
+        return JsonSerializer.SerializeToElement(
+            mergedItems.Values.Concat(unkeyedItems),
+            JsonOptions);
+    }
+
+    private static void AddArrayItem(
+        JsonElement item,
+        Dictionary<string, JsonElement> keyedItems,
+        List<JsonElement> unkeyedItems)
+    {
+        if (item.ValueKind == JsonValueKind.Object &&
+            item.TryGetProperty("id", out var idProperty) &&
+            idProperty.ValueKind == JsonValueKind.String &&
+            !string.IsNullOrWhiteSpace(idProperty.GetString()))
+        {
+            keyedItems[idProperty.GetString()!] = item.Clone();
+            return;
+        }
+
+        unkeyedItems.Add(item.Clone());
+    }
+
+    private static JsonElement MergeStoredObject(JsonElement requestedObject, string? settingJson, string propertyName)
+    {
+        var mergedProperties = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var property in EnumerateStoredObject(settingJson, propertyName))
+        {
+            mergedProperties[property.Name] = property.Value.Clone();
+        }
+
+        foreach (var property in requestedObject.EnumerateObject())
+        {
+            mergedProperties[property.Name] = property.Value.Clone();
+        }
+
+        return JsonSerializer.SerializeToElement(mergedProperties, JsonOptions);
+    }
+
+    private static JsonElement GetStoredArrayElement(string? settingJson, string propertyName)
+    {
+        if (string.IsNullOrWhiteSpace(settingJson))
+        {
+            return EmptyArrayElement();
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(settingJson);
+
+            return document.RootElement.TryGetProperty(propertyName, out var storedValue) &&
+                   storedValue.ValueKind == JsonValueKind.Array
+                ? storedValue.Clone()
+                : EmptyArrayElement();
+        }
+        catch (JsonException)
+        {
+            return EmptyArrayElement();
+        }
+    }
+
+    private static JsonElement[] EnumerateStoredArray(string? settingJson, string propertyName)
+    {
+        var storedArray = GetStoredArrayElement(settingJson, propertyName);
+
+        return storedArray.ValueKind == JsonValueKind.Array
+            ? storedArray.EnumerateArray().Select(item => item.Clone()).ToArray()
+            : [];
+    }
+
+    private static JsonProperty[] EnumerateStoredObject(string? settingJson, string propertyName)
+    {
+        var storedObject = GetStoredObjectElement(settingJson, propertyName);
+
+        return storedObject.ValueKind == JsonValueKind.Object
+            ? storedObject.EnumerateObject().ToArray()
+            : [];
     }
 
     private static JsonElement GetStoredObjectElement(string? settingJson, string propertyName)

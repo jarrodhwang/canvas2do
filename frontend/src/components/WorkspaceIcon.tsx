@@ -61,6 +61,20 @@ function MicrosoftOutlookIcon({ size = 18, className }: IconProps) {
   return <MicrosoftProductIcon className={className} product="outlook" size={size} />;
 }
 
+function TopTrackIcon({ size = 18, className }: IconProps) {
+  return (
+    <img
+      alt=""
+      aria-hidden="true"
+      className={className}
+      height={size}
+      src="/brand/toptrack-icon.ico"
+      style={{ height: size, width: size }}
+      width={size}
+    />
+  );
+}
+
 const iconMap: Record<string, ComponentType<IconProps>> = {
   'book-open': BookOpen,
   boxes: Boxes,
@@ -96,6 +110,7 @@ const iconMap: Record<string, ComponentType<IconProps>> = {
   star: Star,
   sun: Sun,
   tags: Tags,
+  toptrack: TopTrackIcon,
   'triangle-alert': TriangleAlert,
   'user-cog': UserCog,
   users: Users,

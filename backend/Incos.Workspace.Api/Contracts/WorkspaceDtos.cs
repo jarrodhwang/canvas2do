@@ -93,6 +93,62 @@ public sealed record GoogleIntegrationStatusDto(
     string ConnectUrl,
     string[] Scopes);
 
+public sealed record AdminUserDto(
+    Guid Id,
+    string Email,
+    string DisplayName,
+    string? PhotoUrl,
+    string Status,
+    bool ApiAccessEnabled,
+    bool HasLoggedIn,
+    bool IsDirectorySuspended,
+    DateTimeOffset? LastLoginAt,
+    DateTimeOffset? GoogleLastLoginAt,
+    DateTimeOffset? DirectorySyncedAt);
+
+public sealed record AdminUsersResponseDto(
+    AdminUserDto[] Users,
+    DateTimeOffset? SyncedAt,
+    string? SyncError);
+
+public sealed record UpdateAdminUserRequest(
+    string? Status,
+    bool? ApiAccessEnabled);
+
+public sealed record AdminGroupDto(
+    Guid Id,
+    string Name,
+    string? Description,
+    string? PhotoUrl,
+    string Status,
+    bool IsProtected,
+    string[] Permissions,
+    string[] Settings,
+    string[] Access,
+    AdminGroupMemberDto[] Members,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);
+
+public sealed record AdminGroupMemberDto(
+    Guid UserId,
+    string Email,
+    string DisplayName,
+    string? PhotoUrl,
+    string Status);
+
+public sealed record AdminGroupsResponseDto(
+    AdminGroupDto[] Groups);
+
+public sealed record UpsertAdminGroupRequest(
+    string? Name,
+    string? Description,
+    string? PhotoUrl,
+    string? Status,
+    string[]? Permissions,
+    string[]? Settings,
+    string[]? Access,
+    Guid[]? MemberIds);
+
 public sealed record CanvasIntegrationStatusDto(
     string Provider,
     string Label,
@@ -537,7 +593,8 @@ public sealed record CanvasCalendarItemDto(
     string? ContextCode,
     string[] SubmissionTypes,
     string? AssignmentId,
-    bool IsSubmitted);
+    bool IsSubmitted,
+    DateTimeOffset? SubmittedAt);
 
 public sealed record CanvasCalendarItemsDto(
     CanvasCalendarItemDto[] Items);

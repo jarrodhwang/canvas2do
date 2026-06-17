@@ -187,6 +187,35 @@
     grid-template-rows: repeat(6, minmax(128px, 1fr));
   }
 
+  .month-calendar-grid-week {
+    grid-template-rows: minmax(106px, 1fr);
+  }
+
+  @media (max-width: 520px) {
+    .month-calendar-grid-fill,
+    .month-calendar-grid-expanded {
+      grid-template-rows: repeat(6, 48px);
+    }
+
+    .month-calendar-grid-week {
+      grid-template-rows: 48px !important;
+      height: 48px;
+      min-height: 48px;
+      flex: 0 0 auto;
+    }
+
+    .month-calendar-card-week {
+      height: auto !important;
+      min-height: 0;
+    }
+
+    .month-calendar-day {
+      min-height: 48px;
+      border-color: transparent;
+      background: transparent;
+    }
+  }
+
   @keyframes calendar-month-in-next {
     from {
       opacity: 0.55;
@@ -212,7 +241,7 @@
   }
 }
 
-@media (max-height: 820px) {
+@media (max-height: 820px) and (min-width: 521px) {
   .dashboard-summary-cards {
     display: none;
   }

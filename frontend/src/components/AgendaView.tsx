@@ -136,7 +136,7 @@ export function AgendaView({
   };
 
   return (
-    <Card className="min-h-[440px] rounded-xl bg-card p-4 shadow-none">
+    <Card className="min-h-[440px] rounded-xl bg-card p-4 shadow-none lg:h-full lg:min-h-0 lg:overflow-y-auto">
       {items.length === 0 ? (
         <div className="rounded-lg border border-dashed bg-muted/35 p-4 text-sm font-black text-muted-foreground">
           {emptyLabel}

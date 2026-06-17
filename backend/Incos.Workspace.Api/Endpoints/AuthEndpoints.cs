@@ -1,8 +1,10 @@
+using Incos.Workspace.Api.Data;
 using Incos.Workspace.Api.Infrastructure;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.Google;
 using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.EntityFrameworkCore;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Security.Claims;
@@ -12,6 +14,7 @@ namespace Incos.Workspace.Api.Endpoints;
 
 public static class AuthEndpoints
 {
+    public const string GoogleRequestedWorkspaceScopesProperty = "incos:google:requested_workspace_scopes";
     private const string MicrosoftOAuthStateCookie = "incos_microsoft_oauth_state";
     private const string MicrosoftOAuthReturnUrlCookie = "incos_microsoft_oauth_return_url";
 
@@ -19,19 +22,35 @@ public static class AuthEndpoints
     {
         var auth = app.MapGroup("/api/auth");
 
-        auth.MapGet("/session", (HttpContext context) =>
+        auth.MapGet("/session", async (
+                HttpContext context,
+                IConfiguration configuration,
+                IncosWorkspaceDbContext db,
+                CancellationToken cancellationToken) =>
             {
                 var user = context.User;
                 var isAuthenticated = user.Identity?.IsAuthenticated == true;
+                var email = isAuthenticated ? user.FindFirstValue(ClaimTypes.Email) : null;
+                var hostedDomain = isAuthenticated ? user.FindFirstValue("hd") : null;
+                var workspaceDataDomain = GetGoogleWorkspaceDataDomain(configuration);
+                var isWorkspaceAccount = isAuthenticated &&
+                    IsWorkspaceGoogleAccount(email, hostedDomain, workspaceDataDomain);
+                var accountStatus = isAuthenticated
+                    ? await GetAdminAccountStatusAsync(db, email, cancellationToken)
+                    : null;
+                var canAccessWorkspace = isWorkspaceAccount && accountStatus == "active";
 
                 return Results.Ok(new
                 {
                     isAuthenticated,
-                    provider = isAuthenticated ? "google_workspace" : null,
+                    provider = isAuthenticated ? "google" : null,
                     displayName = isAuthenticated ? user.FindFirstValue(ClaimTypes.Name) : null,
-                    email = isAuthenticated ? user.FindFirstValue(ClaimTypes.Email) : null,
+                    email,
                     pictureUrl = isAuthenticated ? user.FindFirstValue("urn:google:picture") : null,
-                    hostedDomain = isAuthenticated ? user.FindFirstValue("hd") : null,
+                    hostedDomain,
+                    accountStatus,
+                    requiresApproval = isWorkspaceAccount && accountStatus == "pending",
+                    canAccessWorkspace,
                 });
             })
             .WithName("GetAuthSession");
@@ -52,6 +71,10 @@ public static class AuthEndpoints
                         !string.IsNullOrWhiteSpace(microsoftClientId) &&
                         !string.IsNullOrWhiteSpace(microsoftClientSecret),
                     hostedDomain = configuration["Authentication:Google:HostedDomain"],
+                    workspaceDataDomain =
+                        configuration["Authentication:Google:WorkspaceDataDomain"] ??
+                        configuration["Authentication:Google:HostedDomain"] ??
+                        "incos.co.kr",
                 });
             })
             .WithName("GetAuthConfig");
@@ -59,39 +82,14 @@ public static class AuthEndpoints
         auth.MapGet("/google/login", (
                 HttpContext context,
                 IConfiguration configuration,
-                string? returnUrl) =>
-            {
-                var clientId = configuration["Authentication:Google:ClientId"];
-                var clientSecret = configuration["Authentication:Google:ClientSecret"];
-
-                if (string.IsNullOrWhiteSpace(clientId) || string.IsNullOrWhiteSpace(clientSecret))
-                {
-                    return Results.Problem(
-                        title: "Google Workspace sign-in is not configured.",
-                        detail:
-                            "Set Authentication:Google:ClientId and Authentication:Google:ClientSecret on the ASP.NET Core API.",
-                        statusCode: StatusCodes.Status503ServiceUnavailable);
-                }
-
-                var safeReturnUrl = NormalizeReturnUrl(returnUrl);
-                var callbackUrl = $"/api/auth/google/callback?returnUrl={Uri.EscapeDataString(safeReturnUrl)}";
-                var properties = new GoogleChallengeProperties
-                {
-                    RedirectUri = callbackUrl,
-                    AccessType = "offline",
-                    IncludeGrantedScopes = true,
-                    IsPersistent = true,
-                    ExpiresUtc = DateTimeOffset.UtcNow.AddDays(14),
-                };
-
-                if (string.Equals(context.Request.Query["forceConsent"], "true", StringComparison.OrdinalIgnoreCase))
-                {
-                    properties.Prompt = "consent";
-                }
-
-                return Results.Challenge(properties, [GoogleDefaults.AuthenticationScheme]);
-            })
+                string? returnUrl) => StartGoogleLogin(context, configuration, returnUrl))
             .WithName("StartGoogleWorkspaceLogin");
+
+        auth.MapGet("/google/workspace/login", (
+                HttpContext context,
+                IConfiguration configuration,
+                string? returnUrl) => StartGoogleLogin(context, configuration, returnUrl))
+            .WithName("StartIncosWorkspaceGoogleLogin");
 
         auth.MapGet("/google/callback", (string? returnUrl) =>
                 Results.Redirect(NormalizeReturnUrl(returnUrl)))
@@ -277,6 +275,107 @@ public static class AuthEndpoints
         return returnUrl.StartsWith('/') && !returnUrl.StartsWith("//", StringComparison.Ordinal)
             ? returnUrl
             : "/";
+    }
+
+    private static async Task<IResult> StartGoogleLogin(
+        HttpContext context,
+        IConfiguration configuration,
+        string? returnUrl)
+    {
+        var clientId = configuration["Authentication:Google:ClientId"];
+        var clientSecret = configuration["Authentication:Google:ClientSecret"];
+
+        if (string.IsNullOrWhiteSpace(clientId) || string.IsNullOrWhiteSpace(clientSecret))
+        {
+            return Results.Problem(
+                title: "Google sign-in is not configured.",
+                detail:
+                    "Set Authentication:Google:ClientId and Authentication:Google:ClientSecret on the ASP.NET Core API.",
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
+        var forceConsent = string.Equals(context.Request.Query["forceConsent"], "true", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(context.Request.Query["forceLogin"], "true", StringComparison.OrdinalIgnoreCase);
+
+        if (forceConsent)
+        {
+            await context.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+        }
+
+        var safeReturnUrl = NormalizeReturnUrl(returnUrl);
+        var callbackUrl = $"/api/auth/google/callback?returnUrl={Uri.EscapeDataString(safeReturnUrl)}";
+        var properties = new GoogleChallengeProperties
+        {
+            RedirectUri = callbackUrl,
+            AccessType = "offline",
+            IncludeGrantedScopes = !forceConsent,
+            IsPersistent = true,
+            ExpiresUtc = DateTimeOffset.UtcNow.AddDays(14),
+        };
+
+        if (forceConsent)
+        {
+            properties.Prompt = "consent select_account";
+
+            foreach (var scope in GetGoogleConsentScopes())
+            {
+                properties.Scope.Add(scope);
+            }
+
+            properties.Items[GoogleRequestedWorkspaceScopesProperty] = string.Join(' ', GoogleWorkspaceScopes.All);
+        }
+
+        return Results.Challenge(properties, [GoogleDefaults.AuthenticationScheme]);
+    }
+
+    private static async Task<string> GetAdminAccountStatusAsync(
+        IncosWorkspaceDbContext db,
+        string? email,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            return "pending";
+        }
+
+        await GoogleIntegrationEndpoints.EnsureAdminUsersTableAsync(db, cancellationToken);
+        var normalizedEmail = email.Trim().ToLowerInvariant();
+        var adminUser = await db.AdminUsers
+            .AsNoTracking()
+            .FirstOrDefaultAsync(user => user.Email == normalizedEmail, cancellationToken);
+        var status = adminUser?.Status?.Trim().ToLowerInvariant();
+
+        return status is "active" or "inactive" or "pending"
+            ? status
+            : "pending";
+    }
+
+    private static string GetGoogleWorkspaceDataDomain(IConfiguration configuration)
+    {
+        var configuredDomain =
+            configuration["Authentication:Google:WorkspaceDataDomain"] ??
+            configuration["Authentication:Google:HostedDomain"];
+
+        return string.IsNullOrWhiteSpace(configuredDomain)
+            ? "incos.co.kr"
+            : configuredDomain.Trim().TrimStart('@').ToLowerInvariant();
+    }
+
+    private static bool IsWorkspaceGoogleAccount(string? email, string? hostedDomain, string workspaceDataDomain) =>
+        (!string.IsNullOrWhiteSpace(hostedDomain) &&
+         string.Equals(hostedDomain, workspaceDataDomain, StringComparison.OrdinalIgnoreCase)) ||
+        (!string.IsNullOrWhiteSpace(email) &&
+         email.EndsWith($"@{workspaceDataDomain}", StringComparison.OrdinalIgnoreCase));
+
+    private static IEnumerable<string> GetGoogleConsentScopes()
+    {
+        yield return "profile";
+        yield return "email";
+
+        foreach (var scope in GoogleWorkspaceScopes.All)
+        {
+            yield return scope;
+        }
     }
 
     private static string GetMicrosoftTenantId(IConfiguration configuration)

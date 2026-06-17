@@ -109,6 +109,7 @@ export function GoogleIntegrationPanel({ mode }: GoogleIntegrationPanelProps) {
             const iconName = 'iconName' in meta ? meta.iconName : undefined;
             const isConnected = status?.connected ?? false;
             const isConfigured = status?.configured ?? false;
+            const isDisabled = status?.status === 'disabled';
 
             return (
               <div className="rounded-lg border bg-muted/25 p-4" key={provider}>
@@ -127,14 +128,18 @@ export function GoogleIntegrationPanel({ mode }: GoogleIntegrationPanelProps) {
                         className="mt-1"
                         variant={isConnected ? 'default' : 'outline'}
                       >
-                        {isConnected ? dictionary.googleConnected : dictionary.googleNotConnected}
+                        {isDisabled
+                          ? dictionary.googleDisabled
+                          : isConnected
+                            ? dictionary.googleConnected
+                            : dictionary.googleNotConnected}
                       </Badge>
                     </div>
                   </div>
                   {isConnected ? <CheckCircle2 aria-hidden="true" className="size-4 text-primary" /> : null}
                 </div>
                 <p className="mt-3 min-h-10 text-sm leading-relaxed text-muted-foreground">
-                  {dictionary[meta.descriptionKey]}
+                  {isDisabled ? dictionary.googleWorkspaceDisabledForAccount : dictionary[meta.descriptionKey]}
                 </p>
                 <Separator className="my-3" />
                 <div className="flex items-center justify-between gap-3">
@@ -151,14 +156,14 @@ export function GoogleIntegrationPanel({ mode }: GoogleIntegrationPanelProps) {
                   variant={isConnected ? 'secondary' : 'default'}
                 >
                   {isConfigured ? (
-                    <a href={status?.connectUrl ?? '/api/auth/google/login?forceConsent=true'}>
+                    <a href={status?.connectUrl ?? '/api/auth/google/workspace/login?forceConsent=true&forceLogin=true'}>
                       {isConnected ? (
                         <RefreshCw aria-hidden="true" className="size-4" />
                       ) : null}
                       <span>{isConnected ? dictionary.reconnectGoogle : dictionary[meta.connectKey]}</span>
                     </a>
                   ) : (
-                    <span>{dictionary.googleNotConnected}</span>
+                    <span>{isDisabled ? dictionary.googleDisabled : dictionary.googleNotConnected}</span>
                   )}
                 </Button>
               </div>

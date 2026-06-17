@@ -8,6 +8,9 @@ public sealed class IncosWorkspaceDbContext(DbContextOptions<IncosWorkspaceDbCon
 {
     public DbSet<User> Users => Set<User>();
     public DbSet<UserSetting> UserSettings => Set<UserSetting>();
+    public DbSet<AdminUser> AdminUsers => Set<AdminUser>();
+    public DbSet<AdminGroup> AdminGroups => Set<AdminGroup>();
+    public DbSet<AdminGroupMember> AdminGroupMembers => Set<AdminGroupMember>();
     public DbSet<WorkspaceMode> WorkspaceModes => Set<WorkspaceMode>();
     public DbSet<ModeSetting> ModeSettings => Set<ModeSetting>();
     public DbSet<CalendarItem> CalendarItems => Set<CalendarItem>();
@@ -49,6 +52,47 @@ public sealed class IncosWorkspaceDbContext(DbContextOptions<IncosWorkspaceDbCon
             entity.Property(setting => setting.UserKey).HasMaxLength(320);
             entity.Property(setting => setting.SettingKey).HasMaxLength(120);
             entity.Property(setting => setting.SettingJson).HasColumnType("jsonb");
+        });
+
+        modelBuilder.Entity<AdminUser>(entity =>
+        {
+            entity.ToTable("admin_users");
+            entity.HasIndex(user => user.Email).IsUnique();
+            entity.HasIndex(user => user.GoogleUserId);
+            entity.Property(user => user.GoogleUserId).HasMaxLength(120);
+            entity.Property(user => user.Email).HasMaxLength(320);
+            entity.Property(user => user.DisplayName).HasMaxLength(160);
+            entity.Property(user => user.PhotoUrl).HasColumnType("text");
+            entity.Property(user => user.HostedDomain).HasMaxLength(160);
+            entity.Property(user => user.Role).HasMaxLength(120);
+            entity.Property(user => user.Status).HasMaxLength(40);
+        });
+
+        modelBuilder.Entity<AdminGroup>(entity =>
+        {
+            entity.ToTable("admin_groups");
+            entity.HasIndex(group => group.Name).IsUnique();
+            entity.Property(group => group.Name).HasMaxLength(160);
+            entity.Property(group => group.Description).HasMaxLength(600);
+            entity.Property(group => group.PhotoUrl).HasColumnType("text");
+            entity.Property(group => group.Status).HasMaxLength(40);
+            entity.Property(group => group.PermissionJson).HasColumnType("jsonb");
+            entity.Property(group => group.SettingJson).HasColumnType("jsonb");
+            entity.Property(group => group.AccessJson).HasColumnType("jsonb");
+        });
+
+        modelBuilder.Entity<AdminGroupMember>(entity =>
+        {
+            entity.ToTable("admin_group_members");
+            entity.HasIndex(member => new { member.AdminGroupId, member.AdminUserId }).IsUnique();
+            entity.HasOne(member => member.AdminGroup)
+                .WithMany(group => group.Members)
+                .HasForeignKey(member => member.AdminGroupId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(member => member.AdminUser)
+                .WithMany()
+                .HasForeignKey(member => member.AdminUserId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<WorkspaceMode>(entity =>

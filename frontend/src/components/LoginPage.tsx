@@ -28,7 +28,6 @@ export function LoginPage({ authMessage, isCheckingSession, onThemeChange, theme
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isStartingLogin, setIsStartingLogin] = useState(false);
   const isDark = theme === 'dark';
-  const loginUrl = workspaceApi.getGoogleLoginUrl('/');
   const visibleError = loginError ?? authMessage;
 
   const handleGoogleLogin = async () => {
@@ -44,7 +43,7 @@ export function LoginPage({ authMessage, isCheckingSession, onThemeChange, theme
         return;
       }
 
-      window.location.assign(loginUrl);
+      window.location.assign(workspaceApi.getGoogleLoginUrl('/'));
     } catch {
       setLoginError(dictionary.googleOAuthNotConfigured);
       setIsStartingLogin(false);
@@ -110,7 +109,11 @@ export function LoginPage({ authMessage, isCheckingSession, onThemeChange, theme
               <span className="grid size-5 place-items-center rounded bg-primary-foreground text-xs font-black text-primary">
                 {isStartingLogin ? <Loader2 aria-hidden="true" className="size-3 animate-spin" /> : 'G'}
               </span>
-              <span>{isStartingLogin ? dictionary.checkingGoogleConfig : dictionary.continueWithGoogle}</span>
+              <span>
+                {isStartingLogin
+                  ? dictionary.checkingGoogleConfig
+                  : dictionary.continueWithWorkspaceGoogle}
+              </span>
             </>
           </Button>
           {visibleError ? (

@@ -1,7 +1,11 @@
 import {
   BookOpen,
   CalendarPlus,
+  CheckCircle2,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  CircleAlert,
   ExternalLink,
   Eye,
   EyeOff,
@@ -14,12 +18,13 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type ReactElement } from 'react';
 
-import { workspaceApi, type CanvasCalendarItem, type CanvasCourse } from '../api/workspaceApi';
+import { workspaceApi, type AcademyPreferences, type CanvasCalendarItem, type CanvasCourse } from '../api/workspaceApi';
 import { useLanguage } from '../context/LanguageContext';
 import { useWorkspaceMode } from '../context/WorkspaceModeContext';
 import type { ColorToken, DashboardCardConfig } from '../modes/types';
 import { cn } from '../lib/utils';
 import { dotColorClasses } from '../lib/colorStyles';
+import { DateTimeField } from './DateTimeField';
 import { EventPill } from './EventPill';
 import { GoogleProductIcon, type GoogleProduct } from './GoogleProductIcon';
 import {
@@ -39,6 +44,9 @@ import {
   ContextMenuItem,
   ContextMenuLabel,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from './ui/context-menu';
 import {
@@ -54,6 +62,9 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
 import { Input } from './ui/input';
@@ -71,6 +82,17 @@ type LectureRowSource = 'manual' | 'canvas';
 type CourseworkRowSource = 'manual' | 'canvas';
 type AssessmentRowSource = 'manual' | 'canvas';
 type CourseworkDueState = 'done' | 'overdue' | 'dueToday' | 'tomorrow' | 'soon' | 'normal';
+type CourseworkCompletedHideBasis = 'completedAt' | 'dueAt';
+
+interface CourseworkHideSettings {
+  completedAfterHours: number;
+  completedFrom: CourseworkCompletedHideBasis;
+}
+
+const defaultCourseworkHideSettings: CourseworkHideSettings = {
+  completedAfterHours: 24,
+  completedFrom: 'dueAt',
+};
 type RenderableDashboardRow = DashboardRow & {
   assessmentKey?: string;
   assessmentSource?: AssessmentRowSource;
@@ -103,6 +125,10 @@ type RenderableDashboardCard = Omit<DashboardCardConfig, 'rows'> & {
   rows: RenderableDashboardRow[];
 };
 type CanvasCourseLoadStatus = 'idle' | 'loading' | 'loaded' | 'failed';
+type DashboardSnackbar = {
+  message: string;
+  tone: 'success' | 'error';
+};
 type CanvasLecturePreferences = Record<string, {
   assessments?: ManualLectureAssessment[];
   archivedAsManualLectureId?: string;
@@ -130,9 +156,12 @@ interface ManualCourseworkItem {
   title: string;
   courseCode: string;
   dueAt: string;
+  startAt?: string;
+  endAt?: string;
   courseworkType: string;
   submissionType: string;
   completed?: boolean;
+  completedAt?: string;
   chipColor?: ColorToken;
   hidden?: boolean;
   semester?: string;
@@ -143,8 +172,11 @@ interface ManualAssessmentItem {
   title: string;
   courseCode: string;
   dueAt: string;
+  startAt?: string;
+  endAt?: string;
   assessmentType: string;
   completed?: boolean;
+  completedAt?: string;
   hidden?: boolean;
   semester?: string;
   starred?: boolean;
@@ -152,33 +184,41 @@ interface ManualAssessmentItem {
 type CanvasCourseworkPreferences = Record<string, {
   chipColor?: ColorToken;
   completed?: boolean;
+  completedAt?: string;
   courseCode?: string;
   courseId?: string;
   courseName?: string;
   courseworkType?: string;
   dueAt?: string;
+  startAt?: string;
+  endAt?: string;
   htmlUrl?: string;
   hidden?: boolean;
   isSubmitted?: boolean;
   originalCourseCode?: string;
   semester?: string;
   starred?: boolean;
+  submittedAt?: string;
   submissionType?: string;
   title?: string;
 }>;
 type CanvasAssessmentPreferences = Record<string, {
   assessmentType?: string;
   completed?: boolean;
+  completedAt?: string;
   courseCode?: string;
   courseId?: string;
   courseName?: string;
   dueAt?: string;
+  startAt?: string;
+  endAt?: string;
   htmlUrl?: string;
   hidden?: boolean;
   isSubmitted?: boolean;
   originalCourseCode?: string;
   semester?: string;
   starred?: boolean;
+  submittedAt?: string;
   title?: string;
 }>;
 
@@ -191,12 +231,40 @@ const canvasAssessmentPreferencesStorageKey = 'incos-academy-canvas-assessment-p
 const academyCalendarSettingsStorageKey = 'incos-academy-calendar-settings';
 const academyPreferencesUpdatedEvent = 'incos-academy-preferences-updated';
 const academyOpenCourseworkDialogEvent = 'incos-academy-open-coursework-dialog';
+const academyRefreshRequestedEvent = 'incos-academy-refresh-requested';
+type AcademyOpenCourseworkDialogDetail = Partial<Pick<
+  ManualCourseworkItem,
+  'courseCode' | 'dueAt' | 'startAt' | 'title' | 'semester'
+>>;
+type AcademyRefreshRequestedDetail = {
+  registerTask?: (task: Promise<unknown>) => void;
+};
+let academyPreferencesSaveSequence = 0;
+let academyCalendarSettingsCache: Record<string, unknown> = {};
 const defaultAcademySemester = getDateBasedAcademySemester();
-const lectureChipColors: ColorToken[] = ['green', 'blue', 'teal', 'purple', 'orange', 'gold', 'red', 'gray'];
+const defaultCourseChipColor: ColorToken = 'blue';
+const lectureChipColors: ColorToken[] = [
+  'red',
+  'orange',
+  'gold',
+  'emerald',
+  'teal',
+  'blue',
+  'indigo',
+  'purple',
+  'pink',
+  'slate',
+];
+const lectureChipColorVariantPages: ColorToken[][] = [
+  ['red', 'crimson', 'rose', 'coral', 'peach', 'apricot', 'amber', 'orange', 'yellow', 'gold', 'lemon', 'lime', 'olive', 'moss', 'forest', 'emerald'],
+  ['green', 'mint', 'turquoise', 'teal', 'aqua', 'cyan', 'ice', 'sky', 'ocean', 'cobalt', 'blue', 'navy', 'midnight', 'indigo', 'violet', 'lavender'],
+  ['purple', 'lilac', 'plum', 'mauve', 'fuchsia', 'magenta', 'pink', 'slate', 'zinc', 'neutral', 'stone', 'graphite', 'cocoa', 'sand', 'gray'],
+];
 const courseworkTypes = [
   'assignment',
   'discussion',
   'activity',
+  'study',
   'lab',
   'tutorial',
   'essay',
@@ -420,7 +488,7 @@ function getCourseChipColorForCode(
   courseCode: string | undefined,
   manualLectures: ManualLecture[],
   canvasPreferences: CanvasLecturePreferences,
-  fallback: ColorToken = 'green',
+  fallback: ColorToken = defaultCourseChipColor,
 ) {
   if (!courseCode) {
     return fallback;
@@ -524,7 +592,7 @@ function createCanvasLectureRows(
           schedule,
         ].filter(Boolean).join(' · '),
         canvasCourseId: course.id,
-        chipColor: coursePreferences.chipColor ?? 'green',
+        chipColor: coursePreferences.chipColor ?? defaultCourseChipColor,
         courseName: course.name,
         friendlyCourseCode: coursePreferences.friendlyCourseCode,
         friendlyName: coursePreferences.friendlyName,
@@ -632,15 +700,47 @@ function compareCourseworkDueDates(firstRow: RenderableDashboardRow, secondRow: 
   return firstTime - secondTime;
 }
 
-function shouldShowCourseworkItem(dueAt?: string, isCompleted = false) {
+function compareCourseworkCompletionThenDue(firstRow: RenderableDashboardRow, secondRow: RenderableDashboardRow) {
+  if (Boolean(firstRow.isCompleted) !== Boolean(secondRow.isCompleted)) {
+    return firstRow.isCompleted ? -1 : 1;
+  }
+
+  return compareCourseworkDueDates(firstRow, secondRow);
+}
+
+function getValidDateTime(value?: string) {
+  if (!value) {
+    return undefined;
+  }
+
+  const date = new Date(value);
+
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function shouldShowCourseworkItem(
+  dueAt?: string,
+  isCompleted = false,
+  completedAt?: string,
+  hideSettings = defaultCourseworkHideSettings,
+) {
   if (!dueAt) {
     return true;
   }
 
-  const dueDate = new Date(dueAt);
+  const dueDate = getValidDateTime(dueAt);
 
-  if (Number.isNaN(dueDate.getTime())) {
+  if (!dueDate) {
     return true;
+  }
+
+  if (isCompleted) {
+    const hideAfterMs = Math.max(hideSettings.completedAfterHours, 0) * 60 * 60 * 1000;
+    const referenceDate = hideSettings.completedFrom === 'completedAt'
+      ? getValidDateTime(completedAt) ?? dueDate
+      : dueDate;
+
+    return Date.now() - referenceDate.getTime() <= hideAfterMs;
   }
 
   const elapsedSinceDue = Date.now() - dueDate.getTime();
@@ -649,7 +749,7 @@ function shouldShowCourseworkItem(dueAt?: string, isCompleted = false) {
     return true;
   }
 
-  return elapsedSinceDue <= (isCompleted ? 86_400_000 : 259_200_000);
+  return elapsedSinceDue <= 259_200_000;
 }
 
 function formatSubmissionType(value?: string) {
@@ -711,6 +811,7 @@ function createCanvasAssessmentRows(
   canvasCourses: CanvasCourse[] | null,
   selectedSemester: string | undefined,
   fallbackSemester: string,
+  hideSettings: CourseworkHideSettings,
 ): RenderableDashboardRow[] {
   return items
     .filter(isAssessmentCanvasItem)
@@ -727,7 +828,12 @@ function createCanvasAssessmentRows(
 
       return !itemPreferences.hidden &&
         semesterMatches(semester, selectedSemester, fallbackSemester) &&
-        shouldShowCourseworkItem(dueAt, Boolean(item.isSubmitted) || Boolean(itemPreferences.completed));
+        shouldShowCourseworkItem(
+          dueAt,
+          Boolean(item.isSubmitted) || Boolean(itemPreferences.completed),
+          item.submittedAt ?? itemPreferences.submittedAt ?? itemPreferences.completedAt,
+          hideSettings,
+        );
     })
     .sort((firstItem, secondItem) => (
       new Date(firstItem.dueAt ?? firstItem.startAt ?? 0).getTime() -
@@ -786,12 +892,13 @@ function createManualAssessmentRows(
   locale: string,
   selectedSemester: string | undefined,
   fallbackSemester: string,
+  hideSettings: CourseworkHideSettings,
 ): RenderableDashboardRow[] {
   return items
     .filter((item) => (
       !item.hidden &&
       semesterMatches(item.semester, selectedSemester, fallbackSemester) &&
-      shouldShowCourseworkItem(item.dueAt, Boolean(item.completed))
+      shouldShowCourseworkItem(item.dueAt, Boolean(item.completed), item.completedAt, hideSettings)
     ))
     .sort((firstItem, secondItem) => (
       new Date(firstItem.dueAt || 0).getTime() - new Date(secondItem.dueAt || 0).getTime()
@@ -825,6 +932,7 @@ function createCanvasCourseworkRows(
   canvasCourses: CanvasCourse[] | null,
   selectedSemester: string | undefined,
   fallbackSemester: string,
+  hideSettings: CourseworkHideSettings,
 ): RenderableDashboardRow[] {
   return items
     .filter(isCourseworkCanvasItem)
@@ -841,7 +949,12 @@ function createCanvasCourseworkRows(
 
       return !itemPreferences.hidden &&
         semesterMatches(semester, selectedSemester, fallbackSemester) &&
-        shouldShowCourseworkItem(dueAt, Boolean(item.isSubmitted) || Boolean(itemPreferences.completed));
+        shouldShowCourseworkItem(
+          dueAt,
+          Boolean(item.isSubmitted) || Boolean(itemPreferences.completed),
+          item.submittedAt ?? itemPreferences.submittedAt ?? itemPreferences.completedAt,
+          hideSettings,
+        );
     })
     .sort((firstItem, secondItem) => (
       new Date(firstItem.dueAt ?? firstItem.startAt ?? 0).getTime() -
@@ -906,12 +1019,13 @@ function createManualCourseworkRows(
   locale: string,
   selectedSemester: string | undefined,
   fallbackSemester: string,
+  hideSettings: CourseworkHideSettings,
 ): RenderableDashboardRow[] {
   return items
     .filter((item) => (
       !item.hidden &&
       semesterMatches(item.semester, selectedSemester, fallbackSemester) &&
-      shouldShowCourseworkItem(item.dueAt, Boolean(item.completed))
+      shouldShowCourseworkItem(item.dueAt, Boolean(item.completed), item.completedAt, hideSettings)
     ))
     .sort((firstItem, secondItem) => (
       new Date(firstItem.dueAt || 0).getTime() - new Date(secondItem.dueAt || 0).getTime()
@@ -945,6 +1059,7 @@ function createStoredCanvasCourseworkRows(
   locale: string,
   selectedSemester: string | undefined,
   fallbackSemester: string,
+  hideSettings: CourseworkHideSettings,
 ): RenderableDashboardRow[] {
   return Object.entries(preferences)
     .filter(([itemId, preference]) => (
@@ -952,7 +1067,12 @@ function createStoredCanvasCourseworkRows(
       !preference.hidden &&
       Boolean(preference.title?.trim()) &&
       semesterMatches(preference.semester, selectedSemester, fallbackSemester) &&
-      shouldShowCourseworkItem(preference.dueAt, Boolean(preference.isSubmitted) || Boolean(preference.completed))
+      shouldShowCourseworkItem(
+        preference.dueAt,
+        Boolean(preference.isSubmitted) || Boolean(preference.completed),
+        preference.submittedAt ?? preference.completedAt,
+        hideSettings,
+      )
     ))
     .sort(([, firstPreference], [, secondPreference]) => (
       new Date(firstPreference.dueAt || 0).getTime() - new Date(secondPreference.dueAt || 0).getTime()
@@ -997,6 +1117,7 @@ function createStoredCanvasAssessmentRows(
   locale: string,
   selectedSemester: string | undefined,
   fallbackSemester: string,
+  hideSettings: CourseworkHideSettings,
 ): RenderableDashboardRow[] {
   return Object.entries(preferences)
     .filter(([itemId, preference]) => (
@@ -1004,7 +1125,12 @@ function createStoredCanvasAssessmentRows(
       !preference.hidden &&
       Boolean(preference.title?.trim()) &&
       semesterMatches(preference.semester, selectedSemester, fallbackSemester) &&
-      shouldShowCourseworkItem(preference.dueAt, Boolean(preference.isSubmitted) || Boolean(preference.completed))
+      shouldShowCourseworkItem(
+        preference.dueAt,
+        Boolean(preference.isSubmitted) || Boolean(preference.completed),
+        preference.submittedAt ?? preference.completedAt,
+        hideSettings,
+      )
     ))
     .sort(([, firstPreference], [, secondPreference]) => (
       new Date(firstPreference.dueAt || 0).getTime() - new Date(secondPreference.dueAt || 0).getTime()
@@ -1050,6 +1176,18 @@ function createMessageRows(message: string): RenderableDashboardRow[] {
 
 function getDefaultCourseworkDueAt() {
   const dueDate = new Date();
+  dueDate.setHours(23, 59, 0, 0);
+
+  return dueDate.toISOString();
+}
+
+function getCourseworkDueAtForTargetDay(target: 'today' | 'tomorrow') {
+  const dueDate = new Date();
+
+  if (target === 'tomorrow') {
+    dueDate.setDate(dueDate.getDate() + 1);
+  }
+
   dueDate.setHours(23, 59, 0, 0);
 
   return dueDate.toISOString();
@@ -1113,7 +1251,7 @@ function createManualLectureRows(lectures: ManualLecture[]): RenderableDashboard
           : lecture.friendlyName || lecture.name,
         schedule,
       ].filter(Boolean).join(' · '),
-      chipColor: lecture.chipColor ?? 'green',
+      chipColor: lecture.chipColor ?? defaultCourseChipColor,
       courseName: lecture.name,
       friendlyCourseCode: lecture.friendlyCourseCode,
       friendlyName: lecture.friendlyName,
@@ -1177,7 +1315,7 @@ function createArchivedManualLectureFromCanvasPreference(
       entries: [],
     },
     links,
-    chipColor: preference.chipColor ?? 'green',
+    chipColor: preference.chipColor ?? defaultCourseChipColor,
     friendlyCourseCode: preference.friendlyCourseCode,
     friendlyName: preference.friendlyName,
     hidden: preference.hidden,
@@ -1186,140 +1324,13 @@ function createArchivedManualLectureFromCanvasPreference(
   };
 }
 
-function getStoredManualLectures(): ManualLecture[] {
-  if (typeof window === 'undefined') {
-    return [];
-  }
-
-  try {
-    const storedLectures = window.localStorage.getItem(manualLecturesStorageKey);
-    const parsedLectures = storedLectures ? JSON.parse(storedLectures) : [];
-
-    return Array.isArray(parsedLectures) ? parsedLectures as ManualLecture[] : [];
-  } catch {
-    return [];
-  }
-}
-
-function storeManualLectures(lectures: ManualLecture[]) {
-  window.localStorage.setItem(manualLecturesStorageKey, JSON.stringify(lectures));
-}
-
-function getStoredCanvasLecturePreferences(): CanvasLecturePreferences {
-  if (typeof window === 'undefined') {
-    return {};
-  }
-
-  try {
-    const storedPreferences = window.localStorage.getItem(canvasLecturePreferencesStorageKey);
-    const parsedPreferences = storedPreferences ? JSON.parse(storedPreferences) : {};
-
-    return parsedPreferences && typeof parsedPreferences === 'object'
-      ? parsedPreferences as CanvasLecturePreferences
-      : {};
-  } catch {
-    return {};
-  }
-}
-
-function storeCanvasLecturePreferences(preferences: CanvasLecturePreferences) {
-  window.localStorage.setItem(canvasLecturePreferencesStorageKey, JSON.stringify(preferences));
-}
-
-function getStoredManualCoursework(): ManualCourseworkItem[] {
-  if (typeof window === 'undefined') {
-    return [];
-  }
-
-  try {
-    const storedCoursework = window.localStorage.getItem(manualCourseworkStorageKey);
-    const parsedCoursework = storedCoursework ? JSON.parse(storedCoursework) : [];
-
-    return Array.isArray(parsedCoursework) ? parsedCoursework as ManualCourseworkItem[] : [];
-  } catch {
-    return [];
-  }
-}
-
-function storeManualCoursework(coursework: ManualCourseworkItem[]) {
-  window.localStorage.setItem(manualCourseworkStorageKey, JSON.stringify(coursework));
-}
-
-function getStoredCanvasCourseworkPreferences(): CanvasCourseworkPreferences {
-  if (typeof window === 'undefined') {
-    return {};
-  }
-
-  try {
-    const storedPreferences = window.localStorage.getItem(canvasCourseworkPreferencesStorageKey);
-    const parsedPreferences = storedPreferences ? JSON.parse(storedPreferences) : {};
-
-    return parsedPreferences && typeof parsedPreferences === 'object'
-      ? parsedPreferences as CanvasCourseworkPreferences
-      : {};
-  } catch {
-    return {};
-  }
-}
-
-function storeCanvasCourseworkPreferences(preferences: CanvasCourseworkPreferences) {
-  window.localStorage.setItem(canvasCourseworkPreferencesStorageKey, JSON.stringify(preferences));
-}
-
-function getStoredManualAssessments(): ManualAssessmentItem[] {
-  if (typeof window === 'undefined') {
-    return [];
-  }
-
-  try {
-    const storedAssessments = window.localStorage.getItem(manualAssessmentsStorageKey);
-    const parsedAssessments = storedAssessments ? JSON.parse(storedAssessments) : [];
-
-    return Array.isArray(parsedAssessments) ? parsedAssessments as ManualAssessmentItem[] : [];
-  } catch {
-    return [];
-  }
-}
-
-function storeManualAssessments(assessments: ManualAssessmentItem[]) {
-  window.localStorage.setItem(manualAssessmentsStorageKey, JSON.stringify(assessments));
-}
-
-function getStoredCanvasAssessmentPreferences(): CanvasAssessmentPreferences {
-  if (typeof window === 'undefined') {
-    return {};
-  }
-
-  try {
-    const storedPreferences = window.localStorage.getItem(canvasAssessmentPreferencesStorageKey);
-    const parsedPreferences = storedPreferences ? JSON.parse(storedPreferences) : {};
-
-    return parsedPreferences && typeof parsedPreferences === 'object'
-      ? parsedPreferences as CanvasAssessmentPreferences
-      : {};
-  } catch {
-    return {};
-  }
-}
-
-function storeCanvasAssessmentPreferences(preferences: CanvasAssessmentPreferences) {
-  window.localStorage.setItem(canvasAssessmentPreferencesStorageKey, JSON.stringify(preferences));
-}
-
 function getStoredAcademyCalendarSettings() {
-  if (typeof window === 'undefined') {
-    return {};
-  }
+  return academyCalendarSettingsCache;
+}
 
-  try {
-    const storedSettings = window.localStorage.getItem(academyCalendarSettingsStorageKey);
-    const parsedSettings = storedSettings ? JSON.parse(storedSettings) : {};
-
-    return parsedSettings && typeof parsedSettings === 'object' && !Array.isArray(parsedSettings)
-      ? parsedSettings as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
+function cacheAcademyCalendarSettings(settings: unknown) {
+  if (settings && typeof settings === 'object' && !Array.isArray(settings)) {
+    academyCalendarSettingsCache = settings as Record<string, unknown>;
   }
 }
 
@@ -1347,27 +1358,13 @@ function getLastCanvasTermNameFromSettings(settings: unknown) {
     : undefined;
 }
 
-function getStoredSelectedAcademySemester() {
-  return getSelectedSemesterFromSettings(getStoredAcademyCalendarSettings());
-}
-
 function storeAcademyCalendarSettingsPatch(patch: Record<string, unknown>) {
-  if (typeof window === 'undefined') {
-    return {};
-  }
-
-  const currentSettings = getStoredAcademyCalendarSettings();
-  const nextSettings = {
-    ...currentSettings,
+  academyCalendarSettingsCache = {
+    ...academyCalendarSettingsCache,
     ...patch,
   };
 
-  window.localStorage.setItem(
-    academyCalendarSettingsStorageKey,
-    JSON.stringify(nextSettings),
-  );
-
-  return nextSettings;
+  return academyCalendarSettingsCache;
 }
 
 function storeSelectedAcademySemester(semester: string) {
@@ -1390,19 +1387,84 @@ function cacheAcademyPreferences(
   courseworkPreferences: CanvasCourseworkPreferences,
   assessments: ManualAssessmentItem[],
   assessmentPreferences: CanvasAssessmentPreferences,
+  calendarSettings: Record<string, unknown> = getStoredAcademyCalendarSettings(),
 ) {
   if (typeof window === 'undefined') {
     return;
   }
 
-  storeManualLectures(lectures);
-  storeCanvasLecturePreferences(preferences);
-  storeManualCoursework(coursework);
-  storeCanvasCourseworkPreferences(courseworkPreferences);
-  storeManualAssessments(assessments);
-  storeCanvasAssessmentPreferences(assessmentPreferences);
-  window.dispatchEvent(new Event(academyPreferencesUpdatedEvent));
+  cacheAcademyCalendarSettings(calendarSettings);
+  clearLegacyAcademyPreferenceStorage();
+  window.dispatchEvent(new CustomEvent(academyPreferencesUpdatedEvent, {
+    detail: {
+      canvasAssessmentPreferences: assessmentPreferences,
+      canvasCourseworkPreferences: courseworkPreferences,
+      canvasLecturePreferences: preferences,
+      calendarSettings: getStoredAcademyCalendarSettings(),
+      manualAssessments: assessments,
+      manualCoursework: coursework,
+      manualLectures: lectures,
+    },
+  }));
 }
+
+function clearLegacyAcademyPreferenceStorage() {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  [
+    manualLecturesStorageKey,
+    canvasLecturePreferencesStorageKey,
+    manualCourseworkStorageKey,
+    canvasCourseworkPreferencesStorageKey,
+    manualAssessmentsStorageKey,
+    canvasAssessmentPreferencesStorageKey,
+    academyCalendarSettingsStorageKey,
+  ].forEach((storageKey) => {
+    window.localStorage.removeItem(storageKey);
+  });
+}
+
+function getAcademyPreferenceValues(preferences: AcademyPreferences) {
+  return {
+    canvasAssessmentPreferences: isCanvasAssessmentPreferences(preferences.canvasAssessmentPreferences)
+      ? preferences.canvasAssessmentPreferences
+      : {},
+    canvasCourseworkPreferences: isCanvasCourseworkPreferences(preferences.canvasCourseworkPreferences)
+      ? preferences.canvasCourseworkPreferences
+      : {},
+    canvasLecturePreferences: isCanvasLecturePreferences(preferences.canvasLecturePreferences)
+      ? preferences.canvasLecturePreferences
+      : {},
+    manualAssessments: Array.isArray(preferences.manualAssessments)
+      ? preferences.manualAssessments as ManualAssessmentItem[]
+      : [],
+    manualCoursework: Array.isArray(preferences.manualCoursework)
+      ? preferences.manualCoursework as ManualCourseworkItem[]
+      : [],
+    manualLectures: Array.isArray(preferences.manualLectures)
+      ? preferences.manualLectures as ManualLecture[]
+      : [],
+  };
+}
+
+function cacheAcademyPreferencesResponse(preferences: AcademyPreferences) {
+  const values = getAcademyPreferenceValues(preferences);
+
+  cacheAcademyCalendarSettings(preferences.calendarSettings);
+  cacheAcademyPreferences(
+    values.manualLectures,
+    values.canvasLecturePreferences,
+    values.manualCoursework,
+    values.canvasCourseworkPreferences,
+    values.manualAssessments,
+    values.canvasAssessmentPreferences,
+    getStoredAcademyCalendarSettings(),
+  );
+}
+
+type AcademyPreferenceValues = ReturnType<typeof getAcademyPreferenceValues>;
 
 function persistAcademyPreferences(
   lectures: ManualLecture[],
@@ -1412,7 +1474,17 @@ function persistAcademyPreferences(
   assessments: ManualAssessmentItem[],
   assessmentPreferences: CanvasAssessmentPreferences,
 ) {
-  cacheAcademyPreferences(lectures, preferences, coursework, courseworkPreferences, assessments, assessmentPreferences);
+  const saveSequence = ++academyPreferencesSaveSequence;
+
+  cacheAcademyPreferences(
+    lectures,
+    preferences,
+    coursework,
+    courseworkPreferences,
+    assessments,
+    assessmentPreferences,
+    getStoredAcademyCalendarSettings(),
+  );
 
   void workspaceApi.saveAcademyPreferences({
     manualLectures: lectures,
@@ -1422,7 +1494,13 @@ function persistAcademyPreferences(
     manualAssessments: assessments,
     canvasAssessmentPreferences: assessmentPreferences,
     calendarSettings: getStoredAcademyCalendarSettings(),
-  }).catch(() => undefined);
+  })
+    .then((savedPreferences) => {
+      if (saveSequence === academyPreferencesSaveSequence) {
+        cacheAcademyPreferencesResponse(savedPreferences);
+      }
+    })
+    .catch(() => undefined);
 }
 
 function isCanvasLecturePreferences(value: unknown): value is CanvasLecturePreferences {
@@ -1458,7 +1536,7 @@ function createCanvasEditableLecture(
       entries: [],
     },
     links: preference?.links ?? [],
-    chipColor: preference?.chipColor ?? 'green',
+    chipColor: preference?.chipColor ?? defaultCourseChipColor,
     friendlyCourseCode: preference?.friendlyCourseCode,
     friendlyName: preference?.friendlyName,
     hidden: preference?.hidden,
@@ -1494,12 +1572,12 @@ function getCourseworkCourseOptions(
 
   canvasCourses?.forEach((course) => {
     const semester = getCanvasCourseSemester(course, canvasPreferences, fallbackSemester);
+    const preferences = canvasPreferences[course.id] ?? {};
 
-    if (!semesterMatches(semester, selectedSemester, fallbackSemester)) {
+    if (preferences.hidden || !semesterMatches(semester, selectedSemester, fallbackSemester)) {
       return;
     }
 
-    const preferences = canvasPreferences[course.id] ?? {};
     addOption(
       preferences.friendlyCourseCode || course.courseCode || course.id,
       preferences.friendlyName || course.name,
@@ -1509,7 +1587,7 @@ function getCourseworkCourseOptions(
   manualLectures.forEach((lecture) => {
     const semester = normalizeSemesterName((lecture as ManualLecture & { semester?: string }).semester, fallbackSemester);
 
-    if (!semesterMatches(semester, selectedSemester, fallbackSemester)) {
+    if (lecture.hidden || !semesterMatches(semester, selectedSemester, fallbackSemester)) {
       return;
     }
 
@@ -1582,12 +1660,15 @@ interface DashboardRowsProps {
   onOpenCoursework: (row: RenderableDashboardRow) => void;
   onOpenCourseworkLink: (row: RenderableDashboardRow) => void;
   onOpenLecture: (row: RenderableDashboardRow) => void;
+  onOpenLectureDetails: (row: RenderableDashboardRow) => void;
   onOpenLectureFriendlyName: (row: RenderableDashboardRow) => void;
   onRenameCoursework: (row: RenderableDashboardRow, title: string) => void;
   onRemoveAssessment: (row: RenderableDashboardRow) => void;
   onRemoveCoursework: (row: RenderableDashboardRow) => void;
   onSetLectureChipColor: (row: RenderableDashboardRow, color: ColorToken) => void;
   onStartCourseworkRename: (row: RenderableDashboardRow) => void;
+  onMoveAssessmentDueDate: (row: RenderableDashboardRow, target: 'today' | 'tomorrow') => void;
+  onMoveCourseworkDueDate: (row: RenderableDashboardRow, target: 'today' | 'tomorrow') => void;
   onToggleAssessmentDone: (row: RenderableDashboardRow) => void;
   onToggleAssessmentStar: (row: RenderableDashboardRow) => void;
   onToggleCourseworkDone: (row: RenderableDashboardRow) => void;
@@ -1604,12 +1685,15 @@ function DashboardRows({
   onOpenCoursework,
   onOpenCourseworkLink,
   onOpenLecture,
+  onOpenLectureDetails,
   onOpenLectureFriendlyName,
   onRenameCoursework,
   onRemoveAssessment,
   onRemoveCoursework,
   onSetLectureChipColor,
   onStartCourseworkRename,
+  onMoveAssessmentDueDate,
+  onMoveCourseworkDueDate,
   onToggleAssessmentDone,
   onToggleAssessmentStar,
   onToggleCourseworkDone,
@@ -1619,23 +1703,66 @@ function DashboardRows({
   const { dictionary } = useLanguage();
   const courseworkLongPressTimeoutRef = useRef<number | null>(null);
   const courseworkLongPressTriggeredRef = useRef(false);
+  const suppressLectureOpenUntilRef = useRef(0);
+  const [dropdownColorVariantPage, setDropdownColorVariantPage] = useState(0);
+  const [contextColorVariantPage, setContextColorVariantPage] = useState(0);
   const rows = card.id === 'upcoming-coursework'
     ? card.rows
     : card.rows.slice(0, card.maxRows ?? card.rows.length);
-  const chipColorLabels: Record<ColorToken, string> = {
+  const chipColorLabels: Partial<Record<ColorToken, string>> = {
     blue: dictionary.manualLectureChipColorBlue,
+    sky: dictionary.manualLectureChipColorSky,
+    cyan: dictionary.manualLectureChipColorCyan,
     green: dictionary.manualLectureChipColorGreen,
+    indigo: dictionary.manualLectureChipColorIndigo,
     orange: dictionary.manualLectureChipColorOrange,
     red: dictionary.manualLectureChipColorRed,
     purple: dictionary.manualLectureChipColorPurple,
+    violet: dictionary.manualLectureChipColorViolet,
+    fuchsia: dictionary.manualLectureChipColorFuchsia,
+    pink: dictionary.manualLectureChipColorPink,
     teal: dictionary.manualLectureChipColorTeal,
     gold: dictionary.manualLectureChipColorGold,
+    slate: dictionary.manualLectureChipColorSlate,
     gray: dictionary.manualLectureChipColorGray,
   };
   const touchMenuButtonClassName =
     'size-8 shrink-0 rounded-md border-border bg-background/80 text-muted-foreground hover:bg-muted hover:text-foreground';
   const stopTouchMenuPropagation = (event: MouseEvent | PointerEvent) => {
     event.stopPropagation();
+  };
+  const suppressLectureOpenAfterColorSelect = () => {
+    suppressLectureOpenUntilRef.current = Date.now() + 700;
+  };
+  const isLectureOpenSuppressed = () => Date.now() < suppressLectureOpenUntilRef.current;
+  const selectLectureChipColor = (row: RenderableDashboardRow, color: ColorToken) => {
+    suppressLectureOpenAfterColorSelect();
+    onSetLectureChipColor(row, color);
+  };
+  const getCourseworkMoveTarget = (row: RenderableDashboardRow) => {
+    if (row.isCanvasSubmitted || row.isCompleted || !row.dueAt) {
+      return null;
+    }
+
+    const dueDate = new Date(row.dueAt);
+
+    if (Number.isNaN(dueDate.getTime())) {
+      return null;
+    }
+
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const startOfDueDate = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate()).getTime();
+
+    if (startOfDueDate < startOfToday) {
+      return 'today';
+    }
+
+    if (startOfDueDate === startOfToday) {
+      return 'tomorrow';
+    }
+
+    return null;
   };
   const clearCourseworkLongPress = () => {
     if (courseworkLongPressTimeoutRef.current) {
@@ -1647,6 +1774,76 @@ function DashboardRows({
     target instanceof Element &&
       Boolean(target.closest('button,a,input,textarea,select,[role="menuitem"],[data-dashboard-row-action]'))
   );
+  const renderColorVariantGrid = (
+    row: RenderableDashboardRow,
+    pageIndex: number,
+    onPageChange: (pageIndex: number) => void,
+  ) => {
+    const colorPage = lectureChipColorVariantPages[pageIndex] ?? lectureChipColorVariantPages[0];
+    const lastPageIndex = lectureChipColorVariantPages.length - 1;
+
+    return (
+      <div
+        className="w-40"
+        data-dashboard-row-action
+        onClick={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-1 pb-1">
+          <button
+            aria-label={dictionary.manualLectureChipColorPrevious}
+            className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-35"
+            disabled={pageIndex === 0}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onPageChange(Math.max(0, pageIndex - 1));
+            }}
+            type="button"
+          >
+            <ChevronLeft className="size-4" />
+          </button>
+          <span className="text-[11px] font-black text-muted-foreground">
+            {pageIndex + 1}/{lectureChipColorVariantPages.length}
+          </span>
+          <button
+            aria-label={dictionary.manualLectureChipColorNext}
+            className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-35"
+            disabled={pageIndex === lastPageIndex}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onPageChange(Math.min(lastPageIndex, pageIndex + 1));
+            }}
+            type="button"
+          >
+            <ChevronRight className="size-4" />
+          </button>
+        </div>
+        <div className="grid grid-cols-4 gap-1 p-1">
+          {colorPage.map((color) => (
+            <button
+              aria-label={chipColorLabels[color] ?? color}
+              className={cn(
+                'grid size-8 place-items-center rounded-md transition-colors hover:bg-accent',
+                row.chipColor === color && 'bg-accent',
+              )}
+              disabled={row.chipColor === color}
+              key={color}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                selectLectureChipColor(row, color);
+              }}
+              type="button"
+            >
+              <span aria-hidden="true" className={cn('size-4 rounded-full', dotColorClasses[color])} />
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  };
   const startCourseworkRename = (row: RenderableDashboardRow) => {
     if (!row.courseworkKey && !row.assessmentKey) {
       return;
@@ -1699,7 +1896,7 @@ function DashboardRows({
       <DropdownMenu>
         {renderTouchMenuTrigger()}
         <DropdownMenuContent align="end" className="w-56">
-          <DropdownMenuItem onSelect={() => onOpenLecture(row)}>
+          <DropdownMenuItem onSelect={() => onOpenLectureDetails(row)}>
             <BookOpen className="size-4" />
             <span>{dictionary.manualLectureOpenDetails}</span>
           </DropdownMenuItem>
@@ -1718,17 +1915,40 @@ function DashboardRows({
           <DropdownMenuSeparator />
           {lectureChipColors.map((color) => (
             <DropdownMenuItem
+              data-dashboard-row-action
               disabled={row.chipColor === color}
               key={color}
-              onSelect={() => onSetLectureChipColor(row, color)}
+              onClick={(event) => event.stopPropagation()}
+              onPointerDown={(event) => event.stopPropagation()}
+              onSelect={(event) => {
+                event.stopPropagation();
+                selectLectureChipColor(row, color);
+              }}
             >
               <span
                 aria-hidden="true"
                 className={cn('size-3 rounded-full border border-foreground/10', dotColorClasses[color])}
               />
-              <span>{chipColorLabels[color]}</span>
+              <span>{chipColorLabels[color] ?? color}</span>
             </DropdownMenuItem>
           ))}
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger data-dashboard-row-action>
+              <span
+                aria-hidden="true"
+                className="size-3 rounded-full"
+                style={{
+                  background:
+                    'conic-gradient(from 90deg, #ef4444, #f97316, #facc15, #22c55e, #06b6d4, #3b82f6, #8b5cf6, #ec4899, #ef4444)',
+                }}
+              />
+              <span>{dictionary.manualLectureChipColorOther}</span>
+              <ChevronRight className="ml-auto size-4 text-muted-foreground" />
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent alignOffset={-4} className="w-40">
+              {renderColorVariantGrid(row, dropdownColorVariantPage, setDropdownColorVariantPage)}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
         </DropdownMenuContent>
       </DropdownMenu>
     );
@@ -1737,6 +1957,8 @@ function DashboardRows({
     if (!row.courseworkKey) {
       return null;
     }
+
+    const moveTarget = getCourseworkMoveTarget(row);
 
     return (
       <DropdownMenu>
@@ -1754,6 +1976,16 @@ function DashboardRows({
             <Star className={cn('size-4', row.isStarred && 'fill-amber-400 text-amber-500')} />
             <span>{row.isStarred ? dictionary.courseworkUnstar : dictionary.courseworkStar}</span>
           </DropdownMenuItem>
+          {moveTarget ? (
+            <DropdownMenuItem onSelect={() => onMoveCourseworkDueDate(row, moveTarget)}>
+              <CalendarPlus className="size-4" />
+              <span>
+                {moveTarget === 'today'
+                  ? dictionary.courseworkDoToday
+                  : dictionary.courseworkDoTomorrow}
+              </span>
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuItem disabled={row.isCanvasSubmitted} onSelect={() => onToggleCourseworkDone(row)}>
             <span
               aria-hidden="true"
@@ -1793,6 +2025,8 @@ function DashboardRows({
       return null;
     }
 
+    const moveTarget = getCourseworkMoveTarget(row);
+
     return (
       <DropdownMenu>
         {renderTouchMenuTrigger()}
@@ -1809,6 +2043,16 @@ function DashboardRows({
             <Star className={cn('size-4', row.isStarred && 'fill-amber-400 text-amber-500')} />
             <span>{row.isStarred ? dictionary.assessmentUnstar : dictionary.assessmentStar}</span>
           </DropdownMenuItem>
+          {moveTarget ? (
+            <DropdownMenuItem onSelect={() => onMoveAssessmentDueDate(row, moveTarget)}>
+              <CalendarPlus className="size-4" />
+              <span>
+                {moveTarget === 'today'
+                  ? dictionary.courseworkDoToday
+                  : dictionary.courseworkDoTomorrow}
+              </span>
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuItem disabled={row.isCanvasSubmitted} onSelect={() => onToggleAssessmentDone(row)}>
             <span
               aria-hidden="true"
@@ -1853,7 +2097,7 @@ function DashboardRows({
         <ContextMenuTrigger asChild>{trigger}</ContextMenuTrigger>
         <ContextMenuContent className="w-56">
           <ContextMenuLabel>{row.label}</ContextMenuLabel>
-          <ContextMenuItem onSelect={() => onOpenLecture(row)}>
+          <ContextMenuItem onSelect={() => onOpenLectureDetails(row)}>
             <BookOpen className="size-4" />
             <span>{dictionary.manualLectureOpenDetails}</span>
           </ContextMenuItem>
@@ -1873,17 +2117,40 @@ function DashboardRows({
           <ContextMenuLabel>{dictionary.manualLectureChipColor}</ContextMenuLabel>
           {lectureChipColors.map((color) => (
             <ContextMenuItem
+              data-dashboard-row-action
               disabled={row.chipColor === color}
               key={color}
-              onSelect={() => onSetLectureChipColor(row, color)}
+              onClick={(event) => event.stopPropagation()}
+              onPointerDown={(event) => event.stopPropagation()}
+              onSelect={(event) => {
+                event.stopPropagation();
+                selectLectureChipColor(row, color);
+              }}
             >
               <span
                 aria-hidden="true"
                 className={cn('size-3 rounded-full border border-foreground/10', dotColorClasses[color])}
               />
-              <span>{chipColorLabels[color]}</span>
+              <span>{chipColorLabels[color] ?? color}</span>
             </ContextMenuItem>
           ))}
+          <ContextMenuSub>
+            <ContextMenuSubTrigger data-dashboard-row-action>
+              <span
+                aria-hidden="true"
+                className="size-3 rounded-full"
+                style={{
+                  background:
+                    'conic-gradient(from 90deg, #ef4444, #f97316, #facc15, #22c55e, #06b6d4, #3b82f6, #8b5cf6, #ec4899, #ef4444)',
+                }}
+              />
+              <span>{dictionary.manualLectureChipColorOther}</span>
+              <ChevronRight className="ml-auto size-4 text-muted-foreground" />
+            </ContextMenuSubTrigger>
+            <ContextMenuSubContent alignOffset={-4} className="w-40">
+              {renderColorVariantGrid(row, contextColorVariantPage, setContextColorVariantPage)}
+            </ContextMenuSubContent>
+          </ContextMenuSub>
         </ContextMenuContent>
       </ContextMenu>
     );
@@ -1892,6 +2159,8 @@ function DashboardRows({
     if (!row.courseworkKey) {
       return trigger;
     }
+
+    const moveTarget = getCourseworkMoveTarget(row);
 
     return (
       <ContextMenu key={`${card.id}-${row.courseworkKey}`}>
@@ -1910,6 +2179,16 @@ function DashboardRows({
             <Star className={cn('size-4', row.isStarred && 'fill-amber-400 text-amber-500')} />
             <span>{row.isStarred ? dictionary.courseworkUnstar : dictionary.courseworkStar}</span>
           </ContextMenuItem>
+          {moveTarget ? (
+            <ContextMenuItem onSelect={() => onMoveCourseworkDueDate(row, moveTarget)}>
+              <CalendarPlus className="size-4" />
+              <span>
+                {moveTarget === 'today'
+                  ? dictionary.courseworkDoToday
+                  : dictionary.courseworkDoTomorrow}
+              </span>
+            </ContextMenuItem>
+          ) : null}
           <ContextMenuItem disabled={row.isCanvasSubmitted} onSelect={() => onToggleCourseworkDone(row)}>
             <span
               aria-hidden="true"
@@ -1949,6 +2228,8 @@ function DashboardRows({
       return trigger;
     }
 
+    const moveTarget = getCourseworkMoveTarget(row);
+
     return (
       <ContextMenu key={`${card.id}-${row.assessmentKey}`}>
         <ContextMenuTrigger asChild>{trigger}</ContextMenuTrigger>
@@ -1966,6 +2247,16 @@ function DashboardRows({
             <Star className={cn('size-4', row.isStarred && 'fill-amber-400 text-amber-500')} />
             <span>{row.isStarred ? dictionary.assessmentUnstar : dictionary.assessmentStar}</span>
           </ContextMenuItem>
+          {moveTarget ? (
+            <ContextMenuItem onSelect={() => onMoveAssessmentDueDate(row, moveTarget)}>
+              <CalendarPlus className="size-4" />
+              <span>
+                {moveTarget === 'today'
+                  ? dictionary.courseworkDoToday
+                  : dictionary.courseworkDoTomorrow}
+              </span>
+            </ContextMenuItem>
+          ) : null}
           <ContextMenuItem disabled={row.isCanvasSubmitted} onSelect={() => onToggleAssessmentDone(row)}>
             <span
               aria-hidden="true"
@@ -2169,11 +2460,23 @@ function DashboardRows({
               return;
             }
 
+            if (isDashboardRowActionTarget(event.target) || isLectureOpenSuppressed()) {
+              event.preventDefault();
+              event.stopPropagation();
+              return;
+            }
+
             event.stopPropagation();
             onOpenLecture(row);
           }}
           onKeyDown={(event) => {
             if (!isLectureRow || (event.key !== 'Enter' && event.key !== ' ')) {
+              return;
+            }
+
+            if (isDashboardRowActionTarget(event.target) || isLectureOpenSuppressed()) {
+              event.preventDefault();
+              event.stopPropagation();
               return;
             }
 
@@ -2374,7 +2677,9 @@ function createEmptyCoursework(selectedSemester = defaultAcademySemester): Manua
     title: '',
     courseCode: '',
     dueAt: '',
-    courseworkType: 'assignment',
+    startAt: '',
+    endAt: '',
+    courseworkType: 'study',
     submissionType: '',
     completed: false,
     chipColor: 'green',
@@ -2401,11 +2706,11 @@ function CourseworkDialog({
   submitLabel,
   title,
 }: CourseworkDialogProps) {
-  const { dictionary, language } = useLanguage();
-  const dateLocale = getDateLocale(language);
+  const { dictionary } = useLanguage();
   const [draft, setDraft] = useState<ManualCourseworkItem>(() => (
     initialCoursework ?? createEmptyCoursework(selectedSemester)
   ));
+  const draftResetKeyRef = useRef<string | null>(null);
   const lockedCanvasFieldClassName = isCanvasCoursework ? 'opacity-70' : '';
   const selectedCourseValue = courseOptions.some((option) => option.value === draft.courseCode)
     ? draft.courseCode
@@ -2414,10 +2719,23 @@ function CourseworkDialog({
       : undefined;
 
   useEffect(() => {
+    if (!open) {
+      draftResetKeyRef.current = null;
+      return;
+    }
+
+    const draftResetKey = initialCoursework?.id ?? 'new';
+
+    if (draftResetKeyRef.current === draftResetKey) {
+      return;
+    }
+
+    draftResetKeyRef.current = draftResetKey;
+
     if (open) {
       setDraft(initialCoursework ?? createEmptyCoursework(selectedSemester));
     }
-  }, [initialCoursework, open, selectedSemester]);
+  }, [initialCoursework?.id, open, selectedSemester]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -2437,9 +2755,11 @@ function CourseworkDialog({
             onSave({
               ...draft,
               courseCode: draft.courseCode.trim(),
-              courseworkType: draft.courseworkType || 'assignment',
+              courseworkType: draft.courseworkType || 'study',
               dueAt: toIsoFromDateInput(draft.dueAt) || draft.dueAt,
+              endAt: draft.endAt ? toIsoFromDateInput(draft.endAt) || draft.endAt : '',
               semester: normalizeSemesterName(draft.semester, selectedSemester),
+              startAt: draft.startAt ? toIsoFromDateInput(draft.startAt) || draft.startAt : '',
               submissionType: draft.submissionType.trim(),
               title: draft.title.trim(),
             });
@@ -2504,7 +2824,7 @@ function CourseworkDialog({
               </Label>
               <Select
                 onValueChange={(value) => setDraft((current) => ({ ...current, courseworkType: value }))}
-                value={draft.courseworkType || 'assignment'}
+                value={draft.courseworkType || 'study'}
               >
                 <SelectTrigger id="coursework-type">
                   <SelectValue />
@@ -2538,19 +2858,47 @@ function CourseworkDialog({
                 </SelectContent>
               </Select>
             </div>
-            <div className={cn('space-y-2 sm:col-span-2', lockedCanvasFieldClassName)}>
+            <div className={cn('space-y-2', lockedCanvasFieldClassName)}>
+              <Label className="text-xs font-black uppercase text-muted-foreground" htmlFor="coursework-start">
+                {dictionary.calendarTodoStartAt}
+              </Label>
+              <DateTimeField
+                defaultTime="09:00"
+                disabled={isCanvasCoursework}
+                id="coursework-start"
+                onChange={(value) => setDraft((current) => ({ ...current, startAt: value }))}
+                value={formatDateInputValue(draft.startAt)}
+              />
+            </div>
+            <div className={cn('space-y-2', lockedCanvasFieldClassName)}>
               <Label className="text-xs font-black uppercase text-muted-foreground" htmlFor="coursework-due">
                 {dictionary.courseworkDueAt}
               </Label>
-              <Input
+              <DateTimeField
+                defaultTime="23:59"
                 disabled={isCanvasCoursework}
                 id="coursework-due"
-                lang={dateLocale}
-                onChange={(event) => setDraft((current) => ({ ...current, dueAt: event.target.value }))}
-                type="datetime-local"
+                onChange={(value) => setDraft((current) => ({ ...current, dueAt: value }))}
                 value={formatDateInputValue(draft.dueAt)}
               />
             </div>
+            <details className={cn('rounded-lg border bg-muted/20 p-3 sm:col-span-2', lockedCanvasFieldClassName)}>
+              <summary className="cursor-pointer text-xs font-black uppercase text-muted-foreground">
+                {dictionary.courseworkActualEndAt}
+              </summary>
+              <div className="mt-3 space-y-2">
+                <Label className="text-xs font-black uppercase text-muted-foreground" htmlFor="coursework-end">
+                  {dictionary.courseworkActualEndAt}
+                </Label>
+                <DateTimeField
+                  defaultTime="23:59"
+                  disabled={isCanvasCoursework}
+                  id="coursework-end"
+                  onChange={(value) => setDraft((current) => ({ ...current, endAt: value }))}
+                  value={formatDateInputValue(draft.endAt)}
+                />
+              </div>
+            </details>
           </div>
           <DialogFooter>
             <Button onClick={() => onOpenChange(false)} type="button" variant="outline">
@@ -2582,6 +2930,8 @@ function createEmptyAssessment(selectedSemester = defaultAcademySemester): Manua
     title: '',
     courseCode: '',
     dueAt: '',
+    startAt: '',
+    endAt: '',
     assessmentType: 'quiz',
     completed: false,
     semester: selectedSemester,
@@ -2607,11 +2957,11 @@ function AssessmentDialog({
   submitLabel,
   title,
 }: AssessmentDialogProps) {
-  const { dictionary, language } = useLanguage();
-  const dateLocale = getDateLocale(language);
+  const { dictionary } = useLanguage();
   const [draft, setDraft] = useState<ManualAssessmentItem>(() => (
     initialAssessment ?? createEmptyAssessment(selectedSemester)
   ));
+  const draftResetKeyRef = useRef<string | null>(null);
   const selectedCourseValue = courseOptions.some((option) => option.value === draft.courseCode)
     ? draft.courseCode
     : draft.courseCode
@@ -2620,10 +2970,23 @@ function AssessmentDialog({
   const lockedCanvasFieldClassName = isCanvasAssessment ? 'opacity-70' : '';
 
   useEffect(() => {
+    if (!open) {
+      draftResetKeyRef.current = null;
+      return;
+    }
+
+    const draftResetKey = initialAssessment?.id ?? 'new';
+
+    if (draftResetKeyRef.current === draftResetKey) {
+      return;
+    }
+
+    draftResetKeyRef.current = draftResetKey;
+
     if (open) {
       setDraft(initialAssessment ?? createEmptyAssessment(selectedSemester));
     }
-  }, [initialAssessment, open, selectedSemester]);
+  }, [initialAssessment?.id, open, selectedSemester]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -2644,7 +3007,9 @@ function AssessmentDialog({
               assessmentType: draft.assessmentType || 'quiz',
               courseCode: draft.courseCode.trim(),
               dueAt: toIsoFromDateInput(draft.dueAt) || draft.dueAt,
+              endAt: draft.endAt ? toIsoFromDateInput(draft.endAt) || draft.endAt : '',
               semester: normalizeSemesterName(draft.semester, selectedSemester),
+              startAt: draft.startAt ? toIsoFromDateInput(draft.startAt) || draft.startAt : '',
               title: draft.title.trim(),
             });
           }}
@@ -2722,19 +3087,47 @@ function AssessmentDialog({
                 </SelectContent>
               </Select>
             </div>
-            <div className={cn('space-y-2 sm:col-span-2', lockedCanvasFieldClassName)}>
+            <div className={cn('space-y-2', lockedCanvasFieldClassName)}>
+              <Label className="text-xs font-black uppercase text-muted-foreground" htmlFor="assessment-start">
+                {dictionary.calendarTodoStartAt}
+              </Label>
+              <DateTimeField
+                defaultTime="09:00"
+                disabled={isCanvasAssessment}
+                id="assessment-start"
+                onChange={(value) => setDraft((current) => ({ ...current, startAt: value }))}
+                value={formatDateInputValue(draft.startAt)}
+              />
+            </div>
+            <div className={cn('space-y-2', lockedCanvasFieldClassName)}>
               <Label className="text-xs font-black uppercase text-muted-foreground" htmlFor="assessment-due">
                 {dictionary.courseworkDueAt}
               </Label>
-              <Input
+              <DateTimeField
+                defaultTime="23:59"
                 disabled={isCanvasAssessment}
                 id="assessment-due"
-                lang={dateLocale}
-                onChange={(event) => setDraft((current) => ({ ...current, dueAt: event.target.value }))}
-                type="datetime-local"
+                onChange={(value) => setDraft((current) => ({ ...current, dueAt: value }))}
                 value={formatDateInputValue(draft.dueAt)}
               />
             </div>
+            <details className={cn('rounded-lg border bg-muted/20 p-3 sm:col-span-2', lockedCanvasFieldClassName)}>
+              <summary className="cursor-pointer text-xs font-black uppercase text-muted-foreground">
+                {dictionary.courseworkActualEndAt}
+              </summary>
+              <div className="mt-3 space-y-2">
+                <Label className="text-xs font-black uppercase text-muted-foreground" htmlFor="assessment-end">
+                  {dictionary.courseworkActualEndAt}
+                </Label>
+                <DateTimeField
+                  defaultTime="23:59"
+                  disabled={isCanvasAssessment}
+                  id="assessment-end"
+                  onChange={(value) => setDraft((current) => ({ ...current, endAt: value }))}
+                  value={formatDateInputValue(draft.endAt)}
+                />
+              </div>
+            </details>
           </div>
           <DialogFooter>
             <Button onClick={() => onOpenChange(false)} type="button" variant="outline">
@@ -2749,6 +3142,7 @@ function AssessmentDialog({
 }
 
 interface DashboardCardsProps {
+  courseworkHideSettings?: CourseworkHideSettings;
   onOpenAddItem?: () => void;
   onOpenCourse?: (courseRowId?: string | null, resourceUrl?: string | null) => void;
   onPlanMeeting?: () => void;
@@ -2757,6 +3151,7 @@ interface DashboardCardsProps {
 }
 
 export function DashboardCards({
+  courseworkHideSettings = defaultCourseworkHideSettings,
   onOpenAddItem,
   onOpenCourse,
   onPlanMeeting,
@@ -2766,28 +3161,23 @@ export function DashboardCards({
   const { activeMode } = useWorkspaceMode();
   const { dictionary, language, translateDashboardCard, translateModeName } = useLanguage();
   const [isRefreshingMessages, setIsRefreshingMessages] = useState(false);
+  const [dashboardSnackbar, setDashboardSnackbar] = useState<DashboardSnackbar | null>(null);
   const [canvasCourses, setCanvasCourses] = useState<CanvasCourse[] | null>(null);
   const [canvasCourseLoadStatus, setCanvasCourseLoadStatus] = useState<CanvasCourseLoadStatus>('idle');
   const [canvasCourseworkItems, setCanvasCourseworkItems] = useState<CanvasCalendarItem[]>([]);
   const [canvasCourseworkLoadStatus, setCanvasCourseworkLoadStatus] = useState<CanvasCourseLoadStatus>('idle');
+  const [isAcademyDashboardRefreshInProgress, setIsAcademyDashboardRefreshInProgress] = useState(false);
   const [canvasTermName, setCanvasTermName] = useState<string | undefined>();
-  const [selectedCourseSemester, setSelectedCourseSemester] = useState<string | undefined>(
-    getStoredSelectedAcademySemester,
-  );
+  const [selectedCourseSemester, setSelectedCourseSemester] = useState<string | undefined>();
   const [isManualLectureDialogOpen, setIsManualLectureDialogOpen] = useState(false);
   const [isCourseworkDialogOpen, setIsCourseworkDialogOpen] = useState(false);
-  const [manualLectures, setManualLectures] = useState<ManualLecture[]>(getStoredManualLectures);
-  const [canvasLecturePreferences, setCanvasLecturePreferences] = useState<CanvasLecturePreferences>(
-    getStoredCanvasLecturePreferences,
-  );
-  const [manualCoursework, setManualCoursework] = useState<ManualCourseworkItem[]>(getStoredManualCoursework);
-  const [canvasCourseworkPreferences, setCanvasCourseworkPreferences] = useState<CanvasCourseworkPreferences>(
-    getStoredCanvasCourseworkPreferences,
-  );
-  const [manualAssessments, setManualAssessments] = useState<ManualAssessmentItem[]>(getStoredManualAssessments);
-  const [canvasAssessmentPreferences, setCanvasAssessmentPreferences] = useState<CanvasAssessmentPreferences>(
-    getStoredCanvasAssessmentPreferences,
-  );
+  const [initialManualCourseworkDraft, setInitialManualCourseworkDraft] = useState<ManualCourseworkItem | undefined>();
+  const [manualLectures, setManualLectures] = useState<ManualLecture[]>([]);
+  const [canvasLecturePreferences, setCanvasLecturePreferences] = useState<CanvasLecturePreferences>({});
+  const [manualCoursework, setManualCoursework] = useState<ManualCourseworkItem[]>([]);
+  const [canvasCourseworkPreferences, setCanvasCourseworkPreferences] = useState<CanvasCourseworkPreferences>({});
+  const [manualAssessments, setManualAssessments] = useState<ManualAssessmentItem[]>([]);
+  const [canvasAssessmentPreferences, setCanvasAssessmentPreferences] = useState<CanvasAssessmentPreferences>({});
   const manualLecturesRef = useRef(manualLectures);
   const canvasLecturePreferencesRef = useRef(canvasLecturePreferences);
   const manualCourseworkRef = useRef(manualCoursework);
@@ -2807,6 +3197,7 @@ export function DashboardCards({
   const [friendlyCourseCodeInput, setFriendlyCourseCodeInput] = useState('');
   const [friendlyNameInput, setFriendlyNameInput] = useState('');
   const refreshTimeoutRef = useRef<number | null>(null);
+  const dashboardSnackbarTimeoutRef = useRef<number | null>(null);
   const dateLocale = getDateLocale(language);
   const selectedManualLecture = selectedManualLectureId
     ? manualLectures.find((lecture) => lecture.id === selectedManualLectureId)
@@ -2857,6 +3248,14 @@ export function DashboardCards({
           selectedCanvasAssessment?.dueAt ??
           selectedCanvasAssessment?.startAt ??
           '',
+        startAt:
+          selectedCanvasAssessmentPreference?.startAt ??
+          selectedCanvasAssessment?.startAt ??
+          '',
+        endAt:
+          selectedCanvasAssessmentPreference?.endAt ??
+          selectedCanvasAssessment?.endAt ??
+          '',
         assessmentType:
           selectedCanvasAssessmentPreference?.assessmentType ??
           selectedCanvasAssessment?.type ??
@@ -2888,6 +3287,14 @@ export function DashboardCards({
           selectedCanvasCourseworkPreference?.dueAt ??
           selectedCanvasCoursework?.dueAt ??
           selectedCanvasCoursework?.startAt ??
+          '',
+        startAt:
+          selectedCanvasCourseworkPreference?.startAt ??
+          selectedCanvasCoursework?.startAt ??
+          '',
+        endAt:
+          selectedCanvasCourseworkPreference?.endAt ??
+          selectedCanvasCoursework?.endAt ??
           '',
         courseworkType:
           selectedCanvasCourseworkPreference?.courseworkType ??
@@ -3009,6 +3416,21 @@ export function DashboardCards({
     canvasCourseworkPreferencesRef.current = canvasCourseworkPreferences;
   }, [canvasCourseworkPreferences]);
 
+  const applyAcademyPreferenceValues = (values: AcademyPreferenceValues) => {
+    manualLecturesRef.current = values.manualLectures;
+    canvasLecturePreferencesRef.current = values.canvasLecturePreferences;
+    manualCourseworkRef.current = values.manualCoursework;
+    canvasCourseworkPreferencesRef.current = values.canvasCourseworkPreferences;
+    manualAssessmentsRef.current = values.manualAssessments;
+    canvasAssessmentPreferencesRef.current = values.canvasAssessmentPreferences;
+    setManualLectures(values.manualLectures);
+    setCanvasLecturePreferences(values.canvasLecturePreferences);
+    setManualCoursework(values.manualCoursework);
+    setCanvasCourseworkPreferences(values.canvasCourseworkPreferences);
+    setManualAssessments(values.manualAssessments);
+    setCanvasAssessmentPreferences(values.canvasAssessmentPreferences);
+  };
+
   useEffect(() => {
     if (courseSemesterOptions.length === 0) {
       return;
@@ -3102,6 +3524,7 @@ export function DashboardCards({
         dateLocale,
         activeCourseSemester,
         fallbackCourseSemester,
+        courseworkHideSettings,
       );
       const canvasRows = createCanvasCourseworkRows(
         canvasCourseworkItems,
@@ -3112,6 +3535,7 @@ export function DashboardCards({
         canvasCourses,
         activeCourseSemester,
         fallbackCourseSemester,
+        courseworkHideSettings,
       );
       const storedCanvasRows = createStoredCanvasCourseworkRows(
         canvasCourseworkPreferences,
@@ -3121,6 +3545,7 @@ export function DashboardCards({
         dateLocale,
         activeCourseSemester,
         fallbackCourseSemester,
+        courseworkHideSettings,
       );
       const manualAssessmentRows = createManualAssessmentRows(
         manualAssessments,
@@ -3129,6 +3554,7 @@ export function DashboardCards({
         dateLocale,
         activeCourseSemester,
         fallbackCourseSemester,
+        courseworkHideSettings,
       );
       const canvasAssessmentRows = createCanvasAssessmentRows(
         canvasCourseworkItems,
@@ -3139,6 +3565,7 @@ export function DashboardCards({
         canvasCourses,
         activeCourseSemester,
         fallbackCourseSemester,
+        courseworkHideSettings,
       );
       const storedCanvasAssessmentRows = createStoredCanvasAssessmentRows(
         canvasAssessmentPreferences,
@@ -3148,6 +3575,7 @@ export function DashboardCards({
         dateLocale,
         activeCourseSemester,
         fallbackCourseSemester,
+        courseworkHideSettings,
       );
       const rows = [
         ...canvasRows,
@@ -3156,7 +3584,7 @@ export function DashboardCards({
         ...storedCanvasAssessmentRows,
         ...manualRows,
         ...manualAssessmentRows,
-      ].sort(compareCourseworkDueDates);
+      ].sort(compareCourseworkCompletionThenDue);
       const isLoadingCoursework =
         canvasCourseworkLoadStatus === 'idle' ||
         canvasCourseworkLoadStatus === 'loading';
@@ -3195,6 +3623,7 @@ export function DashboardCards({
         dateLocale,
         activeCourseSemester,
         fallbackCourseSemester,
+        courseworkHideSettings,
       );
       const canvasRows = createCanvasAssessmentRows(
         canvasCourseworkItems,
@@ -3205,6 +3634,7 @@ export function DashboardCards({
         canvasCourses,
         activeCourseSemester,
         fallbackCourseSemester,
+        courseworkHideSettings,
       );
       const storedCanvasRows = createStoredCanvasAssessmentRows(
         canvasAssessmentPreferences,
@@ -3214,6 +3644,7 @@ export function DashboardCards({
         dateLocale,
         activeCourseSemester,
         fallbackCourseSemester,
+        courseworkHideSettings,
       );
       const rows = [...canvasRows, ...storedCanvasRows, ...manualRows].sort(compareCourseworkDueDates);
 
@@ -3248,6 +3679,10 @@ export function DashboardCards({
       if (refreshTimeoutRef.current) {
         window.clearTimeout(refreshTimeoutRef.current);
       }
+
+      if (dashboardSnackbarTimeoutRef.current) {
+        window.clearTimeout(dashboardSnackbarTimeoutRef.current);
+      }
     },
     [],
   );
@@ -3257,31 +3692,46 @@ export function DashboardCards({
       return undefined;
     }
 
-    const handleAcademyPreferencesUpdated = () => {
-      const nextManualLectures = getStoredManualLectures();
-      const nextCanvasLecturePreferences = getStoredCanvasLecturePreferences();
-      const nextManualCoursework = getStoredManualCoursework();
-      const nextCanvasCourseworkPreferences = getStoredCanvasCourseworkPreferences();
-      const nextManualAssessments = getStoredManualAssessments();
-      const nextCanvasAssessmentPreferences = getStoredCanvasAssessmentPreferences();
+    const handleAcademyPreferencesUpdated = (event: Event) => {
+      if (!(event instanceof CustomEvent) || !event.detail) {
+        return;
+      }
 
-      manualLecturesRef.current = nextManualLectures;
-      canvasLecturePreferencesRef.current = nextCanvasLecturePreferences;
-      manualCourseworkRef.current = nextManualCoursework;
-      canvasCourseworkPreferencesRef.current = nextCanvasCourseworkPreferences;
-      manualAssessmentsRef.current = nextManualAssessments;
-      canvasAssessmentPreferencesRef.current = nextCanvasAssessmentPreferences;
-      setManualLectures(nextManualLectures);
-      setCanvasLecturePreferences(nextCanvasLecturePreferences);
-      setManualCoursework(nextManualCoursework);
-      setCanvasCourseworkPreferences(nextCanvasCourseworkPreferences);
-      setManualAssessments(nextManualAssessments);
-      setCanvasAssessmentPreferences(nextCanvasAssessmentPreferences);
+      if (
+        event.detail &&
+        typeof event.detail === 'object' &&
+        !Array.isArray(event.detail) &&
+        'calendarSettings' in event.detail
+      ) {
+        cacheAcademyCalendarSettings((event.detail as { calendarSettings?: unknown }).calendarSettings);
+      }
+      applyAcademyPreferenceValues(event.detail as AcademyPreferenceValues);
     };
 
-    const handleOpenCourseworkDialog = () => {
+    const handleOpenCourseworkDialog = (event: Event) => {
+      const detail = event instanceof CustomEvent
+        ? event.detail as AcademyOpenCourseworkDialogDetail | undefined
+        : undefined;
+      const hasPrefilledDetail = Boolean(
+        detail?.courseCode ||
+        detail?.dueAt ||
+        detail?.startAt ||
+        detail?.title ||
+        detail?.semester,
+      );
+
       setSelectedManualCourseworkId(null);
       setSelectedCanvasCourseworkId(null);
+      setInitialManualCourseworkDraft(hasPrefilledDetail
+        ? {
+            ...createEmptyCoursework(activeCourseSemester),
+            courseCode: typeof detail?.courseCode === 'string' ? detail.courseCode : '',
+            dueAt: typeof detail?.dueAt === 'string' ? detail.dueAt : '',
+            startAt: typeof detail?.startAt === 'string' ? detail.startAt : '',
+            title: typeof detail?.title === 'string' ? detail.title : '',
+            semester: normalizeSemesterName(detail?.semester, activeCourseSemester),
+          }
+        : undefined);
       setIsCourseworkDialogOpen(true);
     };
 
@@ -3292,7 +3742,7 @@ export function DashboardCards({
       window.removeEventListener(academyPreferencesUpdatedEvent, handleAcademyPreferencesUpdated);
       window.removeEventListener(academyOpenCourseworkDialogEvent, handleOpenCourseworkDialog);
     };
-  }, [activeMode.id]);
+  }, [activeCourseSemester, activeMode.id]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -3308,104 +3758,60 @@ export function DashboardCards({
           return;
         }
 
-        const storedManualLectures = getStoredManualLectures();
-        const storedCanvasLecturePreferences = getStoredCanvasLecturePreferences();
-        const storedManualCoursework = getStoredManualCoursework();
-        const storedCanvasCourseworkPreferences = getStoredCanvasCourseworkPreferences();
-        const storedManualAssessments = getStoredManualAssessments();
-        const storedCanvasAssessmentPreferences = getStoredCanvasAssessmentPreferences();
-        const serverManualLectures = Array.isArray(preferences.manualLectures)
-          ? preferences.manualLectures as ManualLecture[]
-          : [];
-        const serverCanvasLecturePreferences = isCanvasLecturePreferences(preferences.canvasLecturePreferences)
-          ? preferences.canvasLecturePreferences
-          : {};
-        const serverManualCoursework = Array.isArray(preferences.manualCoursework)
-          ? preferences.manualCoursework as ManualCourseworkItem[]
-          : [];
-        const serverCanvasCourseworkPreferences =
-          isCanvasCourseworkPreferences(preferences.canvasCourseworkPreferences)
-            ? preferences.canvasCourseworkPreferences
-            : {};
-        const serverManualAssessments = Array.isArray(preferences.manualAssessments)
-          ? preferences.manualAssessments as ManualAssessmentItem[]
-          : [];
-        const serverCanvasAssessmentPreferences =
-          isCanvasAssessmentPreferences(preferences.canvasAssessmentPreferences)
-            ? preferences.canvasAssessmentPreferences
-            : {};
-        const hasLocalPreferences =
-          storedManualLectures.length > 0 ||
-          Object.keys(storedCanvasLecturePreferences).length > 0 ||
-          storedManualCoursework.length > 0 ||
-          Object.keys(storedCanvasCourseworkPreferences).length > 0 ||
-          storedManualAssessments.length > 0 ||
-          Object.keys(storedCanvasAssessmentPreferences).length > 0;
-        const shouldMigrateLocalPreferences = !preferences.exists && hasLocalPreferences;
-        const nextManualLectures = shouldMigrateLocalPreferences
-          ? storedManualLectures
-          : serverManualLectures;
-        const nextCanvasLecturePreferences = shouldMigrateLocalPreferences
-          ? storedCanvasLecturePreferences
-          : serverCanvasLecturePreferences;
-        const nextManualCoursework = shouldMigrateLocalPreferences
-          ? storedManualCoursework
-          : serverManualCoursework;
-        const nextCanvasCourseworkPreferences = shouldMigrateLocalPreferences
-          ? storedCanvasCourseworkPreferences
-          : serverCanvasCourseworkPreferences;
-        const nextManualAssessments = shouldMigrateLocalPreferences
-          ? storedManualAssessments
-          : serverManualAssessments;
-        const nextCanvasAssessmentPreferences = shouldMigrateLocalPreferences
-          ? storedCanvasAssessmentPreferences
-          : serverCanvasAssessmentPreferences;
-        const localSelectedSemester = getStoredSelectedAcademySemester();
+        const values = getAcademyPreferenceValues(preferences);
         const serverSelectedSemester = getSelectedSemesterFromSettings(preferences.calendarSettings);
-        const nextSelectedSemester = shouldMigrateLocalPreferences
-          ? localSelectedSemester
-          : serverSelectedSemester ?? localSelectedSemester;
-
-        manualLecturesRef.current = nextManualLectures;
-        canvasLecturePreferencesRef.current = nextCanvasLecturePreferences;
-        manualCourseworkRef.current = nextManualCoursework;
-        canvasCourseworkPreferencesRef.current = nextCanvasCourseworkPreferences;
-        manualAssessmentsRef.current = nextManualAssessments;
-        canvasAssessmentPreferencesRef.current = nextCanvasAssessmentPreferences;
-        setManualLectures(nextManualLectures);
-        setCanvasLecturePreferences(nextCanvasLecturePreferences);
-        setManualCoursework(nextManualCoursework);
-        setCanvasCourseworkPreferences(nextCanvasCourseworkPreferences);
-        setManualAssessments(nextManualAssessments);
-        setCanvasAssessmentPreferences(nextCanvasAssessmentPreferences);
-        if (nextSelectedSemester) {
-          setSelectedCourseSemester(nextSelectedSemester);
-          storeSelectedAcademySemester(nextSelectedSemester);
-        }
-        cacheAcademyPreferences(
-          nextManualLectures,
-          nextCanvasLecturePreferences,
-          nextManualCoursework,
-          nextCanvasCourseworkPreferences,
-          nextManualAssessments,
-          nextCanvasAssessmentPreferences,
-        );
-
-        if (shouldMigrateLocalPreferences) {
-          persistAcademyPreferences(
-            nextManualLectures,
-            nextCanvasLecturePreferences,
-            nextManualCoursework,
-            nextCanvasCourseworkPreferences,
-            nextManualAssessments,
-            nextCanvasAssessmentPreferences,
-          );
+        cacheAcademyCalendarSettings(preferences.calendarSettings);
+        clearLegacyAcademyPreferenceStorage();
+        applyAcademyPreferenceValues(values);
+        if (serverSelectedSemester) {
+          setSelectedCourseSemester(serverSelectedSemester);
         }
       })
       .catch(() => undefined);
 
     return () => {
       isCancelled = true;
+    };
+  }, [activeMode.id]);
+
+  useEffect(() => {
+    if (activeMode.id !== 'academy') {
+      return undefined;
+    }
+
+    let isSyncing = false;
+    const syncAcademyPreferences = () => {
+      if (isSyncing || document.visibilityState === 'hidden') {
+        return;
+      }
+
+      isSyncing = true;
+      workspaceApi
+        .getAcademyPreferences()
+        .then((preferences) => {
+          if (preferences.exists) {
+            cacheAcademyPreferencesResponse(preferences);
+          }
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          isSyncing = false;
+        });
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        syncAcademyPreferences();
+      }
+    };
+
+    window.addEventListener('focus', syncAcademyPreferences);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    const syncInterval = window.setInterval(syncAcademyPreferences, 10000);
+
+    return () => {
+      window.removeEventListener('focus', syncAcademyPreferences);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.clearInterval(syncInterval);
     };
   }, [activeMode.id]);
 
@@ -3808,9 +4214,11 @@ export function DashboardCards({
           courseworkType: preference.courseworkType ?? item.type,
           dueAt: item.dueAt ?? item.startAt ?? preference.dueAt,
           htmlUrl: item.htmlUrl,
+          completedAt: item.isSubmitted ? item.submittedAt ?? preference.completedAt : preference.completedAt,
           isSubmitted: Boolean(item.isSubmitted),
           originalCourseCode: item.courseCode?.trim() || courseCode,
           semester,
+          submittedAt: item.submittedAt,
           submissionType: preference.submissionType ?? item.submissionTypes?.[0] ?? formatSubmissionType(item.type),
           title: preference.title ?? item.title,
         });
@@ -3850,9 +4258,11 @@ export function DashboardCards({
           courseName: item.courseName,
           dueAt: item.dueAt ?? item.startAt ?? preference.dueAt,
           htmlUrl: item.htmlUrl,
+          completedAt: item.isSubmitted ? item.submittedAt ?? preference.completedAt : preference.completedAt,
           isSubmitted: Boolean(item.isSubmitted),
           originalCourseCode: item.courseCode?.trim() || courseCode,
           semester,
+          submittedAt: item.submittedAt,
           title: preference.title ?? item.title,
         });
 
@@ -3883,7 +4293,11 @@ export function DashboardCards({
 
   const handleDeleteManualLecture = (lecture: ManualLecture, shouldDeleteCoursework: boolean) => {
     const archivedCanvasCourseId = findArchivedCanvasCourseId(lecture, canvasLecturePreferencesRef.current);
-    const nextManualLectures = manualLecturesRef.current.filter((storedLecture) => storedLecture.id !== lecture.id);
+    const nextManualLectures = manualLecturesRef.current.map((storedLecture) => (
+      storedLecture.id === lecture.id
+        ? { ...storedLecture, hidden: true }
+        : storedLecture
+    ));
     const nextCanvasLecturePreferences = { ...canvasLecturePreferencesRef.current };
     let nextManualCoursework = manualCourseworkRef.current;
     let nextCanvasCourseworkPreferences = canvasCourseworkPreferencesRef.current;
@@ -3891,25 +4305,39 @@ export function DashboardCards({
     let nextCanvasAssessmentPreferences = canvasAssessmentPreferencesRef.current;
 
     if (archivedCanvasCourseId) {
-      delete nextCanvasLecturePreferences[archivedCanvasCourseId];
+      nextCanvasLecturePreferences[archivedCanvasCourseId] = {
+        ...(nextCanvasLecturePreferences[archivedCanvasCourseId] ?? {}),
+        archivedAsManualLectureId: lecture.id,
+        hidden: true,
+      };
     }
 
     if (shouldDeleteCoursework) {
-      nextManualCoursework = manualCourseworkRef.current.filter((item) => (
-        !isManualCourseworkForLecture(item, lecture, fallbackCourseSemester)
+      nextManualCoursework = manualCourseworkRef.current.map((item) => (
+        isManualCourseworkForLecture(item, lecture, fallbackCourseSemester)
+          ? { ...item, hidden: true }
+          : item
       ));
-      nextManualAssessments = manualAssessmentsRef.current.filter((item) => (
-        !isManualCourseworkForLecture(item, lecture, fallbackCourseSemester)
+      nextManualAssessments = manualAssessmentsRef.current.map((item) => (
+        isManualCourseworkForLecture(item, lecture, fallbackCourseSemester)
+          ? { ...item, hidden: true }
+          : item
       ));
       nextCanvasCourseworkPreferences = Object.fromEntries(
-        Object.entries(canvasCourseworkPreferencesRef.current).filter(([, preference]) => (
-          !isCanvasCourseworkPreferenceForLecture(preference, lecture, archivedCanvasCourseId, fallbackCourseSemester)
-        )),
+        Object.entries(canvasCourseworkPreferencesRef.current).map(([courseworkId, preference]) => [
+          courseworkId,
+          isCanvasCourseworkPreferenceForLecture(preference, lecture, archivedCanvasCourseId, fallbackCourseSemester)
+            ? { ...preference, hidden: true }
+            : preference,
+        ]),
       );
       nextCanvasAssessmentPreferences = Object.fromEntries(
-        Object.entries(canvasAssessmentPreferencesRef.current).filter(([, preference]) => (
-          !isCanvasCourseworkPreferenceForLecture(preference, lecture, archivedCanvasCourseId, fallbackCourseSemester)
-        )),
+        Object.entries(canvasAssessmentPreferencesRef.current).map(([assessmentId, preference]) => [
+          assessmentId,
+          isCanvasCourseworkPreferenceForLecture(preference, lecture, archivedCanvasCourseId, fallbackCourseSemester)
+            ? { ...preference, hidden: true }
+            : preference,
+        ]),
       );
     }
 
@@ -3976,13 +4404,20 @@ export function DashboardCards({
         semester: normalizeSemesterName(coursework.semester, activeCourseSemester),
       },
     ]);
+    setInitialManualCourseworkDraft(undefined);
     setIsCourseworkDialogOpen(false);
   };
 
   const handleUpdateManualCoursework = (updatedCoursework: ManualCourseworkItem) => {
     updateStoredManualCoursework((currentCoursework) => currentCoursework.map((coursework) => (
       coursework.id === updatedCoursework.id
-        ? { ...updatedCoursework, semester: normalizeSemesterName(updatedCoursework.semester, activeCourseSemester) }
+        ? {
+            ...updatedCoursework,
+            completedAt: updatedCoursework.completed
+              ? coursework.completedAt ?? new Date().toISOString()
+              : undefined,
+            semester: normalizeSemesterName(updatedCoursework.semester, activeCourseSemester),
+          }
         : coursework
     )));
     setSelectedManualCourseworkId(null);
@@ -3993,20 +4428,29 @@ export function DashboardCards({
       return;
     }
 
-    updateStoredCanvasCourseworkPreferences((currentPreferences) => ({
-      ...currentPreferences,
-      [selectedCanvasCourseworkId]: {
-        ...(currentPreferences[selectedCanvasCourseworkId] ?? {}),
-        chipColor: updatedCoursework.chipColor,
-        completed: updatedCoursework.completed,
-        courseCode: updatedCoursework.courseCode || undefined,
-        courseworkType: updatedCoursework.courseworkType || undefined,
-        dueAt: updatedCoursework.dueAt || undefined,
-        semester: normalizeSemesterName(updatedCoursework.semester, activeCourseSemester),
-        submissionType: updatedCoursework.submissionType || undefined,
-        title: updatedCoursework.title || undefined,
-      },
-    }));
+    updateStoredCanvasCourseworkPreferences((currentPreferences) => {
+      const currentItemPreferences = currentPreferences[selectedCanvasCourseworkId] ?? {};
+
+      return {
+        ...currentPreferences,
+        [selectedCanvasCourseworkId]: {
+          ...currentItemPreferences,
+          chipColor: updatedCoursework.chipColor,
+          completed: updatedCoursework.completed,
+          completedAt: updatedCoursework.completed
+            ? currentItemPreferences.completedAt ?? new Date().toISOString()
+            : undefined,
+          courseCode: updatedCoursework.courseCode || undefined,
+          courseworkType: updatedCoursework.courseworkType || undefined,
+          dueAt: updatedCoursework.dueAt || undefined,
+          endAt: updatedCoursework.endAt || undefined,
+          semester: normalizeSemesterName(updatedCoursework.semester, activeCourseSemester),
+          startAt: updatedCoursework.startAt || undefined,
+          submissionType: updatedCoursework.submissionType || undefined,
+          title: updatedCoursework.title || undefined,
+        },
+      };
+    });
     setSelectedCanvasCourseworkId(null);
   };
 
@@ -4021,7 +4465,13 @@ export function DashboardCards({
   const handleUpdateManualAssessment = (updatedAssessment: ManualAssessmentItem) => {
     updateStoredManualAssessments((currentAssessments) => currentAssessments.map((assessment) => (
       assessment.id === updatedAssessment.id
-        ? { ...updatedAssessment, semester: normalizeSemesterName(updatedAssessment.semester, activeCourseSemester) }
+        ? {
+            ...updatedAssessment,
+            completedAt: updatedAssessment.completed
+              ? assessment.completedAt ?? new Date().toISOString()
+              : undefined,
+            semester: normalizeSemesterName(updatedAssessment.semester, activeCourseSemester),
+          }
         : assessment
     )));
     setSelectedManualAssessmentId(null);
@@ -4032,18 +4482,27 @@ export function DashboardCards({
       return;
     }
 
-    updateStoredCanvasAssessmentPreferences((currentPreferences) => ({
-      ...currentPreferences,
-      [selectedCanvasAssessmentId]: {
-        ...(currentPreferences[selectedCanvasAssessmentId] ?? {}),
-        assessmentType: updatedAssessment.assessmentType || undefined,
-        completed: updatedAssessment.completed,
-        courseCode: updatedAssessment.courseCode || undefined,
-        dueAt: updatedAssessment.dueAt || undefined,
-        semester: normalizeSemesterName(updatedAssessment.semester, activeCourseSemester),
-        title: updatedAssessment.title || undefined,
-      },
-    }));
+    updateStoredCanvasAssessmentPreferences((currentPreferences) => {
+      const currentItemPreferences = currentPreferences[selectedCanvasAssessmentId] ?? {};
+
+      return {
+        ...currentPreferences,
+        [selectedCanvasAssessmentId]: {
+          ...currentItemPreferences,
+          assessmentType: updatedAssessment.assessmentType || undefined,
+          completed: updatedAssessment.completed,
+          completedAt: updatedAssessment.completed
+            ? currentItemPreferences.completedAt ?? new Date().toISOString()
+            : undefined,
+          courseCode: updatedAssessment.courseCode || undefined,
+          dueAt: updatedAssessment.dueAt || undefined,
+          endAt: updatedAssessment.endAt || undefined,
+          semester: normalizeSemesterName(updatedAssessment.semester, activeCourseSemester),
+          startAt: updatedAssessment.startAt || undefined,
+          title: updatedAssessment.title || undefined,
+        },
+      };
+    });
     setSelectedCanvasAssessmentId(null);
   };
 
@@ -4104,6 +4563,25 @@ export function DashboardCards({
   };
 
   const handleOpenLecture = (row: RenderableDashboardRow) => {
+    if (row.lectureSource === 'canvas' && row.canvasCourseId) {
+      onOpenCourse?.(`canvas:${row.canvasCourseId}`, row.href ?? null);
+      return;
+    }
+
+    if (row.manualLectureId) {
+      const manualLecture = manualLecturesRef.current.find((lecture) => lecture.id === row.manualLectureId);
+      const lectureWebsiteUrl = manualLecture
+        ? getManualLectureLinkUrl(manualLecture, 'lecture-website')
+        : undefined;
+
+      onOpenCourse?.(`manual:${row.manualLectureId}`, lectureWebsiteUrl ?? null);
+      return;
+    }
+
+    onOpenCourse?.(null, null);
+  };
+
+  const handleOpenLectureDetails = (row: RenderableDashboardRow) => {
     if (row.lectureSource === 'canvas' && row.canvasCourseId) {
       setSelectedCanvasCourseId(row.canvasCourseId);
       return;
@@ -4252,6 +4730,35 @@ export function DashboardCards({
     updateStoredManualCoursework((currentCoursework) => currentCoursework.map((coursework) => (
       coursework.id === row.manualCourseworkId
         ? { ...coursework, starred: !coursework.starred }
+      : coursework
+    )));
+  };
+
+  const handleMoveCourseworkDueDate = (row: RenderableDashboardRow, target: 'today' | 'tomorrow') => {
+    if (row.isCanvasSubmitted) {
+      return;
+    }
+
+    const dueAt = getCourseworkDueAtForTargetDay(target);
+
+    if (row.courseworkSource === 'canvas' && row.canvasCourseworkId) {
+      updateStoredCanvasCourseworkPreferences((currentPreferences) => ({
+        ...currentPreferences,
+        [row.canvasCourseworkId!]: {
+          ...(currentPreferences[row.canvasCourseworkId!] ?? {}),
+          dueAt,
+        },
+      }));
+      return;
+    }
+
+    if (!row.manualCourseworkId) {
+      return;
+    }
+
+    updateStoredManualCoursework((currentCoursework) => currentCoursework.map((coursework) => (
+      coursework.id === row.manualCourseworkId
+        ? { ...coursework, dueAt }
         : coursework
     )));
   };
@@ -4330,6 +4837,35 @@ export function DashboardCards({
     updateStoredManualAssessments((currentAssessments) => currentAssessments.map((assessment) => (
       assessment.id === row.manualAssessmentId
         ? { ...assessment, starred: !assessment.starred }
+      : assessment
+    )));
+  };
+
+  const handleMoveAssessmentDueDate = (row: RenderableDashboardRow, target: 'today' | 'tomorrow') => {
+    if (row.isCanvasSubmitted) {
+      return;
+    }
+
+    const dueAt = getCourseworkDueAtForTargetDay(target);
+
+    if (row.assessmentSource === 'canvas' && row.canvasAssessmentId) {
+      updateStoredCanvasAssessmentPreferences((currentPreferences) => ({
+        ...currentPreferences,
+        [row.canvasAssessmentId!]: {
+          ...(currentPreferences[row.canvasAssessmentId!] ?? {}),
+          dueAt,
+        },
+      }));
+      return;
+    }
+
+    if (!row.manualAssessmentId) {
+      return;
+    }
+
+    updateStoredManualAssessments((currentAssessments) => currentAssessments.map((assessment) => (
+      assessment.id === row.manualAssessmentId
+        ? { ...assessment, dueAt }
         : assessment
     )));
   };
@@ -4339,15 +4875,19 @@ export function DashboardCards({
       return;
     }
 
+    const checkedAt = new Date().toISOString();
+
     if (row.courseworkSource === 'canvas' && row.canvasCourseworkId) {
       updateStoredCanvasCourseworkPreferences((currentPreferences) => {
         const currentItemPreferences = currentPreferences[row.canvasCourseworkId!] ?? {};
+        const nextCompleted = !currentItemPreferences.completed;
 
         return {
           ...currentPreferences,
           [row.canvasCourseworkId!]: {
             ...currentItemPreferences,
-            completed: !currentItemPreferences.completed,
+            completed: nextCompleted,
+            completedAt: nextCompleted ? checkedAt : undefined,
           },
         };
       });
@@ -4360,7 +4900,11 @@ export function DashboardCards({
 
     updateStoredManualCoursework((currentCoursework) => currentCoursework.map((coursework) => (
       coursework.id === row.manualCourseworkId
-        ? { ...coursework, completed: !coursework.completed }
+        ? {
+            ...coursework,
+            completed: !coursework.completed,
+            completedAt: coursework.completed ? undefined : checkedAt,
+          }
         : coursework
     )));
   };
@@ -4370,15 +4914,19 @@ export function DashboardCards({
       return;
     }
 
+    const checkedAt = new Date().toISOString();
+
     if (row.assessmentSource === 'canvas' && row.canvasAssessmentId) {
       updateStoredCanvasAssessmentPreferences((currentPreferences) => {
         const currentItemPreferences = currentPreferences[row.canvasAssessmentId!] ?? {};
+        const nextCompleted = !currentItemPreferences.completed;
 
         return {
           ...currentPreferences,
           [row.canvasAssessmentId!]: {
             ...currentItemPreferences,
-            completed: !currentItemPreferences.completed,
+            completed: nextCompleted,
+            completedAt: nextCompleted ? checkedAt : undefined,
           },
         };
       });
@@ -4391,7 +4939,11 @@ export function DashboardCards({
 
     updateStoredManualAssessments((currentAssessments) => currentAssessments.map((assessment) => (
       assessment.id === row.manualAssessmentId
-        ? { ...assessment, completed: !assessment.completed }
+        ? {
+            ...assessment,
+            completed: !assessment.completed,
+            completedAt: assessment.completed ? undefined : checkedAt,
+          }
         : assessment
     )));
   };
@@ -4412,8 +4964,10 @@ export function DashboardCards({
       return;
     }
 
-    updateStoredManualCoursework((currentCoursework) => currentCoursework.filter((coursework) => (
-      coursework.id !== row.manualCourseworkId
+    updateStoredManualCoursework((currentCoursework) => currentCoursework.map((coursework) => (
+      coursework.id === row.manualCourseworkId
+        ? { ...coursework, hidden: true }
+        : coursework
     )));
   };
 
@@ -4433,8 +4987,10 @@ export function DashboardCards({
       return;
     }
 
-    updateStoredManualAssessments((currentAssessments) => currentAssessments.filter((assessment) => (
-      assessment.id !== row.manualAssessmentId
+    updateStoredManualAssessments((currentAssessments) => currentAssessments.map((assessment) => (
+      assessment.id === row.manualAssessmentId
+        ? { ...assessment, hidden: true }
+        : assessment
     )));
   };
 
@@ -4472,6 +5028,101 @@ export function DashboardCards({
       setIsRefreshingMessages(false);
       refreshTimeoutRef.current = null;
     }, 700);
+  };
+
+  const showDashboardSnackbar = (snackbar: DashboardSnackbar) => {
+    if (dashboardSnackbarTimeoutRef.current) {
+      window.clearTimeout(dashboardSnackbarTimeoutRef.current);
+    }
+
+    setDashboardSnackbar(snackbar);
+    dashboardSnackbarTimeoutRef.current = window.setTimeout(() => {
+      setDashboardSnackbar(null);
+      dashboardSnackbarTimeoutRef.current = null;
+    }, 2800);
+  };
+
+  const isAcademyDashboardRefreshing =
+    isAcademyDashboardRefreshInProgress ||
+    canvasCourseLoadStatus === 'loading' ||
+    canvasCourseworkLoadStatus === 'loading';
+
+  const handleRefreshAcademyDashboard = async () => {
+    if (activeMode.id !== 'academy') {
+      return;
+    }
+
+    setIsAcademyDashboardRefreshInProgress(true);
+    setCanvasCourseLoadStatus('loading');
+    setCanvasCourseworkLoadStatus('loading');
+
+    const externalRefreshTasks: Promise<unknown>[] = [];
+
+    window.dispatchEvent(new CustomEvent<AcademyRefreshRequestedDetail>(academyRefreshRequestedEvent, {
+      detail: {
+        registerTask: (task) => {
+          externalRefreshTasks.push(task);
+        },
+      },
+    }));
+
+    const preferencesTask = workspaceApi.getAcademyPreferences();
+    const coursesTask = workspaceApi.getCanvasCourses(20);
+    const courseworkTask = workspaceApi.getCanvasCalendarItems({
+      endDate: getFutureDateString(120),
+      pageSize: 100,
+      startDate: getPastDateString(30),
+    });
+
+    const [preferencesResult, coursesResult, courseworkResult, ...externalResults] = await Promise.allSettled([
+      preferencesTask,
+      coursesTask,
+      courseworkTask,
+      ...externalRefreshTasks,
+    ]);
+
+    if (preferencesResult.status === 'fulfilled') {
+      const values = getAcademyPreferenceValues(preferencesResult.value);
+      const serverSelectedSemester = getSelectedSemesterFromSettings(preferencesResult.value.calendarSettings);
+
+      cacheAcademyCalendarSettings(preferencesResult.value.calendarSettings);
+      clearLegacyAcademyPreferenceStorage();
+      applyAcademyPreferenceValues(values);
+      if (serverSelectedSemester) {
+        setSelectedCourseSemester(serverSelectedSemester);
+      }
+    }
+
+    if (coursesResult.status === 'fulfilled') {
+      setCanvasCourses(coursesResult.value.courses);
+      setCanvasTermName(coursesResult.value.termName);
+      setCanvasCourseLoadStatus('loaded');
+    } else {
+      setCanvasCourses(null);
+      setCanvasTermName(undefined);
+      setCanvasCourseLoadStatus('failed');
+    }
+
+    if (courseworkResult.status === 'fulfilled') {
+      setCanvasCourseworkItems(courseworkResult.value.items);
+      setCanvasCourseworkLoadStatus('loaded');
+    } else {
+      setCanvasCourseworkItems([]);
+      setCanvasCourseworkLoadStatus('failed');
+    }
+
+    setIsAcademyDashboardRefreshInProgress(false);
+
+    if (
+      preferencesResult.status === 'fulfilled' &&
+      coursesResult.status === 'fulfilled' &&
+      courseworkResult.status === 'fulfilled' &&
+      externalResults.every((result) => result.status === 'fulfilled')
+    ) {
+      showDashboardSnackbar({ message: dictionary.academyDashboardRefreshSuccess, tone: 'success' });
+    } else {
+      showDashboardSnackbar({ message: dictionary.academyDashboardRefreshFailed, tone: 'error' });
+    }
   };
 
   const renderCardAction = (card: DashboardCardConfig) => {
@@ -4744,7 +5395,10 @@ export function DashboardCards({
                   onOpenCoursework={handleOpenCoursework}
                   onOpenCourseworkLink={handleOpenCourseworkLink}
                   onOpenLecture={handleOpenLecture}
+                  onOpenLectureDetails={handleOpenLectureDetails}
                   onOpenLectureFriendlyName={handleOpenLectureFriendlyName}
+                  onMoveAssessmentDueDate={handleMoveAssessmentDueDate}
+                  onMoveCourseworkDueDate={handleMoveCourseworkDueDate}
                   onRenameCoursework={handleRenameCoursework}
                   onRemoveAssessment={handleRemoveAssessment}
                   onRemoveCoursework={handleRemoveCoursework}
@@ -4761,6 +5415,41 @@ export function DashboardCards({
           );
         })}
       </section>
+      {activeMode.id === 'academy' ? (
+        <>
+          {dashboardSnackbar ? (
+            <div
+              aria-live="polite"
+              className={cn(
+                'fixed bottom-20 right-5 z-50 flex max-w-[min(360px,calc(100vw-2.5rem))] items-center gap-2 rounded-lg border px-3 py-2 text-sm font-black shadow-lg max-[520px]:bottom-36',
+                dashboardSnackbar.tone === 'success'
+                  ? 'border-emerald-500/35 bg-emerald-600 text-white'
+                  : 'border-red-500/35 bg-red-600 text-white',
+              )}
+              role="status"
+            >
+              {dashboardSnackbar.tone === 'success' ? (
+                <CheckCircle2 className="size-4 shrink-0" />
+              ) : (
+                <CircleAlert className="size-4 shrink-0" />
+              )}
+              <span className="min-w-0 truncate">{dashboardSnackbar.message}</span>
+            </div>
+          ) : null}
+          <Button
+            aria-label={dictionary.academyDashboardRefresh}
+            className="fixed bottom-5 right-5 z-40 size-12 rounded-full border-border bg-background/90 text-muted-foreground shadow-lg backdrop-blur hover:bg-muted hover:text-foreground max-[520px]:bottom-20"
+            disabled={isAcademyDashboardRefreshing}
+            onClick={handleRefreshAcademyDashboard}
+            size="icon"
+            title={dictionary.academyDashboardRefresh}
+            type="button"
+            variant="outline"
+          >
+            <RefreshCw className={cn('size-5', isAcademyDashboardRefreshing && 'animate-spin')} />
+          </Button>
+        </>
+      ) : null}
       <ManualLectureDialog
         onAddLecture={handleAddManualLecture}
         onOpenChange={setIsManualLectureDialogOpen}
@@ -4770,7 +5459,13 @@ export function DashboardCards({
       />
       <CourseworkDialog
         courseOptions={courseworkCourseOptions}
-        onOpenChange={setIsCourseworkDialogOpen}
+        initialCoursework={initialManualCourseworkDraft}
+        onOpenChange={(isOpen) => {
+          setIsCourseworkDialogOpen(isOpen);
+          if (!isOpen) {
+            setInitialManualCourseworkDraft(undefined);
+          }
+        }}
         onSave={handleAddManualCoursework}
         open={isCourseworkDialogOpen}
         selectedSemester={activeCourseSemester}

@@ -27,7 +27,7 @@ export function Sidebar({ activeItemId, collapsed, onSelectItem, onToggleCollaps
   const ToggleIcon = collapsed ? PanelLeftOpen : PanelLeftClose;
 
   return (
-    <Card className="sticky top-[92px] hidden min-h-[calc(100vh-110px)] w-full min-w-0 self-start overflow-hidden rounded-xl bg-card shadow-none lg:block xl:static xl:flex xl:h-full xl:min-h-0 xl:flex-col xl:self-stretch">
+    <Card className="sticky top-[calc(var(--top-bar-height)_+_0.75rem)] hidden h-[calc(100vh_-_var(--top-bar-height)_-_1.5rem)] min-h-0 w-full min-w-0 self-start overflow-hidden rounded-xl bg-card shadow-none lg:flex lg:flex-col lg:self-start">
       <CardHeader className={cn('px-3', collapsed && 'px-2')}>
         <Button
           aria-label={collapsed ? dictionary.workspaceExpandSidebar : dictionary.workspaceCollapseSidebar}
@@ -47,8 +47,8 @@ export function Sidebar({ activeItemId, collapsed, onSelectItem, onToggleCollaps
           <ToggleIcon className={cn('size-4 shrink-0 text-muted-foreground', collapsed && 'hidden')} />
         </Button>
       </CardHeader>
-      <CardContent className={cn('px-3 xl:min-h-0 xl:flex-1', collapsed && 'px-2')}>
-        <ScrollArea className={cn('h-[calc(100vh-190px)] xl:h-full', collapsed ? 'pr-0' : 'pr-2')}>
+      <CardContent className={cn('min-h-0 flex-1 px-3', collapsed && 'px-2')}>
+        <ScrollArea className={cn('h-full', collapsed ? 'pr-0' : 'pr-2')}>
           {activeMode.sidebar.map((section) => (
             <div className="mb-5" key={section.id}>
               <div

@@ -19,6 +19,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEven
 
 import { workspaceApi } from '../api/workspaceApi';
 import type {
+  AcademyPreferences,
   CanvasCalendarItem,
   CanvasCourse,
   CanvasCourseContent,
@@ -185,6 +186,10 @@ function readStoredJson<T>(key: string, fallback: T): T {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
 function getStoredManualLectures() {
   const storedManualLectures = readStoredJson<unknown>(manualLecturesStorageKey, []);
 
@@ -205,6 +210,34 @@ function getStoredCanvasLecturePreferences() {
 
 function isCanvasLecturePreferences(value: unknown): value is CanvasLecturePreferences {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function getManualLecturesFromAcademyPreferences(preferences: Pick<AcademyPreferences, 'manualLectures'>) {
+  return Array.isArray(preferences.manualLectures)
+    ? preferences.manualLectures as ManualLecture[]
+    : [];
+}
+
+function getCanvasLecturePreferencesFromAcademyPreferences(
+  preferences: Pick<AcademyPreferences, 'canvasLecturePreferences'>,
+) {
+  return isCanvasLecturePreferences(preferences.canvasLecturePreferences)
+    ? preferences.canvasLecturePreferences
+    : {};
+}
+
+function getSelectedSemesterFromCalendarSettings(settings: unknown) {
+  if (!isRecord(settings)) {
+    return undefined;
+  }
+
+  return typeof settings.selectedSemester === 'string'
+    ? normalizeSemesterName(settings.selectedSemester)
+    : undefined;
+}
+
+function getSelectedSemesterFromAcademyPreferences(preferences: Pick<AcademyPreferences, 'calendarSettings'>) {
+  return getSelectedSemesterFromCalendarSettings(preferences.calendarSettings);
 }
 
 function normalizeSemesterName(value?: string, fallback = defaultAcademySemester) {
@@ -245,7 +278,6 @@ function storeSelectedAcademySemester(semester: string) {
       selectedSemester: normalizeSemesterName(semester),
     }),
   );
-  window.dispatchEvent(new Event(academyPreferencesUpdatedEvent));
 }
 
 function getScheduleEntriesFromSchedule(schedule?: ManualLectureSchedule): ManualLectureScheduleEntry[] {
@@ -333,19 +365,50 @@ function countNotificationsByCourse(items: CanvasCalendarItem[]) {
   }, {});
 }
 
+function normalizeCourseMatchValue(value?: string) {
+  return value?.replace(/\s+/g, '').trim().toLowerCase() || '';
+}
+
+function getCanvasPreferenceForCourse(course: CanvasCourse, preferences: CanvasLecturePreferences) {
+  const courseId = String(course.id ?? '');
+  const directPreference = preferences[courseId];
+
+  if (directPreference) {
+    return directPreference;
+  }
+
+  const normalizedCourseCode = normalizeCourseMatchValue(course.courseCode);
+  const normalizedCourseName = normalizeCourseMatchValue(course.name);
+
+  return Object.values(preferences).find((preference) => {
+    const preferenceCodes = [
+      preference.originalCourseCode,
+      preference.friendlyCourseCode,
+      preference.courseName,
+      preference.friendlyName,
+    ].map(normalizeCourseMatchValue);
+
+    return Boolean(
+      normalizedCourseCode && preferenceCodes.includes(normalizedCourseCode) ||
+      normalizedCourseName && preferenceCodes.includes(normalizedCourseName),
+    );
+  }) ?? {};
+}
+
 function createCanvasRows(
   courses: CanvasCourse[],
   preferences: CanvasLecturePreferences,
   notificationCounts: Record<string, number>,
 ): CourseOverviewRow[] {
   return courses.map((course) => {
-    const preference = preferences[course.id] ?? {};
+    const courseId = String(course.id ?? '');
+    const preference = getCanvasPreferenceForCourse(course, preferences);
     const courseCode = preference.friendlyCourseCode?.trim() || course.courseCode?.trim() || course.id;
     const semester = normalizeSemesterName(preference.semester ?? preference.termName ?? course.termName);
 
     return {
-      id: `canvas:${course.id}`,
-      canvasCourseId: course.id,
+      id: `canvas:${courseId}`,
+      canvasCourseId: courseId,
       name: preference.friendlyName?.trim() || course.name,
       courseCode,
       credits: preference.credits?.trim() || '',
@@ -353,8 +416,8 @@ function createCanvasRows(
       labSection: formatSection(preference.labSection),
       tutorialSection: formatSection(preference.tutorialSection),
       grade: formatCanvasGrade(course),
-      notificationCount: notificationCounts[course.id] ?? 0,
-      color: preference.chipColor ?? 'green',
+      notificationCount: notificationCounts[courseId] ?? 0,
+      color: preference.chipColor ?? 'blue',
       hidden: Boolean(preference.hidden),
       semester,
       source: 'canvas',
@@ -375,7 +438,7 @@ function createManualRows(lectures: ManualLecture[]): CourseOverviewRow[] {
     tutorialSection: formatSection(lecture.tutorialSection || getManualSection(lecture, 'tutorial')),
     grade: '--',
     notificationCount: 0,
-    color: lecture.chipColor ?? 'green',
+    color: lecture.chipColor ?? 'blue',
     hidden: Boolean(lecture.hidden),
     semester: normalizeSemesterName(lecture.semester),
     source: 'manual',
@@ -433,7 +496,7 @@ function createManualLectureFromStoredCanvasPreference(
       entries: [],
     },
     links,
-    chipColor: preference.chipColor ?? 'green',
+    chipColor: preference.chipColor ?? 'blue',
     friendlyCourseCode: preference.friendlyCourseCode,
     friendlyName: preference.friendlyName,
     hidden: preference.hidden,
@@ -447,7 +510,7 @@ function createStoredCanvasManualRows(
   liveCourses: CanvasCourse[],
   manualLectures: ManualLecture[],
 ): CourseOverviewRow[] {
-  const liveCourseIds = new Set(liveCourses.map((course) => course.id));
+  const liveCourseIds = new Set(liveCourses.map((course) => String(course.id ?? '')));
 
   return Object.entries(preferences)
     .filter(([courseId, preference]) => (
@@ -3026,10 +3089,44 @@ export function CourseOverviewView({
   const [canvasCourseContentStatus, setCanvasCourseContentStatus] = useState<LoadStatus>('idle');
 
   useEffect(() => {
-    const handleAcademyPreferencesUpdated = () => {
-      setManualLectures(getStoredManualLectures());
-      setCanvasLecturePreferences(getStoredCanvasLecturePreferences());
-      setSelectedSemester(getStoredSelectedAcademySemester());
+    const applyAcademyPreferences = (preferences: AcademyPreferences) => {
+      setManualLectures(getManualLecturesFromAcademyPreferences(preferences));
+      setCanvasLecturePreferences(getCanvasLecturePreferencesFromAcademyPreferences(preferences));
+
+      const preferenceSemester = getSelectedSemesterFromAcademyPreferences(preferences);
+
+      if (preferenceSemester) {
+        setSelectedSemester(preferenceSemester);
+      }
+    };
+
+    const reloadAcademyPreferences = () => {
+      workspaceApi
+        .getAcademyPreferences()
+        .then(applyAcademyPreferences)
+        .catch(() => undefined);
+    };
+
+    const handleAcademyPreferencesUpdated = (event: Event) => {
+      if (event instanceof CustomEvent && isRecord(event.detail)) {
+        if (Array.isArray(event.detail.manualLectures)) {
+          setManualLectures(event.detail.manualLectures as ManualLecture[]);
+        }
+
+        if (isCanvasLecturePreferences(event.detail.canvasLecturePreferences)) {
+          setCanvasLecturePreferences(event.detail.canvasLecturePreferences);
+        }
+
+        const selectedSemesterFromEvent = getSelectedSemesterFromCalendarSettings(event.detail.calendarSettings);
+
+        if (selectedSemesterFromEvent) {
+          setSelectedSemester(selectedSemesterFromEvent);
+        }
+
+        return;
+      }
+
+      reloadAcademyPreferences();
     };
 
     window.addEventListener(academyPreferencesUpdatedEvent, handleAcademyPreferencesUpdated);
@@ -3057,12 +3154,14 @@ export function CourseOverviewView({
           return;
         }
 
-        setManualLectures(Array.isArray(preferences.manualLectures)
-          ? preferences.manualLectures as ManualLecture[]
-          : getStoredManualLectures());
-        setCanvasLecturePreferences(isCanvasLecturePreferences(preferences.canvasLecturePreferences)
-          ? preferences.canvasLecturePreferences
-          : getStoredCanvasLecturePreferences());
+        setManualLectures(getManualLecturesFromAcademyPreferences(preferences));
+        setCanvasLecturePreferences(getCanvasLecturePreferencesFromAcademyPreferences(preferences));
+
+        const preferenceSemester = getSelectedSemesterFromAcademyPreferences(preferences);
+
+        if (preferenceSemester) {
+          setSelectedSemester(preferenceSemester);
+        }
       })
       .catch(() => {
         if (isCancelled) {
@@ -3144,11 +3243,43 @@ export function CourseOverviewView({
     : undefined;
   const isLoading = courseLoadStatus === 'loading' && rows.length === 0;
   const isUnavailable = courseLoadStatus === 'failed' && rows.length === 0;
+  const persistSelectedSemester = (semester: string) => {
+    const normalizedSemester = normalizeSemesterName(semester);
+
+    storeSelectedAcademySemester(normalizedSemester);
+
+    void workspaceApi
+      .saveAcademyPreferences({
+        manualLectures,
+        canvasLecturePreferences,
+        manualCoursework: [],
+        canvasCourseworkPreferences: {},
+        manualAssessments: [],
+        canvasAssessmentPreferences: {},
+        calendarSettings: { selectedSemester: normalizedSemester },
+      })
+      .then((preferences) => {
+        const preferenceSemester = getSelectedSemesterFromAcademyPreferences(preferences);
+
+        if (preferenceSemester) {
+          setSelectedSemester(preferenceSemester);
+        }
+
+        window.dispatchEvent(new CustomEvent(academyPreferencesUpdatedEvent, {
+          detail: {
+            calendarSettings: preferences.calendarSettings,
+            canvasLecturePreferences: preferences.canvasLecturePreferences,
+            manualLectures: preferences.manualLectures,
+          },
+        }));
+      })
+      .catch(() => undefined);
+  };
   const handleSelectSemester = (semester: string) => {
     const normalizedSemester = normalizeSemesterName(semester);
 
     setSelectedSemester(normalizedSemester);
-    storeSelectedAcademySemester(normalizedSemester);
+    persistSelectedSemester(normalizedSemester);
   };
 
   useEffect(() => {
@@ -3160,7 +3291,7 @@ export function CourseOverviewView({
 
     if (selectedRowSemester !== normalizeSemesterName(selectedSemester)) {
       setSelectedSemester(selectedRowSemester);
-      storeSelectedAcademySemester(selectedRowSemester);
+      persistSelectedSemester(selectedRowSemester);
     }
   }, [selectedCourseRow, selectedSemester]);
 
@@ -3234,21 +3365,21 @@ export function CourseOverviewView({
   }
 
   return (
-    <Card className="min-h-[520px] rounded-xl shadow-none" size="sm">
-      <CardHeader className="border-b">
+    <Card className="min-h-[520px] rounded-xl shadow-none max-[520px]:min-h-0 max-[520px]:rounded-none max-[520px]:border-0 max-[520px]:bg-transparent max-[520px]:py-0" size="sm">
+      <CardHeader className="border-b max-[520px]:grid-cols-[minmax(0,1fr)_auto] max-[520px]:gap-2 max-[520px]:rounded-none max-[520px]:border-b max-[520px]:px-3 max-[520px]:py-3">
         <div className="flex min-w-0 items-center gap-2 text-xs font-semibold uppercase text-muted-foreground">
           <BookOpen aria-hidden="true" size={15} strokeWidth={2.3} />
           <span>{dictionary.courseOverviewEyebrow}</span>
         </div>
-        <CardTitle className="text-2xl font-semibold tracking-normal">
+        <CardTitle className="text-2xl font-semibold tracking-normal max-[520px]:text-lg max-[520px]:font-black">
           {dictionary.courseOverviewTitle}
         </CardTitle>
-        <CardDescription className="max-w-2xl font-medium">
+        <CardDescription className="max-w-2xl font-medium max-[520px]:hidden">
           {dictionary.courseOverviewSubtitle}
         </CardDescription>
-        <CardAction className="flex flex-wrap items-center justify-end gap-2">
+        <CardAction className="flex flex-wrap items-center justify-end gap-2 max-[520px]:col-start-2 max-[520px]:row-span-2 max-[520px]:row-start-1 max-[520px]:gap-1.5">
           <Select onValueChange={handleSelectSemester} value={normalizeSemesterName(selectedSemester)}>
-            <SelectTrigger className="h-8 w-[150px] rounded-md text-xs font-semibold">
+            <SelectTrigger className="h-8 w-[150px] rounded-md text-xs font-semibold max-[520px]:w-[124px] max-[520px]:text-[11px]">
               <SelectValue aria-label={dictionary.courseOverviewSemester} />
             </SelectTrigger>
             <SelectContent align="end">
@@ -3271,7 +3402,7 @@ export function CourseOverviewView({
         </CardAction>
       </CardHeader>
 
-      <CardContent className="space-y-2">
+      <CardContent className="space-y-2 max-[520px]:px-3 max-[520px]:py-3">
         {courseLoadStatus === 'loading' ? (
           <CanvasLoadingBanner label={dictionary.canvasCoursesLoading} size="compact" />
         ) : null}
@@ -3291,16 +3422,20 @@ export function CourseOverviewView({
         ) : null}
 
         {!isLoading && !isUnavailable ? (
-          <div className="space-y-2">
+          <div className="space-y-2.5">
             {rows.map((row) => {
               const detailItems = getCourseDetailItems(row, dictionary);
               const summaryLabel = row.grade !== '--' ? row.grade : row.semester;
+              const mobileDetailItems = detailItems
+                .filter(([, value]) => value && value !== '--')
+                .slice(0, 2);
 
               return (
                 <article
                   className={cn(
                     'grid min-w-0 cursor-pointer gap-3 rounded-lg border bg-background px-3 py-3 transition-colors hover:bg-muted/35',
                     'lg:grid-cols-[minmax(0,1fr)_minmax(280px,420px)_132px]',
+                    'max-[520px]:block max-[520px]:rounded-xl max-[520px]:px-3 max-[520px]:py-3',
                     row.hidden && 'border-dashed bg-muted/15 opacity-35 grayscale hover:bg-muted/20',
                   )}
                   key={row.id}
@@ -3314,22 +3449,22 @@ export function CourseOverviewView({
                   role="button"
                   tabIndex={0}
                 >
-                  <div className="flex min-w-0 gap-3">
-                    <span className={cn('mt-1.5 size-2.5 shrink-0 rounded-full', dotColorClasses[row.color])} />
-                    <div className="min-w-0">
+                  <div className="flex min-w-0 gap-3 max-[520px]:gap-2">
+                    <span className={cn('mt-1.5 size-2.5 shrink-0 rounded-full max-[520px]:mt-1 max-[520px]:size-2', dotColorClasses[row.color])} />
+                    <div className="min-w-0 max-[520px]:flex-1">
                       <div className="flex min-w-0 flex-wrap items-center gap-2">
                         <span
                           className={cn(
-                            'inline-flex max-w-full items-center rounded-md border px-2 py-1 text-xs font-semibold',
+                            'inline-flex max-w-full items-center rounded-md border px-2 py-1 text-xs font-semibold max-[520px]:h-6 max-[520px]:px-2 max-[520px]:py-0 max-[520px]:text-[11px]',
                             badgeColorClasses[row.color],
                           )}
                         >
                           <span className="truncate">{row.courseCode}</span>
                         </span>
-                        <Badge className="h-5 rounded-md px-1.5 text-[10px] uppercase" variant="outline">
+                        <Badge className="h-5 rounded-md px-1.5 text-[10px] uppercase max-[520px]:h-5 max-[520px]:text-[9px]" variant="outline">
                           {row.source === 'canvas' ? dictionary.courseOverviewCanvas : dictionary.courseOverviewManual}
                         </Badge>
-                        <Badge className="h-5 rounded-md px-1.5 text-[10px]" variant="secondary">
+                        <Badge className="h-5 rounded-md px-1.5 text-[10px] max-[520px]:hidden" variant="secondary">
                           {row.semester}
                         </Badge>
                         {row.hidden ? (
@@ -3338,13 +3473,13 @@ export function CourseOverviewView({
                           </Badge>
                         ) : null}
                       </div>
-                      <h3 className="mt-2 truncate text-base font-semibold text-foreground">
+                      <h3 className="mt-2 truncate text-base font-semibold text-foreground max-[520px]:whitespace-normal max-[520px]:text-[15px] max-[520px]:font-black max-[520px]:leading-snug">
                         {row.name}
                       </h3>
                     </div>
                   </div>
 
-                  <div className="grid min-w-0 grid-cols-2 gap-2 text-sm xl:grid-cols-4">
+                  <div className="grid min-w-0 grid-cols-2 gap-2 text-sm max-[520px]:mt-3 max-[520px]:hidden xl:grid-cols-4">
                     {detailItems.map(([label, value]) => (
                       <div className="min-w-0 rounded-md border bg-muted/20 px-2.5 py-2" key={`${row.id}-${label}`}>
                         <div className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
@@ -3352,15 +3487,25 @@ export function CourseOverviewView({
                       </div>
                     ))}
                   </div>
+                  {mobileDetailItems.length > 0 ? (
+                    <div className="mt-3 hidden grid-cols-2 gap-2 max-[520px]:grid">
+                      {mobileDetailItems.map(([label, value]) => (
+                        <div className="min-w-0 rounded-lg border bg-muted/15 px-2.5 py-2" key={`${row.id}-mobile-${label}`}>
+                          <div className="text-[9px] font-black uppercase text-muted-foreground">{label}</div>
+                          <div className="mt-1 truncate text-sm font-black text-foreground">{value}</div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
 
-                  <div className="flex items-center justify-between gap-2 lg:flex-col lg:items-end">
-                    <div className="min-w-0 text-left lg:text-right">
+                  <div className="flex items-center justify-between gap-2 max-[520px]:mt-3 lg:flex-col lg:items-end">
+                    <div className="min-w-0 text-left max-[520px]:hidden lg:text-right">
                       <div className="text-[10px] font-semibold uppercase text-muted-foreground">
                         {row.grade !== '--' ? dictionary.courseOverviewGrade : dictionary.courseOverviewSemester}
                       </div>
                       <div className="mt-1 truncate text-sm font-semibold text-foreground">{summaryLabel}</div>
                     </div>
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 max-[520px]:ml-auto">
                       <Badge className="h-7 gap-1 rounded-md px-2" variant={row.notificationCount > 0 ? 'default' : 'outline'}>
                         <Megaphone aria-hidden="true" size={13} strokeWidth={2.4} />
                         <span>{row.notificationCount}</span>

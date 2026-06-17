@@ -1,5 +1,5 @@
-import { Check, ExternalLink, EyeOff, MoreHorizontal, Pencil, Plus, Star, Trash2 } from 'lucide-react';
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { CalendarPlus, Check, ExternalLink, EyeOff, MoreHorizontal, Pencil, Plus, Star, Trash2 } from 'lucide-react';
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 
 import type { BoardItem } from '../data/mockWorkspaceData';
 import { useLanguage } from '../context/LanguageContext';
@@ -31,6 +31,7 @@ interface BoardViewProps {
   onFinishItemTitleEdit?: () => void;
   onOpenItem?: (item: BoardItem) => void;
   onRemoveItem?: (item: BoardItem) => void;
+  onMoveItemDueDate?: (item: BoardItem, target: 'today' | 'tomorrow') => void;
   onOpenItemDetails?: (item: BoardItem) => void;
   onStartItemTitleEdit?: (item: BoardItem) => void;
   onToggleItemStar?: (item: BoardItem) => void;
@@ -150,6 +151,32 @@ function getItemMinutes(item: BoardItem) {
   return (Number.parseInt(match[1], 10) * 60) + Number.parseInt(match[2], 10);
 }
 
+function getMoveDueDateTarget(item: BoardItem, complete: boolean) {
+  if (item.isLocked || complete || !item.dueAt) {
+    return null;
+  }
+
+  const dueDate = new Date(item.dueAt);
+
+  if (Number.isNaN(dueDate.getTime())) {
+    return null;
+  }
+
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfDueDate = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate()).getTime();
+
+  if (startOfDueDate < startOfToday) {
+    return 'today';
+  }
+
+  if (startOfDueDate === startOfToday) {
+    return 'tomorrow';
+  }
+
+  return null;
+}
+
 function isTodoActionTarget(target: EventTarget | null) {
   return target instanceof Element &&
     Boolean(target.closest('button,a,input,textarea,select,[role="menuitem"],[data-calendar-todo-action]'));
@@ -172,6 +199,7 @@ export function BoardView({
   onFinishItemTitleEdit,
   onOpenItem,
   onRemoveItem,
+  onMoveItemDueDate,
   onOpenItemDetails,
   onStartItemTitleEdit,
   onToggleItemStar,
@@ -181,14 +209,13 @@ export function BoardView({
 }: BoardViewProps) {
   const { dictionary, translateBoardColumn } = useLanguage();
   const [, setPreferenceVersion] = useState(0);
-  const longPressTimeoutRef = useRef<number | null>(null);
-  const longPressTriggeredRef = useRef(false);
+  const tapTimeoutRef = useRef<{ itemId: string; timeoutId: number } | null>(null);
   const nowMinutes = getNowMinutes();
 
-  const clearLongPress = () => {
-    if (longPressTimeoutRef.current) {
-      window.clearTimeout(longPressTimeoutRef.current);
-      longPressTimeoutRef.current = null;
+  const clearTap = () => {
+    if (tapTimeoutRef.current) {
+      window.clearTimeout(tapTimeoutRef.current.timeoutId);
+      tapTimeoutRef.current = null;
     }
   };
   const startTitleEdit = (item: BoardItem) => {
@@ -198,17 +225,26 @@ export function BoardView({
 
     onStartItemTitleEdit?.(item);
   };
-  const handleRowPointerDown = (event: ReactPointerEvent, item: BoardItem) => {
-    if (item.isLocked || !item.isTitleEditable || isTodoActionTarget(event.target)) {
+  const handleRowTap = (event: ReactMouseEvent, item: BoardItem, isEditingTitle: boolean) => {
+    if (isTodoActionTarget(event.target) || item.isLocked || isEditingTitle) {
       return;
     }
 
-    clearLongPress();
-    longPressTriggeredRef.current = false;
-    longPressTimeoutRef.current = window.setTimeout(() => {
-      longPressTriggeredRef.current = true;
+    if (tapTimeoutRef.current?.itemId === item.id) {
+      clearTap();
+      event.preventDefault();
       startTitleEdit(item);
-    }, 520);
+      return;
+    }
+
+    clearTap();
+    tapTimeoutRef.current = {
+      itemId: item.id,
+      timeoutId: window.setTimeout(() => {
+        tapTimeoutRef.current = null;
+        onToggleItemDone?.(item);
+      }, 350),
+    };
   };
 
   useEffect(() => {
@@ -224,12 +260,14 @@ export function BoardView({
   }, []);
 
   useEffect(() => () => {
-    clearLongPress();
+    clearTap();
   }, []);
   const renderItemTouchMenu = (item: BoardItem, complete: boolean) => {
     if (!item.canOpenDetails || !onOpenItemDetails) {
       return null;
     }
+
+    const moveTarget = getMoveDueDateTarget(item, complete);
 
     return (
       <DropdownMenu>
@@ -264,6 +302,16 @@ export function BoardView({
               <span>{item.isStarred ? dictionary.courseworkUnstar : dictionary.courseworkStar}</span>
             </DropdownMenuItem>
           ) : null}
+          {onMoveItemDueDate && moveTarget ? (
+            <DropdownMenuItem onSelect={() => onMoveItemDueDate(item, moveTarget)}>
+              <CalendarPlus className="size-4" />
+              <span>
+                {moveTarget === 'today'
+                  ? dictionary.courseworkDoToday
+                  : dictionary.courseworkDoTomorrow}
+              </span>
+            </DropdownMenuItem>
+          ) : null}
           {onToggleItemDone ? (
             <DropdownMenuItem disabled={item.isLocked} onSelect={() => onToggleItemDone(item)}>
               <Check className="size-4" />
@@ -288,9 +336,9 @@ export function BoardView({
   };
 
   return (
-    <Card className="overflow-hidden rounded-xl bg-card shadow-none">
+    <Card className="overflow-hidden rounded-xl bg-card shadow-none lg:h-full lg:min-h-0">
       <div
-        className="grid min-h-[440px] overflow-x-auto"
+        className="grid min-h-[440px] overflow-x-auto lg:h-full lg:min-h-0"
         style={{ gridTemplateColumns: `repeat(${Math.max(columns.length, 1)}, minmax(0, 1fr))` }}
       >
         {columns.map((column) => {
@@ -312,7 +360,7 @@ export function BoardView({
           };
 
           return (
-            <section className="min-w-0 border-r bg-muted/25 p-3 last:border-r-0" key={column.id}>
+            <section className="flex min-w-0 flex-col border-r bg-muted/25 p-3 last:border-r-0 lg:min-h-0" key={column.id}>
               <div className="mb-3 flex items-center justify-between gap-2">
                 <h3 className="flex min-w-0 items-center gap-1.5 text-sm font-black">
                   <EventPill className="h-6 px-2 text-xs" color={columnChipColor} compact label={columnLabel} />
@@ -331,7 +379,7 @@ export function BoardView({
                   <Plus className="size-3.5" />
                 </Button>
               </div>
-              <div className="grid gap-2">
+              <div className="flex flex-col gap-2 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1">
                 {columnItems.map((item) => {
                   const complete = isComplete(item);
                   const isEditingTitle = Boolean(item.isTitleEditable && (focusedItemId === item.id || item.title.trim() === ''));
@@ -340,36 +388,16 @@ export function BoardView({
                       {renderCurrentTimeIfNeeded(item)}
                       <div
                         className={cn(
-                          'group flex w-full min-w-0 items-start gap-3 rounded-lg border bg-card p-2.5 text-left shadow-none transition hover:bg-muted/45',
+                          'group flex w-full min-w-0 items-start gap-2 rounded-lg border bg-card p-2.5 text-left shadow-none transition hover:bg-muted/45',
                           !item.isLocked && 'cursor-pointer',
                         )}
                         onClick={(event) => {
-                          clearLongPress();
-
-                          if (longPressTriggeredRef.current) {
-                            longPressTriggeredRef.current = false;
-                            event.preventDefault();
-                            return;
-                          }
-
-                          if (isTodoActionTarget(event.target)) {
-                            return;
-                          }
-
-                          if (!item.isLocked && !isEditingTitle) {
-                            onToggleItemDone?.(item);
-                          }
+                          handleRowTap(event, item, isEditingTitle);
                         }}
-                        onDoubleClick={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          startTitleEdit(item);
-                        }}
-                        onPointerCancel={clearLongPress}
-                        onPointerDown={(event) => handleRowPointerDown(event, item)}
-                        onPointerLeave={clearLongPress}
-                        onPointerUp={clearLongPress}
                       >
+                        <div className="w-11 shrink-0 pt-1 text-right text-[11px] font-black tabular-nums text-muted-foreground">
+                          {item.time || '—'}
+                        </div>
                         <button
                           aria-label={item.isLocked ? item.title : dictionary.boardAddTodoItem}
                           className={cn(
@@ -430,23 +458,12 @@ export function BoardView({
                             ) : (
                               <span
                                 className="min-w-0 flex-1 whitespace-normal text-sm font-semibold leading-snug text-foreground"
-                                onClick={(event) => {
-                                  if (item.isLocked || !item.isTitleEditable) {
-                                    return;
-                                  }
-
-                                  event.preventDefault();
-                                  event.stopPropagation();
-                                  startTitleEdit(item);
-                                }}
                               >
                                 {item.title || dictionary.boardAddTodoItem}
                               </span>
                             )}
                             <span className="flex shrink-0 flex-wrap gap-1">
-                              {item.time ? <EventPill color="gray" label={item.time} compact /> : null}
                               <EventPill color={item.color} label={item.type} compact />
-                              <EventPill color="gray" label={item.checklistProgress} compact />
                               {renderItemTouchMenu(item, complete)}
                             </span>
                           </span>
@@ -474,6 +491,16 @@ export function BoardView({
                           <ContextMenuItem onSelect={() => onToggleItemStar(item)}>
                             <Star className={cn('size-4', item.isStarred && 'fill-amber-400 text-amber-500')} />
                             <span>{item.isStarred ? dictionary.courseworkUnstar : dictionary.courseworkStar}</span>
+                          </ContextMenuItem>
+                        ) : null}
+                        {onMoveItemDueDate && getMoveDueDateTarget(item, complete) ? (
+                          <ContextMenuItem onSelect={() => onMoveItemDueDate(item, getMoveDueDateTarget(item, complete)!)}>
+                            <CalendarPlus className="size-4" />
+                            <span>
+                              {getMoveDueDateTarget(item, complete) === 'today'
+                                ? dictionary.courseworkDoToday
+                                : dictionary.courseworkDoTomorrow}
+                            </span>
                           </ContextMenuItem>
                         ) : null}
                         {onToggleItemDone ? (

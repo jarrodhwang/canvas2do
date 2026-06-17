@@ -26,6 +26,42 @@ public sealed class UserSetting : AuditableEntity
     public string SettingJson { get; set; } = "{}";
 }
 
+public sealed class AdminUser : AuditableEntity
+{
+    public string? GoogleUserId { get; set; }
+    public string Email { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public string? PhotoUrl { get; set; }
+    public string? HostedDomain { get; set; }
+    public string? Role { get; set; }
+    public string Status { get; set; } = "pending";
+    public bool ApiAccessEnabled { get; set; }
+    public bool IsDirectorySuspended { get; set; }
+    public DateTimeOffset? LastLoginAt { get; set; }
+    public DateTimeOffset? GoogleLastLoginAt { get; set; }
+    public DateTimeOffset? DirectorySyncedAt { get; set; }
+}
+
+public sealed class AdminGroup : AuditableEntity
+{
+    public string Name { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public string? PhotoUrl { get; set; }
+    public string Status { get; set; } = "active";
+    public string PermissionJson { get; set; } = "[]";
+    public string SettingJson { get; set; } = "[]";
+    public string AccessJson { get; set; } = "[]";
+    public List<AdminGroupMember> Members { get; set; } = [];
+}
+
+public sealed class AdminGroupMember : AuditableEntity
+{
+    public Guid AdminGroupId { get; set; }
+    public AdminGroup? AdminGroup { get; set; }
+    public Guid AdminUserId { get; set; }
+    public AdminUser? AdminUser { get; set; }
+}
+
 public sealed class WorkspaceMode : AuditableEntity
 {
     public string ModeKey { get; set; } = string.Empty;

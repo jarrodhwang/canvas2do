@@ -1,7 +1,7 @@
 import { ArrowLeft, ArrowRight, ChevronDown, ChevronRight, ExternalLink, Inbox, LoaderCircle, RefreshCw } from 'lucide-react';
 import { useEffect, useMemo, useState, type MouseEvent } from 'react';
 
-import { workspaceApi, type CanvasInboxItem } from '../api/workspaceApi';
+import { workspaceApi, type AcademyPreferences, type CanvasInboxItem } from '../api/workspaceApi';
 import { useLanguage } from '../context/LanguageContext';
 import { cn } from '../lib/utils';
 import type { ColorToken } from '../modes/types';
@@ -10,8 +10,67 @@ import { Button } from './ui/button';
 import { Card } from './ui/card';
 
 type LoadStatus = 'idle' | 'loading' | 'loaded' | 'failed';
-const canvasLecturePreferencesStorageKey = 'incos-academy-canvas-lecture-preferences';
-const colorTokens = new Set<ColorToken>(['blue', 'green', 'orange', 'red', 'purple', 'teal', 'gold', 'gray']);
+const academyPreferencesUpdatedEvent = 'incos-academy-preferences-updated';
+const colorTokens = new Set<ColorToken>([
+  'blue',
+  'sky',
+  'cyan',
+  'green',
+  'emerald',
+  'indigo',
+  'amber',
+  'yellow',
+  'lime',
+  'orange',
+  'red',
+  'rose',
+  'crimson',
+  'coral',
+  'peach',
+  'apricot',
+  'purple',
+  'violet',
+  'fuchsia',
+  'pink',
+  'magenta',
+  'lavender',
+  'lilac',
+  'plum',
+  'mauve',
+  'teal',
+  'mint',
+  'aqua',
+  'turquoise',
+  'ocean',
+  'cobalt',
+  'navy',
+  'gold',
+  'lemon',
+  'olive',
+  'moss',
+  'forest',
+  'slate',
+  'zinc',
+  'neutral',
+  'stone',
+  'graphite',
+  'cocoa',
+  'sand',
+  'midnight',
+  'ice',
+  'gray',
+]);
+
+interface CanvasLecturePreference {
+  chipColor?: ColorToken;
+  courseName?: string;
+  friendlyCourseCode?: string;
+  friendlyName?: string;
+  hidden?: boolean;
+  originalCourseCode?: string;
+}
+
+type CanvasLecturePreferences = Record<string, CanvasLecturePreference>;
 
 interface CanvasInboxViewProps {
   onOpenIntegration?: (courseRowId?: string | null, resourceUrl?: string | null) => void;
@@ -167,37 +226,76 @@ function sanitizeCanvasInboxHtml(value?: string) {
   return document.body.innerHTML;
 }
 
-function getInboxCourseLabel(item: CanvasInboxItem, fallback: string) {
-  return item.courseCode?.trim() || item.courseName?.trim() || fallback;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function getInboxCourseKey(item: CanvasInboxItem, fallback: string) {
-  return item.courseId?.trim() || getInboxCourseLabel(item, fallback);
+function isCanvasLecturePreferences(value: unknown): value is CanvasLecturePreferences {
+  return isRecord(value);
 }
 
-function readCanvasCourseColorPreferences() {
-  if (typeof window === 'undefined') {
-    return {};
+function getCanvasLecturePreferencesFromAcademyPreferences(
+  preferences: Pick<AcademyPreferences, 'canvasLecturePreferences'>,
+) {
+  return isCanvasLecturePreferences(preferences.canvasLecturePreferences)
+    ? preferences.canvasLecturePreferences
+    : {};
+}
+
+function normalizeCourseMatchValue(value?: string) {
+  return value?.replace(/\s+/g, '').trim().toLowerCase() || '';
+}
+
+function getInboxCoursePreference(item: CanvasInboxItem, preferences: CanvasLecturePreferences) {
+  const courseId = item.courseId?.trim();
+  const directPreference = courseId ? preferences[courseId] : undefined;
+
+  if (directPreference) {
+    return directPreference;
   }
 
-  try {
-    const storedValue = window.localStorage.getItem(canvasLecturePreferencesStorageKey);
-    const preferences = storedValue ? JSON.parse(storedValue) as Record<string, { chipColor?: unknown }> : {};
+  const normalizedCourseCode = normalizeCourseMatchValue(item.courseCode);
+  const normalizedCourseName = normalizeCourseMatchValue(item.courseName);
 
-    return preferences && typeof preferences === 'object' && !Array.isArray(preferences)
-      ? preferences
-      : {};
-  } catch {
-    return {};
-  }
+  return Object.values(preferences).find((preference) => {
+    const preferenceValues = [
+      preference.originalCourseCode,
+      preference.friendlyCourseCode,
+      preference.courseName,
+      preference.friendlyName,
+    ].map(normalizeCourseMatchValue);
+
+    return Boolean(
+      normalizedCourseCode && preferenceValues.includes(normalizedCourseCode) ||
+      normalizedCourseName && preferenceValues.includes(normalizedCourseName),
+    );
+  });
 }
 
-function getInboxCourseColor(item: CanvasInboxItem, preferences: Record<string, { chipColor?: unknown }>): ColorToken {
-  const storedColor = item.courseId ? preferences[item.courseId]?.chipColor : undefined;
+function getInboxCourseLabel(item: CanvasInboxItem, fallback: string, preferences: CanvasLecturePreferences) {
+  const preference = getInboxCoursePreference(item, preferences);
+
+  return preference?.friendlyCourseCode?.trim() ||
+    item.courseCode?.trim() ||
+    preference?.friendlyName?.trim() ||
+    item.courseName?.trim() ||
+    fallback;
+}
+
+function getInboxCourseKey(item: CanvasInboxItem, fallback: string, preferences: CanvasLecturePreferences) {
+  return item.courseId?.trim() || getInboxCourseLabel(item, fallback, preferences);
+}
+
+function getInboxCourseColor(item: CanvasInboxItem, preferences: CanvasLecturePreferences): ColorToken {
+  const storedColor = getInboxCoursePreference(item, preferences)?.chipColor;
 
   return typeof storedColor === 'string' && colorTokens.has(storedColor as ColorToken)
     ? storedColor as ColorToken
-    : 'green';
+    : 'blue';
+}
+
+function isInboxCourseHidden(item: CanvasInboxItem, preferences: CanvasLecturePreferences) {
+  return Boolean(getInboxCoursePreference(item, preferences)?.hidden);
 }
 
 function getCanvasCourseRowId(item: CanvasInboxItem) {
@@ -210,23 +308,29 @@ function getCanvasCourseRowId(item: CanvasInboxItem) {
   return match?.[1] ? `canvas:${match[1]}` : null;
 }
 
-function groupCanvasInboxItems(items: CanvasInboxItem[], fallbackLabel: string, locale: string) {
+function groupCanvasInboxItems(
+  items: CanvasInboxItem[],
+  fallbackLabel: string,
+  locale: string,
+  preferences: CanvasLecturePreferences,
+) {
   const groups = new Map<string, InboxCourseGroup>();
-  const preferences = readCanvasCourseColorPreferences();
 
-  items.forEach((item) => {
-    const key = getInboxCourseKey(item, fallbackLabel);
-    const label = getInboxCourseLabel(item, fallbackLabel);
-    const currentGroup = groups.get(key) ?? {
-      color: getInboxCourseColor(item, preferences),
-      key,
-      label,
-      items: [],
-    };
+  items
+    .filter((item) => !isInboxCourseHidden(item, preferences))
+    .forEach((item) => {
+      const key = getInboxCourseKey(item, fallbackLabel, preferences);
+      const label = getInboxCourseLabel(item, fallbackLabel, preferences);
+      const currentGroup = groups.get(key) ?? {
+        color: getInboxCourseColor(item, preferences),
+        key,
+        label,
+        items: [],
+      };
 
-    currentGroup.items.push(item);
-    groups.set(key, currentGroup);
-  });
+      currentGroup.items.push(item);
+      groups.set(key, currentGroup);
+    });
 
   return Array.from(groups.values()).sort((firstGroup, secondGroup) => (
     firstGroup.label.localeCompare(secondGroup.label, locale, { numeric: true, sensitivity: 'base' })
@@ -241,11 +345,12 @@ export function CanvasInboxView({ onOpenIntegration }: CanvasInboxViewProps = {}
   const [errorMessage, setErrorMessage] = useState('');
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [collapsedCourseKeys, setCollapsedCourseKeys] = useState<Set<string>>(() => new Set());
+  const [canvasLecturePreferences, setCanvasLecturePreferences] = useState<CanvasLecturePreferences>({});
   const [selectionHistory, setSelectionHistory] = useState<InboxSelectionHistory>({ ids: [], index: -1 });
   const sortedItems = useMemo(() => [...items].sort(sortCanvasInboxItems), [items]);
   const groupedItems = useMemo(
-    () => groupCanvasInboxItems(sortedItems, dictionary.canvasInboxCourseFallback, locale),
-    [dictionary.canvasInboxCourseFallback, locale, sortedItems],
+    () => groupCanvasInboxItems(sortedItems, dictionary.canvasInboxCourseFallback, locale, canvasLecturePreferences),
+    [canvasLecturePreferences, dictionary.canvasInboxCourseFallback, locale, sortedItems],
   );
   const selectedItem = useMemo(
     () => sortedItems.find((item) => item.id === selectedItemId) ?? null,
@@ -258,6 +363,38 @@ export function CanvasInboxView({ onOpenIntegration }: CanvasInboxViewProps = {}
   const isLoading = loadStatus === 'loading';
   const canGoBack = selectionHistory.index > 0;
   const canGoForward = selectionHistory.index >= 0 && selectionHistory.index < selectionHistory.ids.length - 1;
+
+  useEffect(() => {
+    const applyAcademyPreferences = (preferences: AcademyPreferences) => {
+      setCanvasLecturePreferences(getCanvasLecturePreferencesFromAcademyPreferences(preferences));
+    };
+
+    const reloadAcademyPreferences = () => {
+      workspaceApi
+        .getAcademyPreferences()
+        .then(applyAcademyPreferences)
+        .catch(() => undefined);
+    };
+
+    const handleAcademyPreferencesUpdated = (event: Event) => {
+      if (event instanceof CustomEvent && isRecord(event.detail)) {
+        if (isCanvasLecturePreferences(event.detail.canvasLecturePreferences)) {
+          setCanvasLecturePreferences(event.detail.canvasLecturePreferences);
+        }
+
+        return;
+      }
+
+      reloadAcademyPreferences();
+    };
+
+    reloadAcademyPreferences();
+    window.addEventListener(academyPreferencesUpdatedEvent, handleAcademyPreferencesUpdated);
+
+    return () => {
+      window.removeEventListener(academyPreferencesUpdatedEvent, handleAcademyPreferencesUpdated);
+    };
+  }, []);
   const toggleCourseGroup = (courseKey: string) => {
     setCollapsedCourseKeys((currentKeys) => {
       const nextKeys = new Set(currentKeys);
@@ -527,9 +664,9 @@ export function CanvasInboxView({ onOpenIntegration }: CanvasInboxViewProps = {}
                       <div className="min-w-0">
                         <div className="mb-2 flex min-w-0 flex-wrap items-center gap-2">
                           <EventPill
-                            color={getInboxCourseColor(selectedItem, readCanvasCourseColorPreferences())}
+                            color={getInboxCourseColor(selectedItem, canvasLecturePreferences)}
                             compact
-                            label={getInboxCourseLabel(selectedItem, dictionary.canvasInboxCourseFallback)}
+                            label={getInboxCourseLabel(selectedItem, dictionary.canvasInboxCourseFallback, canvasLecturePreferences)}
                           />
                           <span className="rounded-md border bg-card px-1.5 py-0.5 text-[10px] font-black uppercase text-muted-foreground">
                             {formatCanvasInboxType(selectedItem.type)}

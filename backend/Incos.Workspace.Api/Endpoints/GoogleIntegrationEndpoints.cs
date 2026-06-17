@@ -39,6 +39,81 @@ public static class GoogleIntegrationEndpoints
     private const int ChatDirectoryProfileFallbackLimit = 4;
     private const int ChatAttachmentMetadataLimit = 10;
     private const int ChatAttachmentPreviewMaxBytes = 25 * 1024 * 1024;
+    private const string MainAdminGroupName = "Main Admin";
+    private const string MainAdminEmail = "sj@incos.co.kr";
+    private static readonly HashSet<string> AdminGroupPermissionKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "academy-view-courses",
+        "academy-manage-courses",
+        "academy-view-people",
+        "academy-message-people",
+        "academy-manage-inbox",
+        "academy-manage-settings",
+        "workspace-view-dashboard",
+        "workspace-manage-calendar",
+        "workspace-manage-files",
+        "workspace-manage-email",
+        "workspace-manage-chat",
+        "admin-manage-users",
+        "admin-manage-groups",
+        "admin-manage-permissions",
+        "admin-view-audit-logs",
+        "admin-manage-workspace-mode",
+        "admin-manage-billing",
+        "admin-manage-products",
+        "manage-users",
+        "manage-groups",
+        "manage-permissions",
+        "view-audit-logs",
+        "manage-billing",
+        "manage-products",
+    };
+    private static readonly HashSet<string> AdminGroupSettingKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "academy-settings",
+        "workspace-settings",
+        "admin-general-settings",
+        "admin-permissions-settings",
+        "admin-audit-logs-settings",
+        "admin-workspace-mode-settings",
+        "general-settings",
+        "workspace-mode",
+        "integrations",
+        "security",
+        "notifications",
+    };
+    private static readonly HashSet<string> AdminGroupAccessKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "academy",
+        "academy-dashboard",
+        "academy-courses",
+        "academy-inbox",
+        "academy-people",
+        "academy-settings-page",
+        "workspace",
+        "workspace-dashboard",
+        "workspace-drive",
+        "workspace-email",
+        "workspace-chat",
+        "admin-console",
+        "admin-dashboard",
+        "admin-users",
+        "admin-groups",
+        "admin-customers",
+        "admin-licenses",
+        "admin-products",
+        "admin-invoices",
+        "admin-settings-general",
+        "admin-permissions",
+        "admin-audit-logs",
+        "admin-workspace-mode",
+        "api",
+        "dashboard",
+        "customers",
+        "licenses",
+        "products",
+        "invoices",
+    };
     private static readonly TimeSpan ChatProfileCacheDuration = TimeSpan.FromHours(8);
     private static readonly TimeSpan ChatProfileMissCacheDuration = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan ChatPeopleQuotaCooldown = TimeSpan.FromMinutes(2);
@@ -79,11 +154,40 @@ public static class GoogleIntegrationEndpoints
         var google = app.MapGroup("/api/google")
             .RequireAuthorization();
 
+        google.AddEndpointFilter(async (context, next) =>
+        {
+            var httpContext = context.HttpContext;
+
+            if (IsGoogleIntegrationStatusRequest(httpContext) ||
+                IsGoogleIntegrationConnectRequest(httpContext) ||
+                CanUseGoogleWorkspaceData(httpContext.User, httpContext.RequestServices.GetRequiredService<IConfiguration>()))
+            {
+                return await next(context);
+            }
+
+            return Results.Problem(
+                title: "Google Workspace data is disabled.",
+                detail: "INCOS Google Workspace data is only available to incos.co.kr accounts.",
+                statusCode: StatusCodes.Status403Forbidden);
+        });
+
         google.MapGet("/integrations", async (
                 HttpContext context,
                 IHttpClientFactory httpClientFactory,
-                IConfiguration configuration) =>
+                IConfiguration configuration,
+                IncosWorkspaceDbContext db) =>
             {
+                if (!CanUseGoogleWorkspaceData(context.User, configuration))
+                {
+                    return Results.Ok(new[]
+                    {
+                        CreateDisabledStatus("google_calendar", "Google Calendar"),
+                        CreateDisabledStatus("google_drive", "Google Drive"),
+                        CreateDisabledStatus("gmail", "Gmail"),
+                        CreateDisabledStatus("google_chat", "Google Chat"),
+                    });
+                }
+
                 var isConfigured =
                     !string.IsNullOrWhiteSpace(configuration["Authentication:Google:ClientId"]) &&
                     !string.IsNullOrWhiteSpace(configuration["Authentication:Google:ClientSecret"]);
@@ -93,6 +197,20 @@ public static class GoogleIntegrationEndpoints
                     httpClientFactory,
                     configuration,
                     context.RequestAborted);
+                var storedToken = await GetStoredGoogleOAuthTokenAsync(db, context.User, context.RequestAborted);
+
+                AddGrantedScopes(grantedScopes, await context.GetTokenAsync("scope"));
+                AddGrantedScopes(grantedScopes, storedToken?.Scope);
+
+                if (!string.IsNullOrWhiteSpace(accessToken))
+                {
+                    AddGrantedScopes(
+                        grantedScopes,
+                        await GetGoogleAccessTokenScopesAsync(
+                            httpClientFactory,
+                            accessToken,
+                            context.RequestAborted));
+                }
 
                 return Results.Ok(new[]
                 {
@@ -138,11 +256,281 @@ public static class GoogleIntegrationEndpoints
                     _ => "/",
                 };
                 var redirectUrl =
-                    $"/api/auth/google/login?returnUrl={Uri.EscapeDataString(returnUrl)}&forceConsent=true";
+                    $"/api/auth/google/login?returnUrl={Uri.EscapeDataString(returnUrl)}&forceConsent=true&forceLogin=true";
 
                 return Results.Redirect(redirectUrl);
             })
+            .AllowAnonymous()
             .WithName("ConnectGoogleIntegration");
+
+        var admin = app.MapGroup("/api/admin")
+            .RequireAuthorization();
+
+        admin.MapGet("/users", async (
+                HttpContext context,
+                IncosWorkspaceDbContext db,
+                IConfiguration configuration,
+                CancellationToken cancellationToken) =>
+            {
+                await EnsureAdminUsersTableAsync(db, cancellationToken);
+                await EnsureAdminUsersFromKnownLoginsAsync(db, context.User, configuration, cancellationToken);
+
+                var users = await GetAdminUserDtosAsync(db, cancellationToken);
+
+                return Results.Ok(new AdminUsersResponseDto(users, null, null));
+            })
+            .WithName("GetAdminUsers");
+
+        admin.MapPatch("/users/{userId:guid}", async (
+                Guid userId,
+                UpdateAdminUserRequest request,
+                IncosWorkspaceDbContext db,
+                CancellationToken cancellationToken) =>
+            {
+                await EnsureAdminUsersTableAsync(db, cancellationToken);
+
+                var user = await db.AdminUsers
+                    .FirstOrDefaultAsync(adminUser => adminUser.Id == userId, cancellationToken);
+
+                if (user is null)
+                {
+                    return Results.NotFound();
+                }
+
+                var now = DateTimeOffset.UtcNow;
+                var nextStatus = NormalizeAdminUserStatus(request.Status);
+
+                if (!string.IsNullOrWhiteSpace(nextStatus))
+                {
+                    if (string.Equals(user.Email, MainAdminEmail, StringComparison.OrdinalIgnoreCase) &&
+                        nextStatus == "inactive")
+                    {
+                        return Results.Problem(
+                            title: "Main Admin cannot be deactivated.",
+                            detail: "Keep sj@incos.co.kr active so the Admin Console remains recoverable.",
+                            statusCode: StatusCodes.Status409Conflict);
+                    }
+
+                    user.Status = nextStatus;
+
+                    if (nextStatus == "inactive")
+                    {
+                        user.ApiAccessEnabled = false;
+
+                        await EnsureGoogleOAuthTokensTableAsync(db, cancellationToken);
+                        await db.GoogleOAuthTokens
+                            .Where(token => token.UserKey == user.Email || token.Email == user.Email)
+                            .ExecuteDeleteAsync(cancellationToken);
+                    }
+                    else if (nextStatus == "active")
+                    {
+                        user.ApiAccessEnabled = true;
+                    }
+                    else if (nextStatus == "pending")
+                    {
+                        user.ApiAccessEnabled = false;
+                    }
+                }
+
+                if (request.ApiAccessEnabled.HasValue && string.IsNullOrWhiteSpace(nextStatus))
+                {
+                    user.ApiAccessEnabled = request.ApiAccessEnabled.Value && user.Status != "inactive";
+                }
+
+                user.UpdatedAt = now;
+                await db.SaveChangesAsync(cancellationToken);
+
+                return Results.Ok(ToAdminUserDto(user));
+            })
+            .WithName("UpdateAdminUserAccess");
+
+        admin.MapGet("/groups", async (
+                HttpContext context,
+                IncosWorkspaceDbContext db,
+                CancellationToken cancellationToken) =>
+            {
+                await EnsureAdminGroupsTableAsync(db, cancellationToken);
+                await EnsureDefaultAdminGroupAsync(db, cancellationToken);
+
+                var canViewProtectedGroups = await CanViewMainAdminGroupAsync(db, context.User, cancellationToken);
+                var groups = await GetAdminGroupDtosAsync(db, canViewProtectedGroups, cancellationToken);
+
+                return Results.Ok(new AdminGroupsResponseDto(groups));
+            })
+            .WithName("GetAdminGroups");
+
+        admin.MapPost("/groups", async (
+                UpsertAdminGroupRequest request,
+                IncosWorkspaceDbContext db,
+                CancellationToken cancellationToken) =>
+            {
+                await EnsureAdminGroupsTableAsync(db, cancellationToken);
+
+                var name = request.Name?.Trim();
+
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    return Results.ValidationProblem(new Dictionary<string, string[]>
+                    {
+                        ["name"] = ["Group name is required."],
+                    });
+                }
+
+                var nameExists = await db.AdminGroups
+                    .AnyAsync(group => group.Name.ToLower() == name.ToLower(), cancellationToken);
+
+                if (nameExists)
+                {
+                    return Results.Problem(
+                        title: "Group already exists.",
+                        detail: "Choose a different group name.",
+                        statusCode: StatusCodes.Status409Conflict);
+                }
+
+                var now = DateTimeOffset.UtcNow;
+                var group = new AdminGroup
+                {
+                    Id = Guid.NewGuid(),
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                    Name = name,
+                    Description = NormalizeOptionalText(request.Description),
+                    PhotoUrl = NormalizeOptionalText(request.PhotoUrl),
+                    Status = NormalizeAdminGroupStatus(request.Status),
+                    PermissionJson = SerializeAdminGroupValues(request.Permissions, AdminGroupPermissionKeys),
+                    SettingJson = SerializeAdminGroupValues(request.Settings, AdminGroupSettingKeys),
+                    AccessJson = SerializeAdminGroupValues(request.Access, AdminGroupAccessKeys),
+                };
+
+                db.AdminGroups.Add(group);
+                await ApplyAdminGroupMembersAsync(db, group, request.MemberIds, false, cancellationToken);
+                await db.SaveChangesAsync(cancellationToken);
+
+                var createdGroup = await GetAdminGroupDtoAsync(db, group.Id, cancellationToken);
+
+                return Results.Created($"/api/admin/groups/{group.Id}", createdGroup);
+            })
+            .WithName("CreateAdminGroup");
+
+        admin.MapPatch("/groups/{groupId:guid}", async (
+                Guid groupId,
+                UpsertAdminGroupRequest request,
+                HttpContext context,
+                IncosWorkspaceDbContext db,
+                CancellationToken cancellationToken) =>
+            {
+                await EnsureAdminGroupsTableAsync(db, cancellationToken);
+
+                var group = await db.AdminGroups
+                    .FirstOrDefaultAsync(adminGroup => adminGroup.Id == groupId, cancellationToken);
+
+                if (group is null)
+                {
+                    return Results.NotFound();
+                }
+
+                var isProtectedGroup = IsProtectedAdminGroup(group);
+
+                if (isProtectedGroup &&
+                    !await CanViewMainAdminGroupAsync(db, context.User, cancellationToken))
+                {
+                    return Results.NotFound();
+                }
+
+                var nextName = request.Name?.Trim();
+
+                if (nextName is not null && !isProtectedGroup)
+                {
+                    if (string.IsNullOrWhiteSpace(nextName))
+                    {
+                        return Results.ValidationProblem(new Dictionary<string, string[]>
+                        {
+                            ["name"] = ["Group name is required."],
+                        });
+                    }
+
+                    var nameExists = await db.AdminGroups
+                        .AnyAsync(adminGroup =>
+                            adminGroup.Id != groupId &&
+                            adminGroup.Name.ToLower() == nextName.ToLower(),
+                            cancellationToken);
+
+                    if (nameExists)
+                    {
+                        return Results.Problem(
+                            title: "Group already exists.",
+                            detail: "Choose a different group name.",
+                            statusCode: StatusCodes.Status409Conflict);
+                    }
+
+                    group.Name = nextName;
+                }
+
+                if (request.Description is not null)
+                {
+                    group.Description = NormalizeOptionalText(request.Description);
+                }
+
+                if (request.PhotoUrl is not null)
+                {
+                    group.PhotoUrl = NormalizeOptionalText(request.PhotoUrl);
+                }
+
+                if (request.Status is not null)
+                {
+                    group.Status = isProtectedGroup
+                        ? "active"
+                        : NormalizeAdminGroupStatus(request.Status);
+                }
+
+                if (request.Permissions is not null)
+                {
+                    group.PermissionJson = isProtectedGroup
+                        ? SerializeAdminGroupValues(AdminGroupPermissionKeys, AdminGroupPermissionKeys)
+                        : SerializeAdminGroupValues(request.Permissions, AdminGroupPermissionKeys);
+                }
+
+                if (request.Settings is not null)
+                {
+                    group.SettingJson = isProtectedGroup
+                        ? SerializeAdminGroupValues(AdminGroupSettingKeys, AdminGroupSettingKeys)
+                        : SerializeAdminGroupValues(request.Settings, AdminGroupSettingKeys);
+                }
+
+                if (request.Access is not null)
+                {
+                    group.AccessJson = isProtectedGroup
+                        ? SerializeAdminGroupValues(AdminGroupAccessKeys, AdminGroupAccessKeys)
+                        : SerializeAdminGroupValues(request.Access, AdminGroupAccessKeys);
+                }
+
+                if (isProtectedGroup)
+                {
+                    group.Name = MainAdminGroupName;
+                    group.Status = "active";
+                    group.PermissionJson = SerializeAdminGroupValues(AdminGroupPermissionKeys, AdminGroupPermissionKeys);
+                    group.SettingJson = SerializeAdminGroupValues(AdminGroupSettingKeys, AdminGroupSettingKeys);
+                    group.AccessJson = SerializeAdminGroupValues(AdminGroupAccessKeys, AdminGroupAccessKeys);
+                }
+
+                if (request.MemberIds is not null || isProtectedGroup)
+                {
+                    await ApplyAdminGroupMembersAsync(
+                        db,
+                        group,
+                        request.MemberIds,
+                        isProtectedGroup,
+                        cancellationToken);
+                }
+
+                group.UpdatedAt = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync(cancellationToken);
+
+                var updatedGroup = await GetAdminGroupDtoAsync(db, group.Id, cancellationToken);
+
+                return updatedGroup is null ? Results.NotFound() : Results.Ok(updatedGroup);
+            })
+            .WithName("UpdateAdminGroup");
 
         google.MapGet("/drive/browser", async (
                 HttpContext context,
@@ -1266,6 +1654,687 @@ public static class GoogleIntegrationEndpoints
         return app;
     }
 
+    private static async Task EnsureAdminUsersFromKnownLoginsAsync(
+        IncosWorkspaceDbContext db,
+        ClaimsPrincipal currentUser,
+        IConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        await EnsureGoogleOAuthTokensTableAsync(db, cancellationToken);
+
+        var now = DateTimeOffset.UtcNow;
+        var hostedDomain = configuration["Authentication:Google:HostedDomain"]?.Trim();
+        var existingUsers = await db.AdminUsers
+            .ToDictionaryAsync(user => user.Email.ToLowerInvariant(), cancellationToken);
+        var hasChanges = false;
+
+        void UpsertKnownLogin(
+            string? email,
+            string? displayName,
+            string? photoUrl,
+            string? domain,
+            DateTimeOffset lastLoginAt,
+            bool apiAccessEnabled)
+        {
+            if (string.IsNullOrWhiteSpace(email))
+            {
+                return;
+            }
+
+            var normalizedEmail = email.Trim().ToLowerInvariant();
+
+            if (!string.IsNullOrWhiteSpace(hostedDomain) &&
+                !normalizedEmail.EndsWith($"@{hostedDomain}", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            if (!existingUsers.TryGetValue(normalizedEmail, out var user))
+            {
+                user = new AdminUser
+                {
+                    Id = Guid.NewGuid(),
+                    CreatedAt = now,
+                    Email = normalizedEmail,
+                    DisplayName = string.IsNullOrWhiteSpace(displayName)
+                        ? CreateDisplayNameFromEmail(normalizedEmail)
+                        : displayName.Trim(),
+                    PhotoUrl = string.IsNullOrWhiteSpace(photoUrl) ? null : photoUrl,
+                    HostedDomain = string.IsNullOrWhiteSpace(domain) ? hostedDomain : domain,
+                    Status = "active",
+                    ApiAccessEnabled = apiAccessEnabled,
+                    LastLoginAt = lastLoginAt,
+                    UpdatedAt = now,
+                };
+                existingUsers[normalizedEmail] = user;
+                db.AdminUsers.Add(user);
+                hasChanges = true;
+
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(user.DisplayName))
+            {
+                user.DisplayName = string.IsNullOrWhiteSpace(displayName)
+                    ? CreateDisplayNameFromEmail(normalizedEmail)
+                    : displayName.Trim();
+                hasChanges = true;
+            }
+
+            if (string.IsNullOrWhiteSpace(user.PhotoUrl) && !string.IsNullOrWhiteSpace(photoUrl))
+            {
+                user.PhotoUrl = photoUrl;
+                hasChanges = true;
+            }
+
+            if (string.IsNullOrWhiteSpace(user.HostedDomain) &&
+                (!string.IsNullOrWhiteSpace(domain) || !string.IsNullOrWhiteSpace(hostedDomain)))
+            {
+                user.HostedDomain = string.IsNullOrWhiteSpace(domain) ? hostedDomain : domain;
+                hasChanges = true;
+            }
+
+            if (!user.LastLoginAt.HasValue)
+            {
+                user.LastLoginAt = lastLoginAt;
+                user.UpdatedAt = now;
+                hasChanges = true;
+            }
+        }
+
+        UpsertKnownLogin(
+            currentUser.FindFirstValue(ClaimTypes.Email),
+            currentUser.FindFirstValue(ClaimTypes.Name),
+            currentUser.FindFirstValue("urn:google:picture"),
+            hostedDomain,
+            now,
+            true);
+
+        var tokenUsers = await db.GoogleOAuthTokens
+            .AsNoTracking()
+            .Select(token => new
+            {
+                token.Email,
+                token.UserKey,
+                token.CreatedAt,
+                token.UpdatedAt,
+            })
+            .ToArrayAsync(cancellationToken);
+
+        foreach (var tokenUser in tokenUsers)
+        {
+            var email = !string.IsNullOrWhiteSpace(tokenUser.Email)
+                ? tokenUser.Email
+                : tokenUser.UserKey.Contains('@', StringComparison.Ordinal) ? tokenUser.UserKey : null;
+            var lastLoginAt = tokenUser.UpdatedAt == default ? tokenUser.CreatedAt : tokenUser.UpdatedAt;
+
+            UpsertKnownLogin(email, null, null, hostedDomain, lastLoginAt, true);
+        }
+
+        if (hasChanges)
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+    }
+
+    public static async Task<string> RecordGoogleWorkspaceLoginAsync(
+        IncosWorkspaceDbContext db,
+        string email,
+        string? displayName,
+        string? hostedDomain,
+        string? photoUrl,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            return "active";
+        }
+
+        await EnsureAdminUsersTableAsync(db, cancellationToken);
+
+        var normalizedEmail = email.Trim().ToLowerInvariant();
+        var now = DateTimeOffset.UtcNow;
+        var user = await db.AdminUsers
+            .FirstOrDefaultAsync(adminUser => adminUser.Email == normalizedEmail, cancellationToken);
+
+        if (user is null)
+        {
+            user = new AdminUser
+            {
+                Id = Guid.NewGuid(),
+                CreatedAt = now,
+                Email = normalizedEmail,
+                Status = string.Equals(normalizedEmail, MainAdminEmail, StringComparison.OrdinalIgnoreCase)
+                    ? "active"
+                    : "pending",
+            };
+            db.AdminUsers.Add(user);
+        }
+
+        if (string.Equals(normalizedEmail, MainAdminEmail, StringComparison.OrdinalIgnoreCase))
+        {
+            user.Status = "active";
+            user.ApiAccessEnabled = true;
+        }
+
+        if (user.Status == "inactive" || user.IsDirectorySuspended)
+        {
+            return "inactive";
+        }
+
+        user.DisplayName = string.IsNullOrWhiteSpace(displayName)
+            ? CreateDisplayNameFromEmail(normalizedEmail)
+            : displayName.Trim();
+        user.PhotoUrl = string.IsNullOrWhiteSpace(photoUrl) ? user.PhotoUrl : photoUrl;
+        user.HostedDomain = string.IsNullOrWhiteSpace(hostedDomain) ? user.HostedDomain : hostedDomain;
+        user.LastLoginAt = now;
+        user.ApiAccessEnabled = string.Equals(user.Status, "active", StringComparison.OrdinalIgnoreCase);
+        user.UpdatedAt = now;
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        return NormalizeAdminUserStatus(user.Status) ?? "pending";
+    }
+
+    private static async Task<DateTimeOffset> SyncAdminUsersFromGoogleDirectoryAsync(
+        IncosWorkspaceDbContext db,
+        IHttpClientFactory httpClientFactory,
+        IConfiguration configuration,
+        string accessToken,
+        CancellationToken cancellationToken)
+    {
+        var hostedDomain = configuration["Authentication:Google:HostedDomain"]?.Trim();
+        var users = await GetGoogleDirectoryUsersAsync(
+            httpClientFactory,
+            accessToken,
+            hostedDomain,
+            cancellationToken);
+        var now = DateTimeOffset.UtcNow;
+        var existingUsers = await db.AdminUsers
+            .ToDictionaryAsync(user => user.Email.ToLowerInvariant(), cancellationToken);
+
+        foreach (var directoryUser in users)
+        {
+            var normalizedEmail = directoryUser.Email.Trim().ToLowerInvariant();
+
+            if (string.IsNullOrWhiteSpace(normalizedEmail))
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(hostedDomain) &&
+                !normalizedEmail.EndsWith($"@{hostedDomain}", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!existingUsers.TryGetValue(normalizedEmail, out var user))
+            {
+                user = new AdminUser
+                {
+                    Id = Guid.NewGuid(),
+                    CreatedAt = now,
+                    Email = normalizedEmail,
+                    Status = directoryUser.IsSuspended ? "inactive" : "pending",
+                    ApiAccessEnabled = false,
+                };
+                existingUsers[normalizedEmail] = user;
+                db.AdminUsers.Add(user);
+            }
+
+            user.GoogleUserId = directoryUser.GoogleUserId;
+            user.DisplayName = string.IsNullOrWhiteSpace(directoryUser.DisplayName)
+                ? CreateDisplayNameFromEmail(normalizedEmail)
+                : directoryUser.DisplayName;
+            user.PhotoUrl = directoryUser.PhotoUrl;
+            user.HostedDomain = hostedDomain;
+            user.IsDirectorySuspended = directoryUser.IsSuspended;
+            user.GoogleLastLoginAt = directoryUser.GoogleLastLoginAt;
+            user.DirectorySyncedAt = now;
+            user.UpdatedAt = now;
+
+            if (directoryUser.IsSuspended)
+            {
+                user.Status = "inactive";
+                user.ApiAccessEnabled = false;
+            }
+            else if (NormalizeAdminUserStatus(user.Status) is null)
+            {
+                user.Status = user.LastLoginAt.HasValue ? "active" : "pending";
+            }
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        return now;
+    }
+
+    private static async Task<GoogleDirectoryUserSnapshot[]> GetGoogleDirectoryUsersAsync(
+        IHttpClientFactory httpClientFactory,
+        string accessToken,
+        string? hostedDomain,
+        CancellationToken cancellationToken)
+    {
+        var users = new List<GoogleDirectoryUserSnapshot>();
+        string? pageToken = null;
+
+        do
+        {
+            var query = new Dictionary<string, string?>
+            {
+                ["domain"] = string.IsNullOrWhiteSpace(hostedDomain) ? null : hostedDomain,
+                ["customer"] = string.IsNullOrWhiteSpace(hostedDomain) ? "my_customer" : null,
+                ["maxResults"] = "500",
+                ["orderBy"] = "email",
+                ["projection"] = "basic",
+                ["pageToken"] = pageToken,
+                ["fields"] = "users(id,primaryEmail,name(fullName),thumbnailPhotoUrl,suspended,archived,lastLoginTime),nextPageToken",
+            };
+            var requestUrl = QueryHelpers.AddQueryString(
+                "https://admin.googleapis.com/admin/directory/v1/users",
+                query);
+            var payload = await SendGoogleGetAsync(
+                httpClientFactory,
+                accessToken,
+                requestUrl,
+                "Google Workspace users could not be loaded.",
+                cancellationToken);
+
+            using var document = JsonDocument.Parse(payload);
+
+            if (document.RootElement.TryGetProperty("users", out var usersElement) &&
+                usersElement.ValueKind == JsonValueKind.Array)
+            {
+                users.AddRange(usersElement
+                    .EnumerateArray()
+                    .Select(ParseGoogleDirectoryUser)
+                    .Where(user => !string.IsNullOrWhiteSpace(user.Email)));
+            }
+
+            pageToken = GetJsonString(document.RootElement, "nextPageToken");
+        }
+        while (!string.IsNullOrWhiteSpace(pageToken));
+
+        return users
+            .OrderBy(user => user.Email, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static GoogleDirectoryUserSnapshot ParseGoogleDirectoryUser(JsonElement user)
+    {
+        var email = GetJsonString(user, "primaryEmail") ?? string.Empty;
+        var displayName = default(string);
+
+        if (user.TryGetProperty("name", out var nameElement) &&
+            nameElement.ValueKind == JsonValueKind.Object)
+        {
+            displayName = GetJsonString(nameElement, "fullName");
+        }
+
+        return new GoogleDirectoryUserSnapshot(
+            GetJsonString(user, "id"),
+            email,
+            string.IsNullOrWhiteSpace(displayName) ? CreateDisplayNameFromEmail(email) : displayName,
+            GetJsonString(user, "thumbnailPhotoUrl"),
+            GetJsonBool(user, "suspended") == true || GetJsonBool(user, "archived") == true,
+            ParseGoogleDirectoryLastLogin(GetJsonString(user, "lastLoginTime")));
+    }
+
+    private static DateTimeOffset? ParseGoogleDirectoryLastLogin(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) ||
+            string.Equals(value, "Never", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        if (!DateTimeOffset.TryParse(
+                value,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal,
+                out var parsedValue))
+        {
+            return null;
+        }
+
+        return parsedValue.Year <= 1971 ? null : parsedValue;
+    }
+
+    private static async Task<AdminUserDto[]> GetAdminUserDtosAsync(
+        IncosWorkspaceDbContext db,
+        CancellationToken cancellationToken) =>
+        (await db.AdminUsers
+            .AsNoTracking()
+            .Where(user => user.LastLoginAt.HasValue)
+            .OrderBy(user => user.Status == "pending" ? 0 : user.Status == "active" ? 1 : 2)
+            .ThenBy(user => user.DisplayName)
+            .ToArrayAsync(cancellationToken))
+        .Select(ToAdminUserDto)
+        .ToArray();
+
+    private static AdminUserDto ToAdminUserDto(AdminUser user)
+    {
+        var status = user.IsDirectorySuspended
+            ? "inactive"
+            : NormalizeAdminUserStatus(user.Status) ?? (user.LastLoginAt.HasValue ? "active" : "pending");
+
+        return new AdminUserDto(
+            user.Id,
+            user.Email,
+            string.IsNullOrWhiteSpace(user.DisplayName)
+                ? CreateDisplayNameFromEmail(user.Email)
+                : user.DisplayName,
+            user.PhotoUrl,
+            status,
+            user.ApiAccessEnabled && status != "inactive",
+            user.LastLoginAt.HasValue,
+            user.IsDirectorySuspended,
+            user.LastLoginAt,
+            user.GoogleLastLoginAt,
+            user.DirectorySyncedAt);
+    }
+
+    private static async Task<AdminGroupDto[]> GetAdminGroupDtosAsync(
+        IncosWorkspaceDbContext db,
+        bool includeProtectedGroups,
+        CancellationToken cancellationToken) =>
+        (await db.AdminGroups
+            .AsNoTracking()
+            .Include(group => group.Members)
+            .ThenInclude(member => member.AdminUser)
+            .OrderBy(group => group.Status == "active" ? 0 : 1)
+            .ThenBy(group => group.Name)
+            .ToArrayAsync(cancellationToken))
+        .Where(group => includeProtectedGroups || !IsProtectedAdminGroup(group))
+        .Select(ToAdminGroupDto)
+        .ToArray();
+
+    private static async Task<AdminGroupDto?> GetAdminGroupDtoAsync(
+        IncosWorkspaceDbContext db,
+        Guid groupId,
+        CancellationToken cancellationToken)
+    {
+        var group = await db.AdminGroups
+            .AsNoTracking()
+            .Include(adminGroup => adminGroup.Members)
+            .ThenInclude(member => member.AdminUser)
+            .FirstOrDefaultAsync(adminGroup => adminGroup.Id == groupId, cancellationToken);
+
+        return group is null ? null : ToAdminGroupDto(group);
+    }
+
+    private static AdminGroupDto ToAdminGroupDto(AdminGroup group) =>
+        new(
+            group.Id,
+            group.Name,
+            group.Description,
+            group.PhotoUrl,
+            NormalizeAdminGroupStatus(group.Status),
+            IsProtectedAdminGroup(group),
+            ParseAdminGroupValues(group.PermissionJson, AdminGroupPermissionKeys),
+            ParseAdminGroupValues(group.SettingJson, AdminGroupSettingKeys),
+            ParseAdminGroupValues(group.AccessJson, AdminGroupAccessKeys),
+            group.Members
+                .Where(member => member.AdminUser is not null)
+                .OrderBy(member => member.AdminUser!.DisplayName)
+                .Select(member => new AdminGroupMemberDto(
+                    member.AdminUserId,
+                    member.AdminUser!.Email,
+                    string.IsNullOrWhiteSpace(member.AdminUser.DisplayName)
+                        ? CreateDisplayNameFromEmail(member.AdminUser.Email)
+                        : member.AdminUser.DisplayName,
+                    member.AdminUser.PhotoUrl,
+                    NormalizeAdminUserStatus(member.AdminUser.Status) ?? "pending"))
+                .ToArray(),
+            group.CreatedAt,
+            group.UpdatedAt);
+
+    private static bool IsProtectedAdminGroup(AdminGroup group) =>
+        string.Equals(group.Name, MainAdminGroupName, StringComparison.OrdinalIgnoreCase);
+
+    private static async Task<bool> CanViewMainAdminGroupAsync(
+        IncosWorkspaceDbContext db,
+        ClaimsPrincipal user,
+        CancellationToken cancellationToken)
+    {
+        var email = user.FindFirstValue(ClaimTypes.Email)?.Trim().ToLowerInvariant();
+
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            return false;
+        }
+
+        return await (
+            from member in db.AdminGroupMembers
+            join adminGroup in db.AdminGroups on member.AdminGroupId equals adminGroup.Id
+            join adminUser in db.AdminUsers on member.AdminUserId equals adminUser.Id
+            where adminGroup.Name == MainAdminGroupName && adminUser.Email == email
+            select member.Id)
+            .AnyAsync(cancellationToken);
+    }
+
+    private static async Task EnsureDefaultAdminGroupAsync(
+        IncosWorkspaceDbContext db,
+        CancellationToken cancellationToken)
+    {
+        await EnsureAdminUsersTableAsync(db, cancellationToken);
+        await EnsureAdminGroupsTableAsync(db, cancellationToken);
+
+        var now = DateTimeOffset.UtcNow;
+        var mainAdmin = await db.AdminUsers
+            .FirstOrDefaultAsync(user => user.Email == MainAdminEmail, cancellationToken);
+
+        if (mainAdmin is null)
+        {
+            mainAdmin = new AdminUser
+            {
+                Id = Guid.NewGuid(),
+                CreatedAt = now,
+                Email = MainAdminEmail,
+                DisplayName = CreateDisplayNameFromEmail(MainAdminEmail),
+                HostedDomain = "incos.co.kr",
+                Status = "active",
+                ApiAccessEnabled = true,
+                LastLoginAt = now,
+                UpdatedAt = now,
+            };
+            db.AdminUsers.Add(mainAdmin);
+        }
+        else
+        {
+            mainAdmin.Status = "active";
+            mainAdmin.ApiAccessEnabled = true;
+            mainAdmin.UpdatedAt = now;
+        }
+
+        var group = await db.AdminGroups
+            .Include(adminGroup => adminGroup.Members)
+            .FirstOrDefaultAsync(
+                adminGroup => adminGroup.Name.ToLower() == MainAdminGroupName.ToLower(),
+                cancellationToken);
+
+        if (group is null)
+        {
+            group = new AdminGroup
+            {
+                Id = Guid.NewGuid(),
+                CreatedAt = now,
+                Name = MainAdminGroupName,
+            };
+            db.AdminGroups.Add(group);
+        }
+
+        group.Description = "Default protected administrator group.";
+        group.Status = "active";
+        group.PermissionJson = SerializeAdminGroupValues(AdminGroupPermissionKeys, AdminGroupPermissionKeys);
+        group.SettingJson = SerializeAdminGroupValues(AdminGroupSettingKeys, AdminGroupSettingKeys);
+        group.AccessJson = SerializeAdminGroupValues(AdminGroupAccessKeys, AdminGroupAccessKeys);
+        group.UpdatedAt = now;
+
+        if (!group.Members.Any(member => member.AdminUserId == mainAdmin.Id))
+        {
+            db.AdminGroupMembers.Add(new AdminGroupMember
+            {
+                Id = Guid.NewGuid(),
+                CreatedAt = now,
+                UpdatedAt = now,
+                AdminGroupId = group.Id,
+                AdminUserId = mainAdmin.Id,
+            });
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private static async Task ApplyAdminGroupMembersAsync(
+        IncosWorkspaceDbContext db,
+        AdminGroup group,
+        IEnumerable<Guid>? memberIds,
+        bool preserveMainAdmin,
+        CancellationToken cancellationToken)
+    {
+        var normalizedMemberIds = new HashSet<Guid>(memberIds ?? [], EqualityComparer<Guid>.Default);
+
+        if (preserveMainAdmin)
+        {
+            var mainAdminId = await db.AdminUsers
+                .Where(user => user.Email == MainAdminEmail)
+                .Select(user => user.Id)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (mainAdminId != Guid.Empty)
+            {
+                normalizedMemberIds.Add(mainAdminId);
+            }
+        }
+
+        var validMemberIds = await db.AdminUsers
+            .Where(user => normalizedMemberIds.Contains(user.Id))
+            .Select(user => user.Id)
+            .ToArrayAsync(cancellationToken);
+        var validMemberIdSet = validMemberIds.ToHashSet();
+        var existingMembers = await db.AdminGroupMembers
+            .Where(member => member.AdminGroupId == group.Id)
+            .ToArrayAsync(cancellationToken);
+
+        foreach (var existingMember in existingMembers)
+        {
+            if (!validMemberIdSet.Contains(existingMember.AdminUserId))
+            {
+                db.AdminGroupMembers.Remove(existingMember);
+            }
+        }
+
+        var existingMemberIds = existingMembers
+            .Where(member => validMemberIdSet.Contains(member.AdminUserId))
+            .Select(member => member.AdminUserId)
+            .ToHashSet();
+        var now = DateTimeOffset.UtcNow;
+
+        foreach (var userId in validMemberIds)
+        {
+            if (existingMemberIds.Contains(userId))
+            {
+                continue;
+            }
+
+            db.AdminGroupMembers.Add(new AdminGroupMember
+            {
+                Id = Guid.NewGuid(),
+                CreatedAt = now,
+                UpdatedAt = now,
+                AdminGroupId = group.Id,
+                AdminUserId = userId,
+            });
+        }
+    }
+
+    private static string? NormalizeAdminUserStatus(string? status)
+    {
+        if (string.IsNullOrWhiteSpace(status))
+        {
+            return null;
+        }
+
+        return status.Trim().ToLowerInvariant() switch
+        {
+            "active" or "activated" or "approved" => "active",
+            "inactive" or "deactivated" or "disabled" or "blocked" => "inactive",
+            "pending" => "pending",
+            _ => null,
+        };
+    }
+
+    private static string CreateDisplayNameFromEmail(string email)
+    {
+        var localPart = email.Split('@', 2)[0];
+
+        return string.IsNullOrWhiteSpace(localPart)
+            ? email
+            : CultureInfo.InvariantCulture.TextInfo.ToTitleCase(localPart.Replace('.', ' ').Replace('_', ' '));
+    }
+
+    private static string NormalizeAdminGroupStatus(string? status) =>
+        status?.Trim().ToLowerInvariant() switch
+        {
+            "inactive" or "deactivated" or "disabled" => "inactive",
+            _ => "active",
+        };
+
+    private static string? NormalizeOptionalText(string? value)
+    {
+        var trimmedValue = value?.Trim();
+
+        return string.IsNullOrWhiteSpace(trimmedValue) ? null : trimmedValue;
+    }
+
+    private static string SerializeAdminGroupValues(
+        IEnumerable<string>? values,
+        IReadOnlySet<string> allowedValues) =>
+        JsonSerializer.Serialize(NormalizeAdminGroupValues(values, allowedValues));
+
+    private static string[] ParseAdminGroupValues(
+        string? json,
+        IReadOnlySet<string> allowedValues)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return [];
+        }
+
+        try
+        {
+            return NormalizeAdminGroupValues(
+                JsonSerializer.Deserialize<string[]>(json) ?? [],
+                allowedValues);
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    private static string[] NormalizeAdminGroupValues(
+        IEnumerable<string>? values,
+        IReadOnlySet<string> allowedValues)
+    {
+        var normalizedValues = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var value in values ?? [])
+        {
+            var normalizedValue = value.Trim().ToLowerInvariant();
+
+            if (allowedValues.Contains(normalizedValue))
+            {
+                normalizedValues.Add(normalizedValue);
+            }
+        }
+
+        return allowedValues
+            .Where(normalizedValues.Contains)
+            .ToArray();
+    }
+
     private static async Task<string?> GetGoogleAccessTokenAsync(
         HttpContext context,
         IHttpClientFactory httpClientFactory,
@@ -1485,10 +2554,14 @@ public static class GoogleIntegrationEndpoints
     {
         await EnsureGoogleOAuthTokensTableAsync(db, cancellationToken);
         var userKey = GetCurrentUserKey(user);
+        var email = user.FindFirstValue(ClaimTypes.Email)?.Trim().ToLowerInvariant();
 
         return await db.GoogleOAuthTokens
             .AsNoTracking()
-            .FirstOrDefaultAsync(token => token.UserKey == userKey, cancellationToken);
+            .FirstOrDefaultAsync(
+                token => token.UserKey.ToLower() == userKey ||
+                         (token.Email != null && token.Email.ToLower() == email),
+                cancellationToken);
     }
 
     private static async Task StoreRefreshedGoogleTokenAsync(
@@ -1500,9 +2573,13 @@ public static class GoogleIntegrationEndpoints
     {
         await EnsureGoogleOAuthTokensTableAsync(db, cancellationToken);
         var userKey = GetCurrentUserKey(user);
+        var email = user.FindFirstValue(ClaimTypes.Email)?.Trim().ToLowerInvariant();
         var now = DateTimeOffset.UtcNow;
         var token = await db.GoogleOAuthTokens
-            .FirstOrDefaultAsync(currentToken => currentToken.UserKey == userKey, cancellationToken);
+            .FirstOrDefaultAsync(
+                currentToken => currentToken.UserKey.ToLower() == userKey ||
+                                (currentToken.Email != null && currentToken.Email.ToLower() == email),
+                cancellationToken);
 
         if (token is null)
         {
@@ -1511,11 +2588,13 @@ public static class GoogleIntegrationEndpoints
                 Id = Guid.NewGuid(),
                 CreatedAt = now,
                 UserKey = userKey,
-                Email = user.FindFirstValue(ClaimTypes.Email),
+                Email = email,
             };
             db.GoogleOAuthTokens.Add(token);
         }
 
+        token.UserKey = userKey;
+        token.Email = email;
         token.AccessToken = refreshedToken.AccessToken;
         token.RefreshToken = refreshedToken.RefreshToken ?? previousRefreshToken;
         token.AccessTokenExpiresAt = now.AddSeconds(Math.Max(60, refreshedToken.ExpiresIn - 60));
@@ -1585,6 +2664,50 @@ public static class GoogleIntegrationEndpoints
         token.Value = value;
     }
 
+    private static bool IsGoogleIntegrationStatusRequest(HttpContext context) =>
+        string.Equals(context.Request.Method, HttpMethods.Get, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(context.Request.Path.Value, "/api/google/integrations", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsGoogleIntegrationConnectRequest(HttpContext context) =>
+        string.Equals(context.Request.Method, HttpMethods.Get, StringComparison.OrdinalIgnoreCase) &&
+        context.Request.Path.StartsWithSegments("/api/google/integrations") &&
+        context.Request.Path.Value?.EndsWith("/connect", StringComparison.OrdinalIgnoreCase) == true;
+
+    private static bool CanUseGoogleWorkspaceData(ClaimsPrincipal user, IConfiguration configuration)
+    {
+        var workspaceDataDomain = GetGoogleWorkspaceDataDomain(configuration);
+        var email = user.FindFirstValue(ClaimTypes.Email);
+        var hostedDomain = user.FindFirstValue("hd");
+
+        return (!string.IsNullOrWhiteSpace(hostedDomain) &&
+                string.Equals(hostedDomain, workspaceDataDomain, StringComparison.OrdinalIgnoreCase)) ||
+               (!string.IsNullOrWhiteSpace(email) &&
+                email.EndsWith($"@{workspaceDataDomain}", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string GetGoogleWorkspaceDataDomain(IConfiguration configuration)
+    {
+        var configuredDomain =
+            configuration["Authentication:Google:WorkspaceDataDomain"] ??
+            configuration["Authentication:Google:HostedDomain"];
+
+        return string.IsNullOrWhiteSpace(configuredDomain)
+            ? "incos.co.kr"
+            : configuredDomain.Trim().TrimStart('@').ToLowerInvariant();
+    }
+
+    private static GoogleIntegrationStatusDto CreateDisabledStatus(
+        string provider,
+        string label) =>
+        new(
+            provider,
+            label,
+            false,
+            false,
+            "disabled",
+            string.Empty,
+            []);
+
     private static GoogleIntegrationStatusDto CreateStatus(
         string provider,
         string label,
@@ -1618,6 +2741,30 @@ public static class GoogleIntegrationEndpoints
         return scopesClaim
             .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static void AddGrantedScopes(HashSet<string> grantedScopes, string? scopes)
+    {
+        if (string.IsNullOrWhiteSpace(scopes))
+        {
+            return;
+        }
+
+        foreach (var scope in scopes.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            grantedScopes.Add(scope);
+        }
+    }
+
+    private static void AddGrantedScopes(HashSet<string> grantedScopes, IEnumerable<string> scopes)
+    {
+        foreach (var scope in scopes)
+        {
+            if (!string.IsNullOrWhiteSpace(scope))
+            {
+                grantedScopes.Add(scope);
+            }
+        }
     }
 
     private static async Task<GoogleChatProfileResolutionStatus> CheckGoogleChatProfileResolutionAsync(
@@ -1761,6 +2908,31 @@ public static class GoogleIntegrationEndpoints
             : googleMessage;
     }
 
+    private static string CreateAdminDirectorySetupDetail(string googleErrorDetail)
+    {
+        var googleMessage = ExtractGoogleErrorMessage(googleErrorDetail);
+
+        if (googleMessage.Contains("has not been used", StringComparison.OrdinalIgnoreCase) ||
+            googleMessage.Contains("disabled", StringComparison.OrdinalIgnoreCase) ||
+            googleMessage.Contains("accessNotConfigured", StringComparison.OrdinalIgnoreCase))
+        {
+            var projectMatch = Regex.Match(
+                googleMessage,
+                @"(?:project=|project\s+)(?<project>[A-Za-z0-9-]+)",
+                RegexOptions.IgnoreCase);
+            var projectId = projectMatch.Success ? projectMatch.Groups["project"].Value : string.Empty;
+            var enableUrl = string.IsNullOrWhiteSpace(projectId)
+                ? "https://console.cloud.google.com/apis/library/admin.googleapis.com"
+                : $"https://console.developers.google.com/apis/api/admin.googleapis.com/overview?project={Uri.EscapeDataString(projectId)}";
+
+            return $"Admin SDK API is disabled for this Google Cloud project. Enable it at {enableUrl}, wait a few minutes if it was just enabled, then refresh Users.";
+        }
+
+        return string.IsNullOrWhiteSpace(googleMessage)
+            ? "Google Workspace users could not be synced. Confirm Admin SDK API is enabled and Directory read access is granted."
+            : googleMessage;
+    }
+
     private static string ExtractGoogleErrorMessage(string googleErrorDetail)
     {
         if (string.IsNullOrWhiteSpace(googleErrorDetail))
@@ -1786,11 +2958,19 @@ public static class GoogleIntegrationEndpoints
         return googleErrorDetail;
     }
 
-    private static string GetCurrentUserKey(ClaimsPrincipal user) =>
-        user.FindFirstValue(ClaimTypes.Email) ??
-        user.FindFirstValue(ClaimTypes.NameIdentifier) ??
-        user.Identity?.Name ??
-        "google-user";
+    private static string GetCurrentUserKey(ClaimsPrincipal user)
+    {
+        var email = user.FindFirstValue(ClaimTypes.Email);
+
+        if (!string.IsNullOrWhiteSpace(email))
+        {
+            return email.Trim().ToLowerInvariant();
+        }
+
+        return user.FindFirstValue(ClaimTypes.NameIdentifier) ??
+               user.Identity?.Name ??
+               "google-user";
+    }
 
     private static async Task<ScheduledGmailSendTokens?> GetScheduledGmailSendTokensAsync(
         HttpContext context,
@@ -2027,6 +3207,68 @@ public static class GoogleIntegrationEndpoints
             );
             CREATE UNIQUE INDEX IF NOT EXISTS "IX_google_oauth_tokens_UserKey"
                 ON google_oauth_tokens ("UserKey");
+            """,
+            cancellationToken);
+
+    public static Task EnsureAdminUsersTableAsync(
+        IncosWorkspaceDbContext db,
+        CancellationToken cancellationToken = default) =>
+        db.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE IF NOT EXISTS admin_users (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                "GoogleUserId" character varying(120) NULL,
+                "Email" character varying(320) NOT NULL,
+                "DisplayName" character varying(160) NOT NULL,
+                "PhotoUrl" text NULL,
+                "HostedDomain" character varying(160) NULL,
+                "Role" character varying(120) NULL,
+                "Status" character varying(40) NOT NULL,
+                "ApiAccessEnabled" boolean NOT NULL,
+                "IsDirectorySuspended" boolean NOT NULL,
+                "LastLoginAt" timestamp with time zone NULL,
+                "GoogleLastLoginAt" timestamp with time zone NULL,
+                "DirectorySyncedAt" timestamp with time zone NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_admin_users_Email"
+                ON admin_users ("Email");
+            CREATE INDEX IF NOT EXISTS "IX_admin_users_GoogleUserId"
+                ON admin_users ("GoogleUserId");
+            """,
+            cancellationToken);
+
+    public static Task EnsureAdminGroupsTableAsync(
+        IncosWorkspaceDbContext db,
+        CancellationToken cancellationToken = default) =>
+        db.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE IF NOT EXISTS admin_groups (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                "Name" character varying(160) NOT NULL,
+                "Description" character varying(600) NULL,
+                "PhotoUrl" text NULL,
+                "Status" character varying(40) NOT NULL,
+                "PermissionJson" jsonb NOT NULL,
+                "SettingJson" jsonb NOT NULL,
+                "AccessJson" jsonb NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_admin_groups_Name"
+                ON admin_groups ("Name");
+            CREATE TABLE IF NOT EXISTS admin_group_members (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                "AdminGroupId" uuid NOT NULL,
+                "AdminUserId" uuid NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_admin_group_members_AdminGroupId_AdminUserId"
+                ON admin_group_members ("AdminGroupId", "AdminUserId");
+            CREATE INDEX IF NOT EXISTS "IX_admin_group_members_AdminUserId"
+                ON admin_group_members ("AdminUserId");
             """,
             cancellationToken);
 
@@ -6169,6 +7411,14 @@ public static class GoogleIntegrationEndpoints
         long ExpiresIn,
         string? RefreshToken,
         string? Scope);
+
+    private sealed record GoogleDirectoryUserSnapshot(
+        string? GoogleUserId,
+        string Email,
+        string DisplayName,
+        string? PhotoUrl,
+        bool IsSuspended,
+        DateTimeOffset? GoogleLastLoginAt);
 
     private sealed record GoogleWorkspaceProfile(
         string? DisplayName,

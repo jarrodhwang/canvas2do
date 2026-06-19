@@ -66,6 +66,14 @@ function formatRelativeTime(value: string | undefined, language: 'en' | 'ko') {
   return language === 'ko' ? `${days}일` : `${days}d`;
 }
 
+function isGoogleApiAccessDisabledError(error: string | null) {
+  const normalizedError = error?.toLowerCase() ?? '';
+
+  return normalizedError.includes('google api access is not enabled') ||
+    normalizedError.includes('api access is disabled') ||
+    normalizedError.includes('not assigned to your account');
+}
+
 function formatDateTime(value: string | undefined, language: 'en' | 'ko') {
   if (!value) {
     return '';
@@ -650,6 +658,7 @@ function GoogleChatView() {
     error?.toLowerCase().includes('sign-in required') ||
     error?.toLowerCase().includes('sign in again') ||
     false;
+  const isGoogleApiAccessDisabled = isGoogleApiAccessDisabledError(error);
 
   useEffect(() => {
     let isMounted = true;
@@ -751,29 +760,34 @@ function GoogleChatView() {
             <GoogleProductIcon decorative product="chat" size={30} />
             <h3 className="mt-3 text-lg font-black">{dictionary.googleChatTitle}</h3>
             <p className="mt-2 text-sm font-semibold text-muted-foreground">{error}</p>
-            <Button
-              className="mt-4"
-              onClick={() => {
-                if (needsPeopleApiSetup) {
-                  window.open('https://console.cloud.google.com/apis/library/people.googleapis.com', '_blank', 'noopener,noreferrer');
-                  return;
-                }
+            {!isGoogleApiAccessDisabled ? (
+              <Button
+                className="mt-4"
+                onClick={() => {
+                  if (needsPeopleApiSetup) {
+                    window.open('https://console.cloud.google.com/apis/library/people.googleapis.com', '_blank', 'noopener,noreferrer');
+                    return;
+                  }
 
                 if (needsWorkspaceSignIn) {
-                  window.location.href = workspaceApi.getGoogleLoginUrl(window.location.pathname);
+                  window.location.href = workspaceApi.getGoogleLoginUrl(window.location.pathname, {
+                    forceConsent: true,
+                    forceLogin: true,
+                  });
                   return;
                 }
 
-                window.location.href = `${workspaceApi.apiBaseUrl}/google/integrations/google_chat/connect`;
-              }}
-              type="button"
-            >
-              {needsPeopleApiSetup
-                ? 'Open People API setup'
-                : needsWorkspaceSignIn
-                  ? 'Sign in again'
-                  : dictionary.reconnectGoogle}
-            </Button>
+                  window.location.href = `${workspaceApi.apiBaseUrl}/google/integrations/google_chat/connect`;
+                }}
+                type="button"
+              >
+                {needsPeopleApiSetup
+                  ? 'Open People API setup'
+                  : needsWorkspaceSignIn
+                    ? 'Sign in again'
+                    : dictionary.reconnectGoogle}
+              </Button>
+            ) : null}
           </div>
         </CardContent>
       ) : (

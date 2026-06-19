@@ -5,6 +5,7 @@ export interface CalendarEvent {
   title: string;
   color: ColorToken;
   courseLabel?: string;
+  displayStyle?: 'dot';
   type: string;
   time?: string;
 }
@@ -35,6 +36,7 @@ export interface AgendaItem {
   color: ColorToken;
   canOpenDetails?: boolean;
   isCanvasSource?: boolean;
+  isArchivedCanvasItem?: boolean;
   isCompleted?: boolean;
   isLocked?: boolean;
   isStarred?: boolean;
@@ -49,10 +51,12 @@ export interface BoardItem {
   checklistProgress: string;
   dueAt?: string;
   isCompleted?: boolean;
+  isClassSession?: boolean;
   isLocked?: boolean;
   isTitleEditable?: boolean;
   canOpenDetails?: boolean;
   isCanvasSource?: boolean;
+  isArchivedCanvasItem?: boolean;
   isStarred?: boolean;
   time?: string;
 }
@@ -66,6 +70,7 @@ export interface TimelineItem {
   color: ColorToken;
   canOpenDetails?: boolean;
   isCanvasSource?: boolean;
+  isArchivedCanvasItem?: boolean;
   isCompleted?: boolean;
   isLocked?: boolean;
   isStarred?: boolean;

@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent } from 'react';
 import {
   Activity,
+  BarChart3,
   CalendarPlus,
   Check,
   ChevronDown,
@@ -10,6 +11,7 @@ import {
   Clock3,
   ExternalLink,
   EyeOff,
+  Image as ImageIcon,
   KeyRound,
   LayoutPanelTop,
   LogOut,
@@ -19,6 +21,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  RotateCcw,
   Star,
   Sun,
   Trash2,
@@ -31,9 +34,16 @@ import { AdminUsersView } from './components/AdminUsersView';
 import { CalendarShell } from './components/CalendarShell';
 import { CanvasInboxView } from './components/CanvasInboxView';
 import { CanvasPeopleView } from './components/CanvasPeopleView';
+import { AcademyGradesView } from './components/AcademyGradesView';
 import { CourseOverviewView } from './components/CourseOverviewView';
 import { DashboardCards } from './components/DashboardCards';
 import { DateTimeField } from './components/DateTimeField';
+import type {
+  ManualLectureClassType,
+  ManualLectureSchedule,
+  ManualLectureScheduleEntry,
+  ManualLectureWeekday,
+} from './components/ManualLectureDialog';
 import { DetailPanel } from './components/DetailPanel';
 import { DriveDetailPanel } from './components/DriveDetailPanel';
 import { DriveFilesView } from './components/DriveFilesView';
@@ -83,7 +93,15 @@ import { WorkspaceIcon } from './components/WorkspaceIcon';
 import { useLanguage } from './context/LanguageContext';
 import { useWorkspaceMode } from './context/WorkspaceModeContext';
 import type { AgendaItem, BoardItem, CalendarDay, CalendarEvent, TimelineItem, WorkspaceModeMockData } from './data/mockWorkspaceData';
+import {
+  canAccessSidebarItem,
+  createAccessSet,
+  filterModeForAccess,
+  getAccessibleModes,
+  getFirstAccessibleSidebarItem,
+} from './lib/accessControl';
 import { badgeColorClasses, dotColorClasses } from './lib/colorStyles';
+import { defaultGradeProgressColorThresholds } from './lib/gradeProgress';
 import { cn } from './lib/utils';
 import type { BoardColumnConfig, ColorToken, WorkspaceView } from './modes/types';
 import { applyTheme, getInitialTheme, type AppTheme } from './theme';
@@ -107,14 +125,18 @@ type CanvasCalendarLoadStatus = 'idle' | 'loading' | 'loaded' | 'failed';
 
 interface CanvasCalendarPage {
   items: CanvasCalendarItem[];
+  requestedAt?: number;
   status: CanvasCalendarLoadStatus;
 }
 
 interface AcademyCalendarSettings {
   accentColor: ColorToken;
+  academyLogoSrc: string;
   courseworkHideCompletedAfterHours: number;
   courseworkHideCompletedFrom: 'completedAt' | 'dueAt';
   hiddenCourseIds?: string[];
+  gradeProgressGreenAt: number;
+  gradeProgressYellowAt: number;
   progressDisplay: CalendarProgressDisplay;
   progressGreenAt: number;
   progressYellowAt: number;
@@ -224,6 +246,40 @@ const calendarTodoTypes = [
   'final_exam',
   'exam',
 ];
+const manualLectureClassTypeLabels: Record<ManualLectureClassType, string> = {
+  lab: 'Lab',
+  lecture: 'Lecture',
+  seminar: 'Seminar',
+  tutorial: 'Tutorial',
+};
+const manualLectureWeekdayIndexes: Record<ManualLectureWeekday, number> = {
+  Fri: 5,
+  Mon: 1,
+  Sat: 6,
+  Sun: 0,
+  Thu: 4,
+  Tue: 2,
+  Wed: 3,
+};
+const manualLectureWeekdayAliases: Record<string, ManualLectureWeekday> = {
+  friday: 'Fri',
+  fri: 'Fri',
+  monday: 'Mon',
+  mon: 'Mon',
+  saturday: 'Sat',
+  sat: 'Sat',
+  sunday: 'Sun',
+  sun: 'Sun',
+  thursday: 'Thu',
+  thu: 'Thu',
+  thur: 'Thu',
+  thurs: 'Thu',
+  tuesday: 'Tue',
+  tue: 'Tue',
+  tues: 'Tue',
+  wednesday: 'Wed',
+  wed: 'Wed',
+};
 
 interface StoredCoursePreference {
   assessmentType?: string;
@@ -250,6 +306,7 @@ interface StoredCoursePreference {
     label?: string;
     url?: string;
   }>;
+  schedule?: ManualLectureSchedule;
   originalCourseCode?: string;
   semester?: string;
   starred?: boolean;
@@ -293,7 +350,7 @@ interface StoredManualAssessment {
 
 interface CalendarSourceItem {
   id: string;
-  source: 'canvas' | 'manual-coursework' | 'manual-assessment';
+  source: 'canvas' | 'manual-coursework' | 'manual-assessment' | 'class-session';
   title: string;
   type: string;
   courseId?: string;
@@ -303,9 +360,12 @@ interface CalendarSourceItem {
   startAt?: string;
   endAt?: string;
   htmlUrl?: string;
+  location?: string;
   semester?: string;
   color: ColorToken;
+  displayStyle?: 'dot';
   isCompleted?: boolean;
+  isArchivedCanvasItem?: boolean;
   isLocked?: boolean;
   isStarred?: boolean;
 }
@@ -427,8 +487,11 @@ const academyAccentThemeVariables: Record<ColorToken, {
 
 const defaultAcademyCalendarSettings: AcademyCalendarSettings = {
   accentColor: 'gold',
+  academyLogoSrc: '',
   courseworkHideCompletedAfterHours: 24,
   courseworkHideCompletedFrom: 'dueAt',
+  gradeProgressGreenAt: defaultGradeProgressColorThresholds.greenAt,
+  gradeProgressYellowAt: defaultGradeProgressColorThresholds.yellowAt,
   progressDisplay: 'linear',
   progressGreenAt: defaultCalendarProgressThresholds.greenAt,
   progressYellowAt: defaultCalendarProgressThresholds.yellowAt,
@@ -737,45 +800,67 @@ function getStoredCanvasAssessmentPreferences() {
     : {};
 }
 
-function normalizeAcademyCalendarSettings(value: unknown): AcademyCalendarSettings {
+function normalizeAcademyCalendarSettings(
+  value: unknown,
+  fallback: AcademyCalendarSettings = defaultAcademyCalendarSettings,
+): AcademyCalendarSettings {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return defaultAcademyCalendarSettings;
+    return fallback;
   }
 
   const settings = value as Partial<AcademyCalendarSettings>;
-  const progressDisplay = settings.progressDisplay === 'circular' ? 'circular' : 'linear';
+  const progressDisplay = settings.progressDisplay === 'circular' || settings.progressDisplay === 'linear'
+    ? settings.progressDisplay
+    : fallback.progressDisplay;
   const progressGreenAt = Number.isFinite(settings.progressGreenAt)
     ? Math.min(Math.max(Number(settings.progressGreenAt), 0), 100)
-    : defaultAcademyCalendarSettings.progressGreenAt;
+    : fallback.progressGreenAt;
   const progressYellowAt = Number.isFinite(settings.progressYellowAt)
     ? Math.min(Math.max(Number(settings.progressYellowAt), 0), progressGreenAt)
-    : Math.min(defaultAcademyCalendarSettings.progressYellowAt, progressGreenAt);
+    : Math.min(fallback.progressYellowAt, progressGreenAt);
+  const gradeProgressGreenAt = Number.isFinite(settings.gradeProgressGreenAt)
+    ? Math.min(Math.max(Number(settings.gradeProgressGreenAt), 0), 100)
+    : fallback.gradeProgressGreenAt;
+  const gradeProgressYellowAt = Number.isFinite(settings.gradeProgressYellowAt)
+    ? Math.min(Math.max(Number(settings.gradeProgressYellowAt), 0), gradeProgressGreenAt)
+    : Math.min(fallback.gradeProgressYellowAt, gradeProgressGreenAt);
   const courseworkHideCompletedAfterHours = Number.isFinite(settings.courseworkHideCompletedAfterHours)
     ? Math.min(Math.max(Number(settings.courseworkHideCompletedAfterHours), 0), 720)
-    : defaultAcademyCalendarSettings.courseworkHideCompletedAfterHours;
-  const courseworkHideCompletedFrom = settings.courseworkHideCompletedFrom === 'completedAt'
+    : fallback.courseworkHideCompletedAfterHours;
+  const courseworkHideCompletedFrom = settings.courseworkHideCompletedFrom === 'completedAt' ||
+    (settings.courseworkHideCompletedFrom !== 'dueAt' && fallback.courseworkHideCompletedFrom === 'completedAt')
     ? 'completedAt'
     : 'dueAt';
   const hiddenCourseIds = Array.isArray(settings.hiddenCourseIds)
     ? settings.hiddenCourseIds.filter((value): value is string => typeof value === 'string')
-    : undefined;
-  const themeMode: AppTheme = settings.themeMode === 'light' ? 'light' : 'dark';
+    : fallback.hiddenCourseIds;
+  const themeMode: AppTheme = settings.themeMode === 'light' || settings.themeMode === 'dark'
+    ? settings.themeMode
+    : fallback.themeMode;
   const accentColor = typeof settings.accentColor === 'string' &&
     academyAccentColorOptions.includes(settings.accentColor as ColorToken)
     ? settings.accentColor as ColorToken
-    : defaultAcademyCalendarSettings.accentColor;
+    : fallback.accentColor;
+  const academyLogoSrc = typeof settings.academyLogoSrc === 'string'
+    ? settings.academyLogoSrc.trim()
+    : fallback.academyLogoSrc;
 
   return {
     accentColor,
+    academyLogoSrc,
     courseworkHideCompletedAfterHours,
     courseworkHideCompletedFrom,
+    gradeProgressGreenAt,
+    gradeProgressYellowAt,
     hiddenCourseIds,
     progressDisplay,
     progressGreenAt,
     progressYellowAt,
-    selectedSemester: typeof settings.selectedSemester === 'string' ? settings.selectedSemester : undefined,
+    selectedSemester: typeof settings.selectedSemester === 'string' ? settings.selectedSemester : fallback.selectedSemester,
     themeMode,
-    topBarDefaultCollapsed: Boolean(settings.topBarDefaultCollapsed),
+    topBarDefaultCollapsed: typeof settings.topBarDefaultCollapsed === 'boolean'
+      ? settings.topBarDefaultCollapsed
+      : fallback.topBarDefaultCollapsed,
   };
 }
 
@@ -783,6 +868,10 @@ function getStoredAcademyCalendarSettings() {
   return normalizeAcademyCalendarSettings(
     readStoredJson<unknown>(academyCalendarSettingsStorageKey, defaultAcademyCalendarSettings),
   );
+}
+
+function areAcademyCalendarSettingsEqual(first: AcademyCalendarSettings, second: AcademyCalendarSettings) {
+  return JSON.stringify(first) === JSON.stringify(second);
 }
 
 function normalizeAdminConsoleSettings(value: unknown): AdminConsoleSettings {
@@ -836,37 +925,55 @@ function applyAcademyAccentColor(color: ColorToken) {
   const variables = academyAccentThemeVariables[color] ?? academyAccentThemeVariables.gold;
   const root = document.documentElement;
   const isDarkTheme = root.classList.contains('dark');
-  const accentSoft = `color-mix(in oklch, ${variables.primary} ${isDarkTheme ? '14%' : '10%'}, ${isDarkTheme ? 'oklch(0.12 0 0)' : 'white'})`;
-  const accentSofter = `color-mix(in oklch, ${variables.primary} ${isDarkTheme ? '9%' : '6%'}, ${isDarkTheme ? 'oklch(0.12 0 0)' : 'white'})`;
-  const accentCard = `color-mix(in oklch, ${variables.primary} ${isDarkTheme ? '8%' : '4%'}, ${isDarkTheme ? 'oklch(0.17 0 0)' : 'white'})`;
-  const accentBorder = `color-mix(in oklch, ${variables.primary} ${isDarkTheme ? '28%' : '18%'}, ${isDarkTheme ? 'oklch(1 0 0 / 14%)' : 'oklch(0.88 0.035 83)'})`;
-  const accentAlphaStrong = variables.primary.replace(/\)$/, ` / ${isDarkTheme ? '0.22' : '0.26'})`);
-  const accentAlphaSoft = variables.primary.replace(/\)$/, ` / ${isDarkTheme ? '0.1' : '0.14'})`);
+  const neutralBackground = isDarkTheme ? 'oklch(0.12 0 0)' : 'oklch(0.982 0.006 92)';
+  const neutralForeground = isDarkTheme ? 'oklch(0.96 0 0)' : 'oklch(0.18 0.006 92)';
+  const neutralMutedForeground = isDarkTheme ? 'oklch(0.7 0 0)' : 'oklch(0.48 0.01 92)';
+  const neutralCard = isDarkTheme ? 'oklch(0.17 0 0)' : 'oklch(0.995 0.004 92)';
+  const neutralMuted = isDarkTheme ? 'oklch(0.23 0 0)' : 'oklch(0.945 0.01 92)';
+  const neutralBorder = isDarkTheme ? 'oklch(1 0 0 / 14%)' : 'oklch(0.88 0.012 92)';
+  const accentSoft = isDarkTheme
+    ? neutralMuted
+    : `color-mix(in oklch, ${variables.primary} 9%, ${neutralMuted})`;
+  const accentSofter = isDarkTheme
+    ? neutralBackground
+    : `color-mix(in oklch, ${variables.primary} 6%, ${neutralBackground})`;
+  const accentCard = isDarkTheme
+    ? neutralCard
+    : `color-mix(in oklch, ${variables.primary} 3%, ${neutralCard})`;
+  const accentBorder = isDarkTheme
+    ? neutralBorder
+    : `color-mix(in oklch, ${variables.primary} 16%, ${neutralBorder})`;
+  const accentAlphaStrong = variables.primary.replace(/\)$/, ' / 0.24)');
+  const accentAlphaSoft = variables.primary.replace(/\)$/, ' / 0.12)');
 
   root.style.setProperty(
     '--app-bg',
     isDarkTheme
-      ? [
-          `radial-gradient(circle at 14% 10%, ${accentAlphaStrong}, transparent 30%)`,
-          `radial-gradient(circle at 88% 14%, ${accentAlphaSoft}, transparent 28%)`,
-          'linear-gradient(135deg, oklch(0.1 0 0) 0%, oklch(0.12 0 0) 52%, oklch(0.105 0 0) 100%)',
-        ].join(', ')
+      ? 'linear-gradient(135deg, oklch(0.095 0 0) 0%, oklch(0.12 0 0) 52%, oklch(0.105 0 0) 100%)'
       : [
           `radial-gradient(circle at 12% 8%, ${accentAlphaStrong}, transparent 30%)`,
           `radial-gradient(circle at 84% 18%, ${accentAlphaSoft}, transparent 28%)`,
-          `linear-gradient(135deg, ${accentSoft} 0%, ${accentSofter} 48%, oklch(0.95 0.012 88) 100%)`,
+          `linear-gradient(135deg, ${accentSoft} 0%, ${accentSofter} 48%, oklch(0.95 0.004 92) 100%)`,
         ].join(', '),
   );
-  root.style.setProperty('--background', isDarkTheme ? 'oklch(0.12 0 0)' : accentSofter);
+  root.style.setProperty('--background', isDarkTheme ? neutralBackground : accentSofter);
+  root.style.setProperty('--foreground', neutralForeground);
   root.style.setProperty('--card', accentCard);
+  root.style.setProperty('--card-foreground', neutralForeground);
   root.style.setProperty('--popover', accentCard);
+  root.style.setProperty('--popover-foreground', neutralForeground);
   root.style.setProperty('--secondary', accentSoft);
+  root.style.setProperty('--secondary-foreground', neutralForeground);
   root.style.setProperty('--muted', accentSoft);
+  root.style.setProperty('--muted-foreground', neutralMutedForeground);
   root.style.setProperty('--accent', accentSoft);
+  root.style.setProperty('--accent-foreground', neutralForeground);
   root.style.setProperty('--border', accentBorder);
   root.style.setProperty('--input', accentBorder);
   root.style.setProperty('--sidebar', accentCard);
+  root.style.setProperty('--sidebar-foreground', neutralForeground);
   root.style.setProperty('--sidebar-accent', accentSoft);
+  root.style.setProperty('--sidebar-accent-foreground', neutralForeground);
   root.style.setProperty('--sidebar-border', accentBorder);
   root.style.setProperty('--primary', variables.primary);
   root.style.setProperty('--ring', variables.primary);
@@ -881,15 +988,23 @@ function clearAcademyAccentColor() {
   [
     '--app-bg',
     '--background',
+    '--foreground',
     '--card',
+    '--card-foreground',
     '--popover',
+    '--popover-foreground',
     '--secondary',
+    '--secondary-foreground',
     '--muted',
+    '--muted-foreground',
     '--accent',
+    '--accent-foreground',
     '--border',
     '--input',
     '--sidebar',
+    '--sidebar-foreground',
     '--sidebar-accent',
+    '--sidebar-accent-foreground',
     '--sidebar-border',
     '--primary',
     '--ring',
@@ -936,7 +1051,10 @@ function applyAcademyPreferencesResponse(preferences: AcademyPreferences) {
     canvasLecturePreferences: isRecord(preferences.canvasLecturePreferences)
       ? preferences.canvasLecturePreferences as Record<string, StoredCoursePreference>
       : {},
-    calendarSettings: normalizeAcademyCalendarSettings(preferences.calendarSettings),
+    calendarSettings: normalizeAcademyCalendarSettings(
+      preferences.calendarSettings,
+      academyPreferenceCache.calendarSettings,
+    ),
     manualAssessments: Array.isArray(preferences.manualAssessments)
       ? preferences.manualAssessments as StoredManualAssessment[]
       : [],
@@ -967,7 +1085,7 @@ function applyAcademyPreferenceEventDetail(detail: unknown) {
       ? detail.canvasLecturePreferences as Record<string, StoredCoursePreference>
       : academyPreferenceCache.canvasLecturePreferences,
     calendarSettings: isRecord(detail.calendarSettings)
-      ? normalizeAcademyCalendarSettings(detail.calendarSettings)
+      ? normalizeAcademyCalendarSettings(detail.calendarSettings, academyPreferenceCache.calendarSettings)
       : academyPreferenceCache.calendarSettings,
     manualAssessments: Array.isArray(detail.manualAssessments)
       ? detail.manualAssessments as StoredManualAssessment[]
@@ -1360,13 +1478,15 @@ function getCalendarBoardItems(
         title: item.title,
         type: formatCalendarTodoType(item.type),
         color: option.color,
-        checklistProgress: item.isCompleted ? '1 of 1' : '0 of 1',
+        checklistProgress: item.source === 'class-session' ? '' : item.isCompleted ? '1 of 1' : '0 of 1',
         dueAt,
         isCompleted: Boolean(item.isCompleted),
-        isLocked: Boolean(item.isLocked),
-        isTitleEditable: !item.isLocked,
-        canOpenDetails: true,
+        isClassSession: item.source === 'class-session',
+        isLocked: item.source === 'class-session' || Boolean(item.isLocked),
+        isTitleEditable: item.source !== 'class-session' && !item.isLocked,
+        canOpenDetails: item.source !== 'class-session',
         isCanvasSource: item.source === 'canvas',
+        isArchivedCanvasItem: Boolean(item.isArchivedCanvasItem),
         isStarred: Boolean(item.isStarred),
         time: formatCalendarSourceItemTime(item),
       };
@@ -1384,6 +1504,7 @@ function getCalendarTimelineItems(
   const monthDuration = Math.max(monthEndTime - monthStartTime, 1);
 
   return items
+    .filter((item) => item.source !== 'class-session')
     .filter((item) => {
       const itemDate = new Date(getCalendarSourceItemDate(item) ?? '');
 
@@ -1411,6 +1532,7 @@ function getCalendarTimelineItems(
         color: courseDisplay.color,
         canOpenDetails: true,
         isCanvasSource: item.source === 'canvas',
+        isArchivedCanvasItem: Boolean(item.isArchivedCanvasItem),
         isCompleted: Boolean(item.isCompleted),
         isLocked: Boolean(item.isLocked),
         isStarred: Boolean(item.isStarred),
@@ -1470,6 +1592,10 @@ function getCalendarMoveDueDateTarget(item: CalendarSourceItem) {
     return null;
   }
 
+  if (item.source === 'canvas' && !item.isArchivedCanvasItem) {
+    return null;
+  }
+
   const value = getCalendarSourceItemDate(item);
 
   if (!value) {
@@ -1519,6 +1645,14 @@ function getCalendarDueChipClass(state: CalendarDueState) {
   }
 
   return 'border-neutral-200 bg-neutral-100 text-neutral-600 dark:border-white/10 dark:bg-white/10 dark:text-muted-foreground';
+}
+
+function getCalendarTimeChipClass(item: CalendarSourceItem, state: CalendarDueState) {
+  if (item.source === 'class-session') {
+    return 'border-emerald-500/35 bg-emerald-500/12 text-emerald-700 dark:border-emerald-300/35 dark:bg-emerald-400/15 dark:text-emerald-200';
+  }
+
+  return getCalendarDueChipClass(state);
 }
 
 function getCourseDoneCheckClass(color: ColorToken) {
@@ -1673,8 +1807,9 @@ function getCalendarMonthFromIsoDate(value: string) {
 }
 
 function getDayTodoProgress(items: CalendarSourceItem[]): DayTodoProgress {
-  const totalCount = items.length;
-  const completedCount = items.filter((item) => item.isCompleted).length;
+  const actionableItems = items.filter((item) => item.source !== 'class-session');
+  const totalCount = actionableItems.length;
+  const completedCount = actionableItems.filter((item) => item.isCompleted).length;
   const percent = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
 
   return {
@@ -1745,6 +1880,142 @@ function formatCalendarSourceItemSelectedDayTime(item: CalendarSourceItem) {
     : date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
+function parseManualLectureScheduleDays(entry: ManualLectureScheduleEntry): ManualLectureWeekday[] {
+  if (Array.isArray(entry.days) && entry.days.length > 0) {
+    return entry.days.filter((day): day is ManualLectureWeekday => day in manualLectureWeekdayIndexes);
+  }
+
+  return (entry.day ?? '')
+    .split(/[,/·|]+|\band\b/i)
+    .map((part) => part.trim().toLowerCase())
+    .map((part) => manualLectureWeekdayAliases[part])
+    .filter((day): day is ManualLectureWeekday => Boolean(day));
+}
+
+function getStoredClassScheduleEntries(schedule?: ManualLectureSchedule): ManualLectureScheduleEntry[] {
+  if (Array.isArray(schedule?.entries) && schedule.entries.length > 0) {
+    return schedule.entries;
+  }
+
+  if (schedule?.day || schedule?.time || schedule?.location) {
+    return [{
+      classType: 'lecture',
+      day: schedule.day ?? '',
+      deliveryMode: schedule.deliveryMode ?? 'inPerson',
+      id: 'legacy-schedule',
+      location: schedule.location ?? '',
+      time: schedule.time ?? '',
+    }];
+  }
+
+  return [];
+}
+
+function parseDateOnly(value?: string) {
+  const match = value?.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+  if (!match) {
+    return undefined;
+  }
+
+  const year = Number.parseInt(match[1], 10);
+  const monthIndex = Number.parseInt(match[2], 10) - 1;
+  const day = Number.parseInt(match[3], 10);
+  const date = new Date(year, monthIndex, day);
+
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function parseTimeInput(value?: string) {
+  const match = value?.match(/^(\d{1,2}):(\d{2})$/);
+
+  if (!match) {
+    return { hour: 0, minute: 0 };
+  }
+
+  return {
+    hour: Math.min(Math.max(Number.parseInt(match[1], 10), 0), 23),
+    minute: Math.min(Math.max(Number.parseInt(match[2], 10), 0), 59),
+  };
+}
+
+function createDateTimeIso(date: Date, time?: string) {
+  const { hour, minute } = parseTimeInput(time);
+  const nextDate = new Date(date.getFullYear(), date.getMonth(), date.getDate(), hour, minute, 0, 0);
+
+  return nextDate.toISOString();
+}
+
+function getClassSessionCourseLabel(course: StoredCoursePreference) {
+  return course.friendlyCourseCode?.trim() ||
+    course.code?.trim() ||
+    course.courseCode?.trim() ||
+    course.originalCourseCode?.trim() ||
+    course.friendlyName?.trim() ||
+    course.courseName?.trim() ||
+    'Course';
+}
+
+function createClassSessionItemsFromCourse(
+  course: StoredCoursePreference,
+  options: { courseId?: string; sourceId: string },
+): CalendarSourceItem[] {
+  if (course.hidden) {
+    return [];
+  }
+
+  const courseLabel = getClassSessionCourseLabel(course);
+  const courseName = course.friendlyName?.trim() || course.courseName?.trim();
+  const color = course.chipColor ?? getStoredCourseChipColor(courseLabel, options.courseId, courseName) ?? 'teal';
+
+  return getStoredClassScheduleEntries(course.schedule)
+    .flatMap((entry) => {
+      const days = parseManualLectureScheduleDays(entry);
+      const startDate = parseDateOnly(entry.startDate);
+      const endDate = parseDateOnly(entry.endDate);
+
+      if (days.length === 0 || !startDate || !endDate || startDate.getTime() > endDate.getTime()) {
+        return [];
+      }
+
+      const dayIndexes = new Set(days.map((day) => manualLectureWeekdayIndexes[day]));
+      const sessions: CalendarSourceItem[] = [];
+      const currentDate = new Date(startDate);
+      let guard = 0;
+
+      while (currentDate.getTime() <= endDate.getTime() && guard < 370) {
+        if (dayIndexes.has(currentDate.getDay())) {
+          const classLabel = manualLectureClassTypeLabels[entry.classType] ?? 'Class';
+          const startAt = createDateTimeIso(currentDate, entry.startTime);
+          const endAt = entry.endTime ? createDateTimeIso(currentDate, entry.endTime) : undefined;
+          const dateKey = getLocalIsoDate(startAt) ?? currentDate.toISOString().slice(0, 10);
+
+          sessions.push({
+            color,
+            courseCode: courseLabel,
+            courseId: options.courseId,
+            courseName,
+            displayStyle: 'dot',
+            endAt,
+            id: `class:${options.sourceId}:${entry.id}:${dateKey}`,
+            isLocked: true,
+            location: entry.location,
+            semester: course.semester ?? course.termName,
+            source: 'class-session',
+            startAt,
+            title: `${courseLabel} ${classLabel}`,
+            type: classLabel,
+          });
+        }
+
+        currentDate.setDate(currentDate.getDate() + 1);
+        guard += 1;
+      }
+
+      return sessions;
+    });
+}
+
 function getCanvasItemColor(item: CanvasCalendarItem) {
   const canvasPreferences = getStoredCanvasLecturePreferences();
   const preferenceById = item.courseId ? canvasPreferences[item.courseId] : undefined;
@@ -1768,6 +2039,7 @@ function getCalendarSourceEvent(
     title: item.title,
     color: courseDisplay.color,
     courseLabel: courseDisplay.label || undefined,
+    displayStyle: item.displayStyle,
     type: item.type,
     time: formatCalendarSourceItemTime(item),
   };
@@ -1785,13 +2057,14 @@ function getCalendarSourceAgendaItem(
     id: item.id,
     time: formatCalendarSourceItemTime(item) ?? '--:--',
     title: item.title,
-    subtitle: [courseDisplay.label, item.courseName].filter(Boolean).join(' · ') || 'Canvas LMS',
+    subtitle: [courseDisplay.label, item.courseName, item.location].filter(Boolean).join(' · ') || 'Canvas LMS',
     type: label,
     color: courseDisplay.color,
-    canOpenDetails: true,
+    canOpenDetails: item.source !== 'class-session',
     isCanvasSource: item.source === 'canvas',
+    isArchivedCanvasItem: Boolean(item.isArchivedCanvasItem),
     isCompleted: Boolean(item.isCompleted),
-    isLocked: Boolean(item.isLocked),
+    isLocked: item.source === 'class-session' || Boolean(item.isLocked),
     isStarred: Boolean(item.isStarred),
   };
 }
@@ -1826,13 +2099,14 @@ function getCalendarSourceItems(canvasItems: CanvasCalendarItem[], preferenceVer
         courseId: item.courseId,
         courseCode: preference?.courseCode?.trim() || item.courseCode,
         courseName: item.courseName,
-        dueAt: preference?.dueAt || item.dueAt,
-        startAt: preference?.startAt || item.startAt,
-        endAt: preference?.endAt || item.endAt,
+        dueAt: item.dueAt,
+        startAt: item.startAt,
+        endAt: item.endAt,
         htmlUrl: preference?.htmlUrl || item.htmlUrl,
         semester: preference?.semester || (item.courseId ? canvasLecturePreferences[item.courseId]?.semester : undefined),
         color: getCanvasItemColor(item),
         isCompleted,
+        isArchivedCanvasItem: false,
         isLocked: Boolean(item.isSubmitted),
         isStarred: Boolean(preference?.starred),
       };
@@ -1860,6 +2134,7 @@ function getCalendarSourceItems(canvasItems: CanvasCalendarItem[], preferenceVer
       semester: preference.semester,
       color: getStoredCourseChipColor(preference.courseCode, preference.courseId, preference.courseName) ?? 'blue',
       isCompleted: Boolean(preference.isSubmitted) || Boolean(preference.completed),
+      isArchivedCanvasItem: true,
       isLocked: Boolean(preference.isSubmitted),
       isStarred: Boolean(preference.starred),
     }));
@@ -1885,6 +2160,7 @@ function getCalendarSourceItems(canvasItems: CanvasCalendarItem[], preferenceVer
       semester: preference.semester,
       color: getStoredCourseChipColor(preference.courseCode, preference.courseId, preference.courseName) ?? 'orange',
       isCompleted: Boolean(preference.isSubmitted) || Boolean(preference.completed),
+      isArchivedCanvasItem: true,
       isLocked: Boolean(preference.isSubmitted),
       isStarred: Boolean(preference.starred),
     }));
@@ -1920,6 +2196,19 @@ function getCalendarSourceItems(canvasItems: CanvasCalendarItem[], preferenceVer
       isCompleted: Boolean(item.completed),
       isStarred: Boolean(item.starred),
     }));
+  const classSessionItems = [
+    ...getStoredManualLectures()
+      .filter((lecture) => !lecture.hidden)
+      .flatMap((lecture) => createClassSessionItemsFromCourse(lecture, {
+        sourceId: lecture.id ?? lecture.code ?? lecture.courseCode ?? lecture.courseName ?? 'manual',
+      })),
+    ...Object.entries(canvasLecturePreferences)
+      .filter(([, preference]) => !preference.hidden && !preference.archivedAsManualLectureId)
+      .flatMap(([courseId, preference]) => createClassSessionItemsFromCourse(preference, {
+        courseId,
+        sourceId: courseId,
+      })),
+  ];
 
   return [
     ...canvasSourceItems,
@@ -1927,6 +2216,7 @@ function getCalendarSourceItems(canvasItems: CanvasCalendarItem[], preferenceVer
     ...storedCanvasAssessmentItems,
     ...manualCourseworkItems,
     ...manualAssessmentItems,
+    ...classSessionItems,
   ];
 }
 
@@ -2267,11 +2557,17 @@ function CalendarTodoDetailsDialog({
 }
 
 function AcademySettingsView({
+  hasUnsavedChanges,
+  onRevertSettings,
+  onSaveSettings,
   onSettingsChange,
   settings,
   settingsSaveError,
   settingsSaveStatus,
 }: {
+  hasUnsavedChanges: boolean;
+  onRevertSettings: () => void;
+  onSaveSettings: (settings: AcademyCalendarSettings) => void | Promise<void>;
   onSettingsChange: (settings: AcademyCalendarSettings) => void;
   settings: AcademyCalendarSettings;
   settingsSaveError?: string;
@@ -2292,19 +2588,69 @@ function AcademySettingsView({
   });
   const [showAccentVariants, setShowAccentVariants] = useState(false);
   const [accentVariantPage, setAccentVariantPage] = useState(0);
+  const [logoUploadError, setLogoUploadError] = useState('');
   const dateLocale = language === 'ko' ? 'ko-KR' : 'en-CA';
+  const defaultAcademyLogoSrc = '/brand/SFU_block_colour_rgb.png';
+  const academyLogoPreviewSrc = settings.academyLogoSrc || defaultAcademyLogoSrc;
   const updateSettings = (partialSettings: Partial<AcademyCalendarSettings>) => {
     onSettingsChange(normalizeAcademyCalendarSettings({
       ...settings,
       ...partialSettings,
     }));
   };
-  const updateThreshold = (key: 'progressGreenAt' | 'progressYellowAt', value: string) => {
+  const updateThreshold = (
+    key: 'progressGreenAt' | 'progressYellowAt' | 'gradeProgressGreenAt' | 'gradeProgressYellowAt',
+    value: string,
+  ) => {
     const parsedValue = Number.parseInt(value, 10);
 
     updateSettings({
       [key]: Number.isFinite(parsedValue) ? parsedValue : settings[key],
     });
+  };
+  const getGradePreviewColor = (score: number) => {
+    if (score >= settings.gradeProgressGreenAt) {
+      return '#10b981';
+    }
+
+    if (score >= settings.gradeProgressYellowAt) {
+      return '#f59e0b';
+    }
+
+    return '#ef4444';
+  };
+  const handleLogoUpload = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+
+    event.target.value = '';
+
+    if (!file) {
+      return;
+    }
+
+    if (!file.type.startsWith('image/')) {
+      setLogoUploadError(dictionary.academyTopBarLogoInvalid);
+      return;
+    }
+
+    if (file.size > 1_500_000) {
+      setLogoUploadError(dictionary.academyTopBarLogoTooLarge);
+      return;
+    }
+
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      if (typeof reader.result !== 'string') {
+        setLogoUploadError(dictionary.academyTopBarLogoInvalid);
+        return;
+      }
+
+      setLogoUploadError('');
+      updateSettings({ academyLogoSrc: reader.result });
+    };
+    reader.onerror = () => setLogoUploadError(dictionary.academyTopBarLogoInvalid);
+    reader.readAsDataURL(file);
   };
   const accentColorLabels: Partial<Record<ColorToken, string>> = {
     blue: dictionary.manualLectureChipColorBlue,
@@ -2425,22 +2771,47 @@ function AcademySettingsView({
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <CardTitle className="text-xl font-black">{dictionary.academySettingsTitle}</CardTitle>
-            {settingsSaveStatus && settingsSaveStatus !== 'idle' ? (
-              <span className={cn(
-                'rounded-md border px-2 py-1 text-[10px] font-black uppercase',
-                settingsSaveStatus === 'failed'
-                  ? 'border-red-500/35 bg-red-500/10 text-red-700 dark:text-red-200'
-                  : settingsSaveStatus === 'saving'
-                    ? 'border-amber-500/35 bg-amber-500/10 text-amber-700 dark:text-amber-200'
-                    : 'border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200',
-              )}>
-                {settingsSaveStatus === 'saving'
-                  ? dictionary.academySettingsSaving
-                  : settingsSaveStatus === 'failed'
-                    ? dictionary.academySettingsSaveFailed
-                    : dictionary.academySettingsSaved}
-              </span>
-            ) : null}
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {hasUnsavedChanges ? (
+                <span className="rounded-md border border-amber-500/35 bg-amber-500/10 px-2 py-1 text-[10px] font-black uppercase text-amber-700 dark:text-amber-200">
+                  {dictionary.academySettingsUnsaved}
+                </span>
+              ) : settingsSaveStatus && settingsSaveStatus !== 'idle' ? (
+                <span className={cn(
+                  'rounded-md border px-2 py-1 text-[10px] font-black uppercase',
+                  settingsSaveStatus === 'failed'
+                    ? 'border-red-500/35 bg-red-500/10 text-red-700 dark:text-red-200'
+                    : settingsSaveStatus === 'saving'
+                      ? 'border-amber-500/35 bg-amber-500/10 text-amber-700 dark:text-amber-200'
+                      : 'border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200',
+                )}>
+                  {settingsSaveStatus === 'saving'
+                    ? dictionary.academySettingsSaving
+                    : settingsSaveStatus === 'failed'
+                      ? dictionary.academySettingsSaveFailed
+                      : dictionary.academySettingsSaved}
+                </span>
+              ) : null}
+              <Button
+                className="h-8 rounded-md px-2.5 text-xs font-black"
+                disabled={!hasUnsavedChanges || settingsSaveStatus === 'saving'}
+                onClick={onRevertSettings}
+                type="button"
+                variant="outline"
+              >
+                <RotateCcw className="mr-1.5 size-3.5" />
+                {dictionary.academySettingsRevert}
+              </Button>
+              <Button
+                className="h-8 rounded-md px-3 text-xs font-black"
+                disabled={!hasUnsavedChanges || settingsSaveStatus === 'saving'}
+                onClick={() => onSaveSettings(settings)}
+                type="button"
+              >
+                <Check className="mr-1.5 size-3.5" />
+                {settingsSaveStatus === 'saving' ? dictionary.academySettingsSaving : dictionary.academySettingsSave}
+              </Button>
+            </div>
           </div>
           {settingsSaveError ? (
             <div className="mt-2 rounded-md border border-red-500/35 bg-red-500/10 px-3 py-2 text-xs font-bold text-red-700 dark:text-red-200">
@@ -2736,26 +3107,76 @@ function AcademySettingsView({
               <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
             </summary>
             <div className="mt-3 grid gap-3">
-            <div className="flex flex-wrap gap-2">
-              {([false, true] as const).map((collapsed) => (
-                <Button
-                  className={cn(
-                    'h-9 rounded-lg px-3 text-xs font-black',
-                    settings.topBarDefaultCollapsed === collapsed
-                      ? 'bg-primary text-primary-foreground hover:bg-primary/90'
-                      : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
-                  )}
-                  key={String(collapsed)}
-                  onClick={() => updateSettings({ topBarDefaultCollapsed: collapsed })}
-                  type="button"
-                  variant="outline"
-                >
-                  {collapsed
-                    ? dictionary.academyTopBarCollapsed
-                    : dictionary.academyTopBarExpanded}
-                </Button>
-              ))}
-            </div>
+              <div className="grid gap-3 rounded-lg border bg-card p-3 sm:grid-cols-[96px_minmax(0,1fr)]">
+                <div className="flex items-center justify-center rounded-lg border bg-muted/30 p-3">
+                  <img
+                    alt={dictionary.academyTopBarLogoPreview}
+                    className="max-h-14 max-w-full object-contain"
+                    key={academyLogoPreviewSrc}
+                    onError={(event) => {
+                      if (event.currentTarget.dataset.fallbackApplied !== 'true') {
+                        event.currentTarget.dataset.fallbackApplied = 'true';
+                        event.currentTarget.src = defaultAcademyLogoSrc;
+                        return;
+                      }
+
+                      event.currentTarget.style.visibility = 'hidden';
+                    }}
+                    src={academyLogoPreviewSrc}
+                  />
+                </div>
+                <div className="grid min-w-0 gap-2">
+                  <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                    <span className="inline-flex items-center gap-1.5">
+                      <ImageIcon className="size-3.5" />
+                      {dictionary.academyTopBarLogoUpload}
+                    </span>
+                    <Input
+                      accept="image/*"
+                      className="cursor-pointer file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-xs file:font-black file:text-primary-foreground"
+                      onChange={handleLogoUpload}
+                      type="file"
+                    />
+                  </label>
+                  {logoUploadError ? (
+                    <div className="rounded-md border border-red-500/35 bg-red-500/10 px-3 py-2 text-xs font-bold text-red-700 dark:text-red-200">
+                      {logoUploadError}
+                    </div>
+                  ) : null}
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <Button
+                      className="h-8 rounded-md px-2.5 text-xs font-black"
+                      disabled={!settings.academyLogoSrc}
+                      onClick={() => updateSettings({ academyLogoSrc: '' })}
+                      type="button"
+                      variant="outline"
+                    >
+                      <RotateCcw className="mr-1.5 size-3.5" />
+                      {dictionary.academyTopBarLogoReset}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {([false, true] as const).map((collapsed) => (
+                  <Button
+                    className={cn(
+                      'h-9 rounded-lg px-3 text-xs font-black',
+                      settings.topBarDefaultCollapsed === collapsed
+                        ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                        : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
+                    )}
+                    key={String(collapsed)}
+                    onClick={() => updateSettings({ topBarDefaultCollapsed: collapsed })}
+                    type="button"
+                    variant="outline"
+                  >
+                    {collapsed
+                      ? dictionary.academyTopBarCollapsed
+                      : dictionary.academyTopBarExpanded}
+                  </Button>
+                ))}
+              </div>
             </div>
           </details>
           <details className="group rounded-lg border bg-muted/20 p-3">
@@ -2886,6 +3307,67 @@ function AcademySettingsView({
             </div>
             </div>
           </details>
+          <details className="group rounded-lg border bg-muted/20 p-3">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-black text-foreground">
+              <span className="flex min-w-0 items-center gap-2">
+                <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-card text-primary">
+                  <BarChart3 className="size-4" />
+                </span>
+                <span className="truncate">{dictionary.gradeProgressSettingsTitle}</span>
+              </span>
+              <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
+            </summary>
+            <div className="mt-3 grid gap-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                  <span>{dictionary.gradeProgressGreenAt}</span>
+                  <input
+                    className="h-10 rounded-lg border bg-background px-3 text-sm font-bold text-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                    max={100}
+                    min={0}
+                    onChange={(event) => updateThreshold('gradeProgressGreenAt', event.target.value)}
+                    type="number"
+                    value={settings.gradeProgressGreenAt}
+                  />
+                </label>
+                <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                  <span>{dictionary.gradeProgressYellowAt}</span>
+                  <input
+                    className="h-10 rounded-lg border bg-background px-3 text-sm font-bold text-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                    max={settings.gradeProgressGreenAt}
+                    min={0}
+                    onChange={(event) => updateThreshold('gradeProgressYellowAt', event.target.value)}
+                    type="number"
+                    value={settings.gradeProgressYellowAt}
+                  />
+                </label>
+              </div>
+              <div className="grid gap-2 rounded-lg border bg-card p-3">
+                {[
+                  [dictionary.gradeProgressGreenPreview, 82],
+                  [dictionary.gradeProgressYellowPreview, 63],
+                  [dictionary.gradeProgressRedPreview, 55],
+                ].map(([label, score]) => (
+                  <div className="grid grid-cols-[112px_minmax(0,1fr)_44px] items-center gap-2" key={label}>
+                    <span className="truncate text-xs font-black text-muted-foreground">{label}</span>
+                    <div className="h-2 overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full rounded-full"
+                        style={{
+                          backgroundColor: getGradePreviewColor(score as number),
+                          width: `${score}%`,
+                        }}
+                      />
+                    </div>
+                    <span className="text-right text-xs font-black text-foreground">{score}%</span>
+                  </div>
+                ))}
+                <span className="text-xs font-semibold text-muted-foreground">
+                  {dictionary.gradeProgressThresholdHint}
+                </span>
+              </div>
+            </div>
+          </details>
         </CardContent>
       </Card>
     </div>
@@ -3002,15 +3484,59 @@ function WaitingApprovalPage({
   );
 }
 
+function WaitingAssignmentPage({
+  isChecking,
+  onRefresh,
+  onSignOut,
+  session,
+}: {
+  isChecking: boolean;
+  onRefresh: () => void;
+  onSignOut: () => void;
+  session: AuthSession | null;
+}) {
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-black p-4 text-white sm:p-6">
+      <section className="w-full max-w-[560px] rounded-xl border border-white/10 bg-white/[0.04] p-6 shadow-none sm:p-7">
+        <div className="flex items-center gap-3">
+          <div className="grid size-12 shrink-0 place-items-center rounded-lg bg-white/10 text-white">
+            <Clock3 aria-hidden="true" className="size-6" />
+          </div>
+          <div className="min-w-0">
+            <h1 className="text-2xl font-black leading-tight">Waiting to be assigned</h1>
+            <p className="mt-1 truncate text-sm font-semibold text-white/60">
+              {session?.email ?? 'Google account'}
+            </p>
+          </div>
+        </div>
+        <p className="mt-5 rounded-lg border border-white/10 bg-black/30 p-3 text-sm font-semibold leading-relaxed text-white/65">
+          Your login is approved, but no menus have been assigned yet. An admin needs to add you to a group before
+          Workspace, Academy, or Admin Console menus appear.
+        </p>
+        <div className="mt-5 flex flex-wrap justify-end gap-2">
+          <Button className="border-white/20 text-white hover:bg-white/10" onClick={onSignOut} type="button" variant="outline">
+            <LogOut aria-hidden="true" className="size-4" />
+            Sign out
+          </Button>
+          <Button disabled={isChecking} onClick={onRefresh} type="button">
+            <RefreshCw aria-hidden="true" className={cn('size-4', isChecking && 'animate-spin')} />
+            Refresh access
+          </Button>
+        </div>
+      </section>
+    </main>
+  );
+}
+
 function App() {
-  const { activeData, activeMode } = useWorkspaceMode();
+  const { activeData, activeMode, setActiveModeId, visibleModes } = useWorkspaceMode();
   const { dictionary, language } = useLanguage();
   const [navigation, setNavigation] = useState<WorkspaceNavigation>({
     modeId: '',
     sidebarItemId: 'dashboard',
     view: 'month',
   });
-  const [authStatus, setAuthStatus] = useState<'checking' | 'authenticated' | 'pending' | 'unauthenticated'>('checking');
+  const [authStatus, setAuthStatus] = useState<'checking' | 'authenticated' | 'pending' | 'unassigned' | 'unauthenticated'>('checking');
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
   const [isAuthSessionRefreshing, setIsAuthSessionRefreshing] = useState(false);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -3029,10 +3555,12 @@ function App() {
   const [isDayTodoDialogMode, setIsDayTodoDialogMode] = useState(getInitialDayTodoDialogMode);
   const [isPhoneAcademyMode, setIsPhoneAcademyMode] = useState(getInitialPhoneAcademyMode);
   const [academyCalendarSettings, setAcademyCalendarSettings] = useState(getStoredAcademyCalendarSettings);
+  const [savedAcademyCalendarSettings, setSavedAcademyCalendarSettings] = useState(getStoredAcademyCalendarSettings);
   const [adminConsoleSettings, setAdminConsoleSettings] = useState(getStoredAdminConsoleSettings);
   const [hiddenCalendarCourseIds, setHiddenCalendarCourseIds] = useState(getStoredHiddenCalendarCourseIds);
   const [academyPreferencesSaveStatus, setAcademyPreferencesSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle');
   const [academyPreferencesSaveError, setAcademyPreferencesSaveError] = useState('');
+  const [isAcademySettingsLeaveDialogOpen, setIsAcademySettingsLeaveDialogOpen] = useState(false);
   const [focusedCalendarTodoId, setFocusedCalendarTodoId] = useState<string | null>(null);
   const [selectedCalendarTodoDetailsId, setSelectedCalendarTodoDetailsId] = useState<string | null>(null);
   const [canvasCalendarPages, setCanvasCalendarPages] = useState<Record<string, CanvasCalendarPage>>({});
@@ -3045,7 +3573,37 @@ function App() {
   const hasAppliedUrlNavigationRef = useRef(false);
   const academyPreferencesSaveSequenceRef = useRef(0);
   const isAcademyPreferencesSavingRef = useRef(false);
-  const activeSidebarItem = navigation.modeId === activeMode.id ? navigation.sidebarItemId : 'dashboard';
+  const academyCalendarSettingsRef = useRef(academyCalendarSettings);
+  const savedAcademyCalendarSettingsRef = useRef(savedAcademyCalendarSettings);
+  const academySettingsProtectedUntilRef = useRef(0);
+  const hasLoadedRemoteAcademySettingsRef = useRef(false);
+  const hasUnsavedAcademySettingsRef = useRef(false);
+  const pendingAcademySettingsNavigationRef = useRef<(() => void) | null>(null);
+  const accessKey = (authSession?.access ?? []).join('\u001f');
+  const accessSet = useMemo(
+    () => createAccessSet(accessKey ? accessKey.split('\u001f') : []),
+    [accessKey],
+  );
+  const accessibleModes = useMemo(
+    () => getAccessibleModes(visibleModes, accessSet),
+    [accessSet, visibleModes],
+  );
+  const accessibleModeIds = useMemo(
+    () => accessibleModes.map((mode) => mode.id),
+    [accessibleModes],
+  );
+  const filteredActiveMode = useMemo(
+    () => filterModeForAccess(activeMode, accessSet),
+    [accessSet, activeMode],
+  );
+  const firstAccessibleSidebarItem = getFirstAccessibleSidebarItem(activeMode, accessSet);
+  const requestedSidebarItem =
+    navigation.modeId === activeMode.id
+      ? navigation.sidebarItemId
+      : firstAccessibleSidebarItem?.id ?? 'dashboard';
+  const activeSidebarItem = canAccessSidebarItem(activeMode.id, requestedSidebarItem, accessSet)
+    ? requestedSidebarItem
+    : firstAccessibleSidebarItem?.id ?? requestedSidebarItem;
   const activeView = navigation.modeId === activeMode.id ? navigation.view : 'month';
   const currentView = activeMode.views.includes(activeView) ? activeView : (activeMode.views[0] ?? 'month');
   const isDriveView = activeSidebarItem === 'drive';
@@ -3054,6 +3612,7 @@ function App() {
   const isChatView = activeSidebarItem === 'chat';
   const isCanvasInboxView = activeMode.id === 'academy' && activeSidebarItem === 'inbox';
   const isAcademyPeopleView = activeMode.id === 'academy' && activeSidebarItem === 'people';
+  const isAcademyGradesView = activeMode.id === 'academy' && activeSidebarItem === 'grades';
   const isCommunicationView = isEmailView || isOutlookView || isChatView;
   const isCoursesView = activeMode.id === 'academy' && activeSidebarItem === 'courses';
   const isAcademySettingsView = activeMode.id === 'academy' && activeSidebarItem === 'settings';
@@ -3064,6 +3623,7 @@ function App() {
   const isMainOnlyView =
     isCommunicationView ||
     isCoursesView ||
+    isAcademyGradesView ||
     isCanvasInboxView ||
     isAcademyPeopleView ||
     isAcademySettingsView ||
@@ -3201,6 +3761,84 @@ function App() {
   const effectiveTopBarCollapsed =
     (activeMode.id === 'academy' && isAcademyTopBarCollapsed) ||
     (activeMode.id === 'admin-console' && isAdminTopBarCollapsed);
+  const hasUnsavedAcademySettings = !areAcademyCalendarSettingsEqual(
+    academyCalendarSettings,
+    savedAcademyCalendarSettings,
+  );
+
+  useEffect(() => {
+    academyCalendarSettingsRef.current = academyCalendarSettings;
+  }, [academyCalendarSettings]);
+
+  useEffect(() => {
+    savedAcademyCalendarSettingsRef.current = savedAcademyCalendarSettings;
+  }, [savedAcademyCalendarSettings]);
+
+  useEffect(() => {
+    hasUnsavedAcademySettingsRef.current = hasUnsavedAcademySettings;
+  }, [hasUnsavedAcademySettings]);
+
+  useEffect(() => {
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!hasUnsavedAcademySettingsRef.current) {
+        return;
+      }
+
+      event.preventDefault();
+      event.returnValue = dictionary.academySettingsBeforeUnload;
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [dictionary.academySettingsBeforeUnload]);
+
+  const requestAcademySettingsNavigation = (action: () => void) => {
+    if (isAcademySettingsView && hasUnsavedAcademySettingsRef.current) {
+      pendingAcademySettingsNavigationRef.current = action;
+      setIsAcademySettingsLeaveDialogOpen(true);
+      return;
+    }
+
+    action();
+  };
+
+  const applyRemoteAcademyPreferences = (preferences: AcademyPreferences, options: { allowCalendarSettings?: boolean } = {}) => {
+    const shouldAcceptCalendarSettings =
+      Boolean(options.allowCalendarSettings) && !hasLoadedRemoteAcademySettingsRef.current;
+    const previousSettings = savedAcademyCalendarSettingsRef.current;
+    const protectedSettings = Date.now() < academySettingsProtectedUntilRef.current
+      ? savedAcademyCalendarSettingsRef.current
+      : null;
+
+    applyAcademyPreferencesResponse(preferences);
+
+    const nextSettings = protectedSettings ?? (shouldAcceptCalendarSettings
+      ? academyPreferenceCache.calendarSettings
+      : previousSettings);
+
+    if (!areAcademyCalendarSettingsEqual(academyPreferenceCache.calendarSettings, nextSettings)) {
+      academyPreferenceCache = {
+        ...academyPreferenceCache,
+        calendarSettings: nextSettings,
+      };
+    }
+
+    savedAcademyCalendarSettingsRef.current = academyPreferenceCache.calendarSettings;
+    hasLoadedRemoteAcademySettingsRef.current = true;
+
+    return academyPreferenceCache.calendarSettings;
+  };
+
+  const runPendingAcademySettingsNavigation = () => {
+    const pendingAction = pendingAcademySettingsNavigationRef.current;
+
+    pendingAcademySettingsNavigationRef.current = null;
+    setIsAcademySettingsLeaveDialogOpen(false);
+    pendingAction?.();
+  };
 
   const navigateWorkspace = (nextNavigation: WorkspaceNavigation) => {
     const isSameNavigation =
@@ -3225,6 +3863,49 @@ function App() {
 
     setNavigation(nextNavigation);
   };
+
+  useEffect(() => {
+    if (authStatus !== 'authenticated' || accessibleModeIds.length === 0) {
+      return;
+    }
+
+    if (!accessibleModeIds.includes(activeMode.id)) {
+      setActiveModeId(accessibleModeIds[0]);
+    }
+  }, [accessibleModeIds, activeMode.id, authStatus, setActiveModeId]);
+
+  useEffect(() => {
+    if (
+      authStatus !== 'authenticated' ||
+      !accessibleModeIds.includes(activeMode.id) ||
+      !firstAccessibleSidebarItem
+    ) {
+      return;
+    }
+
+    const requestedItemId = navigation.modeId === activeMode.id
+      ? navigation.sidebarItemId
+      : firstAccessibleSidebarItem.id;
+
+    if (canAccessSidebarItem(activeMode.id, requestedItemId, accessSet)) {
+      return;
+    }
+
+    navigateWorkspace({
+      modeId: activeMode.id,
+      sidebarItemId: firstAccessibleSidebarItem.id,
+      view: currentView,
+    });
+  }, [
+    accessSet,
+    accessibleModeIds,
+    activeMode.id,
+    authStatus,
+    currentView,
+    firstAccessibleSidebarItem,
+    navigation.modeId,
+    navigation.sidebarItemId,
+  ]);
 
   const openAcademyCourseworkDialog = (detail?: AcademyOpenCourseworkDialogDetail) => {
     if (activeMode.id !== 'academy') {
@@ -3279,19 +3960,17 @@ function App() {
   };
 
   const persistAcademyCalendarSettings = (settings: AcademyCalendarSettings) => {
-    storeAcademyCalendarSettings(settings);
-
-    persistAcademyPreferencesFromStorage(settings);
+    return persistAcademyPreferencesFromStorage(settings);
   };
 
-  const persistAcademyPreferencesFromStorage = (settings = academyCalendarSettings) => {
+  const persistAcademyPreferencesFromStorage = (settings = savedAcademyCalendarSettings) => {
     const saveSequence = academyPreferencesSaveSequenceRef.current + 1;
     academyPreferencesSaveSequenceRef.current = saveSequence;
     isAcademyPreferencesSavingRef.current = true;
     setAcademyPreferencesSaveStatus('saving');
     setAcademyPreferencesSaveError('');
 
-    void workspaceApi.saveAcademyPreferences({
+    return workspaceApi.saveAcademyPreferences({
       manualLectures: readStoredJson<unknown[]>(manualLecturesStorageKey, []),
       canvasLecturePreferences: readStoredJson<Record<string, unknown>>(canvasLecturePreferencesStorageKey, {}),
       manualCoursework: readStoredJson<unknown[]>(manualCourseworkStorageKey, []),
@@ -3306,8 +3985,24 @@ function App() {
         }
 
         applyAcademyPreferencesResponse(preferences);
-        setAcademyCalendarSettings(academyPreferenceCache.calendarSettings);
-        setHiddenCalendarCourseIds(academyPreferenceCache.calendarSettings.hiddenCourseIds ?? []);
+        const nextSavedSettings = normalizeAcademyCalendarSettings(settings, academyPreferenceCache.calendarSettings);
+
+        academyPreferenceCache = {
+          ...academyPreferenceCache,
+          calendarSettings: nextSavedSettings,
+        };
+
+        setSavedAcademyCalendarSettings(nextSavedSettings);
+        savedAcademyCalendarSettingsRef.current = nextSavedSettings;
+        academySettingsProtectedUntilRef.current = Date.now() + 15000;
+        if (
+          !hasUnsavedAcademySettingsRef.current ||
+          areAcademyCalendarSettingsEqual(settings, academyCalendarSettingsRef.current)
+        ) {
+          setAcademyCalendarSettings(nextSavedSettings);
+        }
+        storeAcademyCalendarSettings(nextSavedSettings);
+        setHiddenCalendarCourseIds(nextSavedSettings.hiddenCourseIds ?? []);
         setAcademyPreferenceVersion((currentVersion) => currentVersion + 1);
         setAcademyPreferencesSaveStatus('saved');
         dispatchAcademyPreferencesUpdated();
@@ -3331,7 +4026,22 @@ function App() {
     const nextSettings = normalizeAcademyCalendarSettings(settings);
 
     setAcademyCalendarSettings(nextSettings);
-    persistAcademyCalendarSettings(nextSettings);
+    setAcademyPreferencesSaveStatus('idle');
+    setAcademyPreferencesSaveError('');
+  };
+
+  const handleSaveAcademyCalendarSettings = (settings = academyCalendarSettings) => {
+    const nextSettings = normalizeAcademyCalendarSettings(settings, academyCalendarSettingsRef.current);
+
+    setAcademyCalendarSettings(nextSettings);
+    return persistAcademyCalendarSettings(nextSettings);
+  };
+
+  const handleRevertAcademyCalendarSettings = () => {
+    setAcademyCalendarSettings(savedAcademyCalendarSettings);
+    setHiddenCalendarCourseIds(savedAcademyCalendarSettings.hiddenCourseIds ?? []);
+    setAcademyPreferencesSaveStatus('idle');
+    setAcademyPreferencesSaveError('');
   };
 
   const handleAdminConsoleSettingsChange = (settings: AdminConsoleSettings) => {
@@ -3344,10 +4054,6 @@ function App() {
 
   const handleThemeChange = (nextTheme: AppTheme) => {
     if (activeMode.id === 'academy') {
-      handleAcademyCalendarSettingsChange({
-        ...academyCalendarSettings,
-        themeMode: nextTheme,
-      });
       return;
     }
 
@@ -3538,6 +4244,18 @@ function App() {
       return;
     }
 
+    if (sourceItem.source === 'canvas' && !sourceItem.isArchivedCanvasItem) {
+      return;
+    }
+
+    if (
+      sourceItem.source === 'canvas' &&
+      sourceItem.isArchivedCanvasItem &&
+      !window.confirm(dictionary.courseworkMoveArchivedCanvasConfirm)
+    ) {
+      return;
+    }
+
     updateCalendarSourceItemPreference(sourceItem, (preference) => ({
       ...preference,
       dueAt: getCalendarDueAtForTargetDay(target),
@@ -3582,9 +4300,13 @@ function App() {
   };
 
   const handleSaveCalendarTodoDetails = (item: CalendarSourceItem, draft: CalendarTodoDetailsDraft) => {
-    const nextDueAt = toIsoFromDateInput(draft.dueAt) || undefined;
-    const nextStartAt = toIsoFromDateInput(draft.startAt) || undefined;
-    const nextEndAt = toIsoFromDateInput(draft.endAt) || undefined;
+    const draftDueAt = toIsoFromDateInput(draft.dueAt) || undefined;
+    const draftStartAt = toIsoFromDateInput(draft.startAt) || undefined;
+    const draftEndAt = toIsoFromDateInput(draft.endAt) || undefined;
+    const shouldKeepCanvasDates = item.source === 'canvas' && !item.isArchivedCanvasItem;
+    const nextDueAt = shouldKeepCanvasDates ? item.dueAt : draftDueAt;
+    const nextStartAt = shouldKeepCanvasDates ? item.startAt : draftStartAt;
+    const nextEndAt = shouldKeepCanvasDates ? item.endAt : draftEndAt;
     const nextTitle = draft.title.trim();
     const nextType = draft.type || 'assignment';
 
@@ -3747,11 +4469,7 @@ function App() {
       const isSavingAcademyPreferences = isAcademyPreferencesSavingRef.current;
 
       if (event instanceof CustomEvent && event.detail) {
-        if (
-          isSavingAcademyPreferences &&
-          isRecord(event.detail) &&
-          'calendarSettings' in event.detail
-        ) {
+        if (isRecord(event.detail) && 'calendarSettings' in event.detail) {
           const detailWithoutSettings = { ...event.detail };
 
           delete detailWithoutSettings.calendarSettings;
@@ -3766,9 +4484,6 @@ function App() {
       if (isSavingAcademyPreferences) {
         return;
       }
-
-      setAcademyCalendarSettings(getStoredAcademyCalendarSettings());
-      setHiddenCalendarCourseIds(getStoredHiddenCalendarCourseIds());
     };
 
     window.addEventListener(academyPreferencesUpdatedEvent, handleAcademyPreferencesUpdated);
@@ -3792,9 +4507,12 @@ function App() {
           return;
         }
 
-        applyAcademyPreferencesResponse(preferences);
-        setAcademyCalendarSettings(academyPreferenceCache.calendarSettings);
-        setHiddenCalendarCourseIds(academyPreferenceCache.calendarSettings.hiddenCourseIds ?? []);
+        const nextSavedSettings = applyRemoteAcademyPreferences(preferences, { allowCalendarSettings: true });
+        setSavedAcademyCalendarSettings(nextSavedSettings);
+        if (!hasUnsavedAcademySettingsRef.current) {
+          setAcademyCalendarSettings(nextSavedSettings);
+          setHiddenCalendarCourseIds(nextSavedSettings.hiddenCourseIds ?? []);
+        }
         setAcademyPreferenceVersion((currentVersion) => currentVersion + 1);
         dispatchAcademyPreferencesUpdated();
       })
@@ -3824,9 +4542,12 @@ function App() {
             return;
           }
 
-          applyAcademyPreferencesResponse(preferences);
-          setAcademyCalendarSettings(academyPreferenceCache.calendarSettings);
-          setHiddenCalendarCourseIds(academyPreferenceCache.calendarSettings.hiddenCourseIds ?? []);
+          const nextSavedSettings = applyRemoteAcademyPreferences(preferences);
+          setSavedAcademyCalendarSettings(nextSavedSettings);
+          if (!hasUnsavedAcademySettingsRef.current) {
+            setAcademyCalendarSettings(nextSavedSettings);
+            setHiddenCalendarCourseIds(nextSavedSettings.hiddenCourseIds ?? []);
+          }
           setAcademyPreferenceVersion((currentVersion) => currentVersion + 1);
           dispatchAcademyPreferencesUpdated();
         })
@@ -3965,19 +4686,43 @@ function App() {
     const monthKey = getCalendarMonthKey(calendarMonth);
     const cachedPage = canvasCalendarPages[monthKey];
 
-    if (cachedPage?.status === 'loaded' || cachedPage?.status === 'loading' || cachedPage?.status === 'failed') {
+    if (cachedPage?.status === 'loaded') {
       return undefined;
     }
 
     const monthRange = getCalendarMonthRange(calendarMonth);
+    const requestedAt = Date.now();
 
     setCanvasCalendarPages((currentPages) => ({
       ...currentPages,
       [monthKey]: {
         items: currentPages[monthKey]?.items ?? [],
+        requestedAt,
         status: 'loading',
       },
     }));
+
+    const timeoutId = window.setTimeout(() => {
+      if (isCancelled) {
+        return;
+      }
+
+      setCanvasCalendarPages((currentPages) => {
+        const currentPage = currentPages[monthKey];
+
+        if (currentPage?.status !== 'loading' || currentPage.requestedAt !== requestedAt) {
+          return currentPages;
+        }
+
+        return {
+          ...currentPages,
+          [monthKey]: {
+            items: currentPage.items ?? [],
+            status: 'failed',
+          },
+        };
+      });
+    }, 30_000);
 
     workspaceApi
       .getCanvasCalendarItems({
@@ -3994,6 +4739,7 @@ function App() {
         ))),
       })
       .then(({ items }) => {
+        window.clearTimeout(timeoutId);
         if (isCancelled) {
           return;
         }
@@ -4007,6 +4753,7 @@ function App() {
         }));
       })
       .catch(() => {
+        window.clearTimeout(timeoutId);
         if (isCancelled) {
           return;
         }
@@ -4022,6 +4769,7 @@ function App() {
 
     return () => {
       isCancelled = true;
+      window.clearTimeout(timeoutId);
     };
   }, [calendarMonth, shouldLoadCanvasCalendar]);
 
@@ -4033,30 +4781,60 @@ function App() {
 
       const monthKey = getCalendarMonthKey(calendarMonth);
       const monthRange = getCalendarMonthRange(calendarMonth);
+      const requestedAt = Date.now();
 
       setCanvasCalendarPages((currentPages) => ({
         ...currentPages,
         [monthKey]: {
           items: currentPages[monthKey]?.items ?? [],
+          requestedAt,
           status: 'loading',
         },
       }));
 
-      return workspaceApi
-        .getCanvasCalendarItems({
-          endDate: formatDateParam(new Date(Date.UTC(
-            monthRange.endDate.getUTCFullYear(),
-            monthRange.endDate.getUTCMonth(),
-            monthRange.endDate.getUTCDate() + 7,
-          ))),
-          pageSize: 100,
-          startDate: formatDateParam(new Date(Date.UTC(
-            monthRange.startDate.getUTCFullYear(),
-            monthRange.startDate.getUTCMonth(),
-            monthRange.startDate.getUTCDate() - 7,
-          ))),
-        })
+      let timeoutId: number | undefined;
+      const timeoutTask = new Promise<never>((_, reject) => {
+        timeoutId = window.setTimeout(() => {
+          setCanvasCalendarPages((currentPages) => {
+            const currentPage = currentPages[monthKey];
+
+            if (currentPage?.status !== 'loading' || currentPage.requestedAt !== requestedAt) {
+              return currentPages;
+            }
+
+            return {
+              ...currentPages,
+              [monthKey]: {
+                items: currentPage.items ?? [],
+                status: 'failed',
+              },
+            };
+          });
+
+          reject(new Error(dictionary.canvasCalendarUnavailable));
+        }, 30_000);
+      });
+
+      const calendarTask = workspaceApi.getCanvasCalendarItems({
+        endDate: formatDateParam(new Date(Date.UTC(
+          monthRange.endDate.getUTCFullYear(),
+          monthRange.endDate.getUTCMonth(),
+          monthRange.endDate.getUTCDate() + 7,
+        ))),
+        pageSize: 100,
+        startDate: formatDateParam(new Date(Date.UTC(
+          monthRange.startDate.getUTCFullYear(),
+          monthRange.startDate.getUTCMonth(),
+          monthRange.startDate.getUTCDate() - 7,
+        ))),
+      });
+
+      return Promise.race([calendarTask, timeoutTask])
         .then(({ items }) => {
+          if (typeof timeoutId === 'number') {
+            window.clearTimeout(timeoutId);
+          }
+
           setCanvasCalendarPages((currentPages) => ({
             ...currentPages,
             [monthKey]: {
@@ -4066,6 +4844,10 @@ function App() {
           }));
         })
         .catch((error: unknown) => {
+          if (typeof timeoutId === 'number') {
+            window.clearTimeout(timeoutId);
+          }
+
           setCanvasCalendarPages((currentPages) => ({
             ...currentPages,
             [monthKey]: {
@@ -4090,9 +4872,12 @@ function App() {
             return;
           }
 
-          applyAcademyPreferencesResponse(preferences);
-          setAcademyCalendarSettings(academyPreferenceCache.calendarSettings);
-          setHiddenCalendarCourseIds(academyPreferenceCache.calendarSettings.hiddenCourseIds ?? []);
+          const nextSavedSettings = applyRemoteAcademyPreferences(preferences);
+          setSavedAcademyCalendarSettings(nextSavedSettings);
+          if (!hasUnsavedAcademySettingsRef.current) {
+            setAcademyCalendarSettings(nextSavedSettings);
+            setHiddenCalendarCourseIds(nextSavedSettings.hiddenCourseIds ?? []);
+          }
           setAcademyPreferenceVersion((currentVersion) => currentVersion + 1);
           dispatchAcademyPreferencesUpdated();
         });
@@ -4139,6 +4924,11 @@ function App() {
     }
 
     if (session.canAccessWorkspace) {
+      if (session.requiresAssignment || (session.access ?? []).length === 0) {
+        setAuthStatus('unassigned');
+        return;
+      }
+
       setAuthStatus('authenticated');
       return;
     }
@@ -4336,6 +5126,7 @@ function App() {
                     const dueState = getCalendarDueState(getCalendarSourceItemDate(item), Boolean(item.isCompleted));
                     const moveTarget = getCalendarMoveDueDateTarget(item);
                     const courseDisplay = getCourseDisplay(item, dictionary.selectedDayTodoNoCourse);
+                    const isClassSession = item.source === 'class-session';
                     const isEditingTitle = focusedCalendarTodoId === item.id && !item.isLocked;
                     const itemRow = (
                       <div
@@ -4361,28 +5152,39 @@ function App() {
                         role="button"
                         tabIndex={0}
                       >
-                        <button
-                          aria-label={item.isLocked ? dictionary.selectedDayTodoLocked : item.title}
-                          className={cn(
-                            'mt-0.5 grid size-5 shrink-0 place-items-center rounded-[7px] border text-[11px] font-black leading-none transition-colors',
-                            variant === 'mobile' && 'size-6 rounded-[8px]',
-                            item.isCompleted
-                              ? getCourseDoneCheckClass(courseDisplay.color)
-                              : 'border-muted-foreground/30 bg-muted/70 text-muted-foreground hover:bg-muted',
-                            item.isLocked && 'cursor-default opacity-90',
-                          )}
-                          disabled={item.isLocked}
-                          onClick={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            toggleCalendarSourceItemDone(item);
-                            persistAcademyPreferencesFromStorage();
-                          }}
-                          title={item.isLocked ? dictionary.selectedDayTodoLocked : item.title}
-                          type="button"
-                        >
-                          {item.isCompleted ? '✓' : ''}
-                        </button>
+                        {isClassSession ? (
+                          <span
+                            aria-hidden="true"
+                            className={cn(
+                              'mt-1.5 size-3 shrink-0 rounded-full',
+                              variant === 'mobile' && 'mt-2 size-3.5',
+                              dotColorClasses[courseDisplay.color],
+                            )}
+                          />
+                        ) : (
+                          <button
+                            aria-label={item.isLocked ? dictionary.selectedDayTodoLocked : item.title}
+                            className={cn(
+                              'mt-0.5 grid size-5 shrink-0 place-items-center rounded-[7px] border text-[11px] font-black leading-none transition-colors',
+                              variant === 'mobile' && 'size-6 rounded-[8px]',
+                              item.isCompleted
+                                ? getCourseDoneCheckClass(courseDisplay.color)
+                                : 'border-muted-foreground/30 bg-muted/70 text-muted-foreground hover:bg-muted',
+                              item.isLocked && 'cursor-default opacity-90',
+                            )}
+                            disabled={item.isLocked}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              toggleCalendarSourceItemDone(item);
+                              persistAcademyPreferencesFromStorage();
+                            }}
+                            title={item.isLocked ? dictionary.selectedDayTodoLocked : item.title}
+                            type="button"
+                          >
+                            {item.isCompleted ? '✓' : ''}
+                          </button>
+                        )}
                         <span className="min-w-0">
                           {isEditingTitle ? (
                             <input
@@ -4419,7 +5221,7 @@ function App() {
                             <span
                               className={cn(
                                 'inline-flex h-5 w-20 shrink-0 items-center justify-center rounded-md border px-1.5 text-[10px] font-black',
-                                getCalendarDueChipClass(dueState),
+                                getCalendarTimeChipClass(item, dueState),
                               )}
                             >
                               <span className="truncate">{dueLabel}</span>
@@ -4432,6 +5234,7 @@ function App() {
                             >
                               {formatCalendarTodoType(item.type)}
                             </span>
+                            {!isClassSession ? (
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
                                 <button
@@ -4494,10 +5297,15 @@ function App() {
                                 </DropdownMenuItem>
                               </DropdownMenuContent>
                             </DropdownMenu>
+                            ) : null}
                           </span>
                         </span>
                       </div>
                     );
+
+                    if (isClassSession) {
+                      return <div key={item.id}>{itemRow}</div>;
+                    }
 
                     return (
                       <ContextMenu key={item.id}>
@@ -4576,6 +5384,19 @@ function App() {
     );
   }
 
+  if (authStatus === 'unassigned') {
+    return (
+      <WaitingAssignmentPage
+        isChecking={isAuthSessionRefreshing}
+        onRefresh={() => {
+          void refreshAuthSession();
+        }}
+        onSignOut={signOut}
+        session={authSession}
+      />
+    );
+  }
+
   if (authStatus !== 'authenticated') {
     return (
       <LoginPage
@@ -4604,8 +5425,24 @@ function App() {
       }
     >
       <TopBar
+        academyLogoSrc={activeMode.id === 'academy' ? academyCalendarSettings.academyLogoSrc : undefined}
+        allowedModeIds={accessibleModeIds}
         isTopBarCollapsed={effectiveTopBarCollapsed}
         onBeforeModeChange={(modeId) => {
+          if (isAcademySettingsView && hasUnsavedAcademySettingsRef.current) {
+            pendingAcademySettingsNavigationRef.current = () => {
+              setIsAcademyTopBarCollapsed(
+                modeId === 'academy' && academyCalendarSettingsRef.current.topBarDefaultCollapsed,
+              );
+              setIsAdminTopBarCollapsed(
+                modeId === 'admin-console' && adminConsoleSettings.topBarDefaultCollapsed,
+              );
+              setActiveModeId(modeId);
+            };
+            setIsAcademySettingsLeaveDialogOpen(true);
+            return false;
+          }
+
           setIsAcademyTopBarCollapsed(
             modeId === 'academy' && academyCalendarSettings.topBarDefaultCollapsed,
           );
@@ -4625,6 +5462,63 @@ function App() {
         theme={activeMode.id === 'academy' ? academyCalendarSettings.themeMode : theme}
       />
 
+      <Dialog
+        onOpenChange={(open) => {
+          setIsAcademySettingsLeaveDialogOpen(open);
+          if (!open) {
+            pendingAcademySettingsNavigationRef.current = null;
+          }
+        }}
+        open={isAcademySettingsLeaveDialogOpen}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{dictionary.academySettingsLeaveTitle}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm font-semibold text-muted-foreground">
+            {dictionary.academySettingsLeaveDescription}
+          </p>
+          <DialogFooter className="gap-2 sm:justify-between">
+            <Button
+              onClick={() => {
+                pendingAcademySettingsNavigationRef.current = null;
+                setIsAcademySettingsLeaveDialogOpen(false);
+              }}
+              type="button"
+              variant="outline"
+            >
+              {dictionary.academySettingsLeaveCancel}
+            </Button>
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button
+                onClick={() => {
+                  handleRevertAcademyCalendarSettings();
+                  runPendingAcademySettingsNavigation();
+                }}
+                type="button"
+                variant="outline"
+              >
+                {dictionary.academySettingsLeaveRevert}
+              </Button>
+              <Button
+                disabled={academyPreferencesSaveStatus === 'saving'}
+                onClick={() => {
+                  void handleSaveAcademyCalendarSettings()
+                    .then(() => {
+                      runPendingAcademySettingsNavigation();
+                    });
+                }}
+                type="button"
+              >
+                {academyPreferencesSaveStatus === 'saving'
+                  ? dictionary.academySettingsSaving
+                  : dictionary.academySettingsLeaveSave}
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <main
         className={cn(
           'mx-auto grid w-full max-w-[2400px] items-start gap-3 overflow-x-clip p-3 max-lg:block',
@@ -4643,8 +5537,38 @@ function App() {
         <Sidebar
           activeItemId={activeSidebarItem}
           collapsed={isWorkspaceSidebarCollapsed}
+          mode={filteredActiveMode}
           onToggleCollapsed={() => setIsWorkspaceSidebarCollapsed((current) => !current)}
           onSelectItem={(itemId) => {
+            if (!canAccessSidebarItem(activeMode.id, itemId, accessSet)) {
+              return;
+            }
+
+            if (isAcademySettingsView && itemId !== 'settings' && hasUnsavedAcademySettingsRef.current) {
+              requestAcademySettingsNavigation(() => {
+                let guardedNextView = currentView;
+
+                if (itemId === 'calendar') {
+                  guardedNextView = 'month';
+                }
+
+                if (itemId === 'board') {
+                  guardedNextView = 'board';
+                }
+
+                if (itemId === 'timeline') {
+                  guardedNextView = 'timeline';
+                }
+
+                navigateWorkspace({
+                  modeId: activeMode.id,
+                  sidebarItemId: itemId,
+                  view: guardedNextView,
+                });
+              });
+              return;
+            }
+
             if (activeMode.id === 'project' && itemId === 'toptrack') {
               window.open(topTrackExternalUrl, '_blank', 'noopener,noreferrer');
               return;
@@ -4703,6 +5627,8 @@ function App() {
             <CanvasInboxView onOpenIntegration={openAcademyCourseResource} />
           ) : isAcademyPeopleView ? (
             <CanvasPeopleView onOpenCoursePeople={openAcademyCourseResource} />
+          ) : isAcademyGradesView ? (
+            <AcademyGradesView />
           ) : isCoursesView ? (
             <CourseOverviewView
               initialResourceUrl={selectedCourseOverviewResourceUrl}
@@ -4710,6 +5636,9 @@ function App() {
             />
           ) : isAcademySettingsView ? (
             <AcademySettingsView
+              hasUnsavedChanges={hasUnsavedAcademySettings}
+              onRevertSettings={handleRevertAcademyCalendarSettings}
+              onSaveSettings={handleSaveAcademyCalendarSettings}
               onSettingsChange={handleAcademyCalendarSettingsChange}
               settings={academyCalendarSettings}
               settingsSaveError={academyPreferencesSaveError}

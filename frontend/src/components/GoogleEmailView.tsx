@@ -234,6 +234,14 @@ function createEmailFrameDocument(html: string) {
 </html>`;
 }
 
+function isGoogleApiAccessDisabledError(error: string | null) {
+  const normalizedError = error?.toLowerCase() ?? '';
+
+  return normalizedError.includes('google api access is not enabled') ||
+    normalizedError.includes('api access is disabled') ||
+    normalizedError.includes('not assigned to your account');
+}
+
 function GmailHtmlBodyFrame({ html, title }: { html: string; title: string }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(420);
@@ -770,6 +778,7 @@ export function GoogleEmailView() {
   const [reloadKey, setReloadKey] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const isGoogleApiAccessDisabled = isGoogleApiAccessDisabledError(error);
   const [composeOpen, setComposeOpen] = useState(false);
   const [composeForm, setComposeForm] = useState<ComposeForm>(() => readStoredComposeDraft());
   const [composeAttachments, setComposeAttachments] = useState<ComposeAttachment[]>([]);
@@ -1775,15 +1784,17 @@ export function GoogleEmailView() {
                 <GoogleProductIcon decorative product="gmail" size={30} />
                 <h3 className="mt-3 text-lg font-black">{dictionary.googleEmailTitle}</h3>
                 <p className="mt-2 text-sm font-semibold text-muted-foreground">{error}</p>
-                <Button
-                  className="mt-4"
-                  onClick={() => {
-                    window.location.href = `${workspaceApi.apiBaseUrl}/google/integrations/gmail/connect`;
-                  }}
-                  type="button"
-                >
-                  {dictionary.reconnectGoogle}
-                </Button>
+                {!isGoogleApiAccessDisabled ? (
+                  <Button
+                    className="mt-4"
+                    onClick={() => {
+                      window.location.href = `${workspaceApi.apiBaseUrl}/google/integrations/gmail/connect`;
+                    }}
+                    type="button"
+                  >
+                    {dictionary.reconnectGoogle}
+                  </Button>
+                ) : null}
               </div>
             </div>
           ) : isReadingMessage && selectedMessage ? (

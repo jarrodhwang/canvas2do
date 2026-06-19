@@ -31,10 +31,8 @@ import {
   ManualLectureDialog,
   type ManualLecture,
   type ManualLectureAssessment,
-  type ManualLectureClassType,
   type ManualLectureLink,
   type ManualLectureSchedule,
-  type ManualLectureScheduleEntry,
 } from './ManualLectureDialog';
 import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
@@ -93,6 +91,7 @@ const defaultCourseworkHideSettings: CourseworkHideSettings = {
   completedAfterHours: 24,
   completedFrom: 'dueAt',
 };
+const noTermSemester = 'No Term';
 type RenderableDashboardRow = DashboardRow & {
   assessmentKey?: string;
   assessmentSource?: AssessmentRowSource;
@@ -111,6 +110,7 @@ type RenderableDashboardRow = DashboardRow & {
   friendlyCourseCode?: string;
   friendlyName?: string;
   isCanvasSubmitted?: boolean;
+  isArchivedCanvasItem?: boolean;
   isStarred?: boolean;
   lectureKey?: string;
   lectureSource?: LectureRowSource;
@@ -292,10 +292,6 @@ interface CourseworkCourseOption {
   value: string;
 }
 
-function formatClassType(classType: ManualLectureClassType) {
-  return classType.charAt(0).toUpperCase() + classType.slice(1);
-}
-
 function createLectureSectionsSummary(lecture: {
   labSection?: string;
   lectureSection?: string;
@@ -354,7 +350,7 @@ function normalizeCanvasSemesterName(value?: string) {
   const trimmedValue = value?.trim();
 
   if (!trimmedValue || /^default term$/i.test(trimmedValue)) {
-    return undefined;
+    return noTermSemester;
   }
 
   return trimmedValue;
@@ -376,11 +372,13 @@ function getCanvasCourseSemester(
   fallbackSemester = defaultAcademySemester,
 ) {
   const coursePreferences = preferences[course.id] ?? {};
+  const preferenceSemester = coursePreferences.semester ?? coursePreferences.termName;
 
-  return normalizeSemesterName(
-    coursePreferences.semester ?? coursePreferences.termName ?? course.termName,
-    fallbackSemester,
-  );
+  if (preferenceSemester) {
+    return normalizeSemesterName(preferenceSemester, fallbackSemester);
+  }
+
+  return normalizeCanvasSemesterName(course.termName);
 }
 
 function getCanvasItemSemester(
@@ -535,38 +533,6 @@ function getFriendlyCourseCodeForCode(
   return canvasCoursePreference?.friendlyCourseCode || courseCode;
 }
 
-function getScheduleEntriesFromSchedule(schedule?: ManualLectureSchedule): ManualLectureScheduleEntry[] {
-  if (Array.isArray(schedule?.entries) && schedule.entries.length > 0) {
-    return schedule.entries;
-  }
-
-  if (schedule?.day || schedule?.time || schedule?.location) {
-    return [{
-      id: 'legacy-schedule',
-      classType: 'lecture',
-      deliveryMode: schedule.deliveryMode ?? 'inPerson',
-      day: schedule.day ?? '',
-      time: schedule.time ?? '',
-      location: schedule.location ?? '',
-    }];
-  }
-
-  return [];
-}
-
-function createScheduleSummary(schedule?: ManualLectureSchedule) {
-  return getScheduleEntriesFromSchedule(schedule)
-    .slice(0, 2)
-    .map((entry) => [
-      formatClassType(entry.classType),
-      entry.deliveryMode === 'online' ? 'Online' : '',
-      entry.day,
-      entry.time,
-      entry.location,
-    ].filter(Boolean).join(' '))
-    .join(' · ');
-}
-
 function createCanvasLectureRows(
   courses: CanvasCourse[],
   preferences: CanvasLecturePreferences,
@@ -582,17 +548,13 @@ function createCanvasLectureRows(
       const coursePreferences = preferences[course.id] ?? {};
       const originalCourseCode = course.courseCode?.trim() || course.id;
       const sections = createLectureSectionsSummary(coursePreferences);
-      const schedule = createScheduleSummary(coursePreferences.schedule);
       const displayName = coursePreferences.friendlyName?.trim() || course.name;
       const semester = getCanvasCourseSemester(course, preferences, fallbackSemester);
 
       return {
         id: course.id,
         label: coursePreferences.friendlyCourseCode?.trim() || originalCourseCode,
-        value: [
-          sections ? `${displayName} · ${sections}` : displayName,
-          schedule,
-        ].filter(Boolean).join(' · '),
+        value: sections ? `${displayName} · ${sections}` : displayName,
         canvasCourseId: course.id,
         chipColor: coursePreferences.chipColor ?? defaultCourseChipColor,
         courseName: course.name,
@@ -879,6 +841,7 @@ function createCanvasAssessmentRows(
         dueAt,
         href: item.htmlUrl,
         isCanvasSubmitted,
+        isArchivedCanvasItem: false,
         isCompleted,
         isStarred: Boolean(itemPreferences.starred),
         originalCourseCode: item.courseCode,
@@ -940,7 +903,7 @@ function createCanvasCourseworkRows(
     .filter(isCourseworkCanvasItem)
     .filter((item) => {
       const itemPreferences = preferences[item.id] ?? {};
-      const dueAt = itemPreferences.dueAt || item.dueAt || item.startAt;
+      const dueAt = item.dueAt || item.startAt;
       const semester = getCanvasItemSemester(
         item,
         itemPreferences,
@@ -971,7 +934,7 @@ function createCanvasCourseworkRows(
         item.courseCode?.trim() ||
         item.contextCode?.replace(/^course_/i, '') ||
         'Canvas';
-      const dueAt = itemPreferences.dueAt || item.dueAt || item.startAt;
+      const dueAt = item.dueAt || item.startAt;
       const courseworkType = itemPreferences.courseworkType || item.type;
       const isCanvasSubmitted = Boolean(item.isSubmitted);
       const isCompleted = isCanvasSubmitted || Boolean(itemPreferences.completed);
@@ -1005,6 +968,7 @@ function createCanvasCourseworkRows(
         dueAt,
         href: item.htmlUrl,
         isCanvasSubmitted,
+        isArchivedCanvasItem: false,
         isCompleted,
         isStarred: Boolean(itemPreferences.starred),
         originalCourseCode: item.courseCode,
@@ -1064,25 +1028,29 @@ function createStoredCanvasCourseworkRows(
   hideSettings: CourseworkHideSettings,
 ): RenderableDashboardRow[] {
   return Object.entries(preferences)
-    .filter(([itemId, preference]) => (
-      !currentItemIds.has(itemId) &&
-      !preference.hidden &&
-      Boolean(preference.title?.trim()) &&
-      semesterMatches(preference.semester, selectedSemester, fallbackSemester) &&
-      shouldShowCourseworkItem(
-        preference.dueAt,
-        Boolean(preference.isSubmitted) || Boolean(preference.completed),
-        preference.submittedAt ?? preference.completedAt,
-        hideSettings,
-      )
-    ))
+    .filter(([itemId, preference]) => {
+      const dateValue = preference.dueAt ?? preference.startAt ?? preference.endAt;
+
+      return !currentItemIds.has(itemId) &&
+        !preference.hidden &&
+        Boolean(preference.title?.trim()) &&
+        semesterMatches(preference.semester, selectedSemester, fallbackSemester) &&
+        shouldShowCourseworkItem(
+          dateValue,
+          Boolean(preference.isSubmitted) || Boolean(preference.completed),
+          preference.submittedAt ?? preference.completedAt,
+          hideSettings,
+        );
+    })
     .sort(([, firstPreference], [, secondPreference]) => (
-      new Date(firstPreference.dueAt || 0).getTime() - new Date(secondPreference.dueAt || 0).getTime()
+      new Date(firstPreference.dueAt ?? firstPreference.startAt ?? firstPreference.endAt ?? 0).getTime() -
+      new Date(secondPreference.dueAt ?? secondPreference.startAt ?? secondPreference.endAt ?? 0).getTime()
     ))
     .map(([itemId, preference]) => {
       const coursePreferences = preference.courseId ? lecturePreferences[preference.courseId] : undefined;
       const courseCode = preference.courseCode?.trim() || preference.originalCourseCode?.trim() || '';
       const isCompleted = Boolean(preference.isSubmitted) || Boolean(preference.completed);
+      const dateValue = preference.dueAt ?? preference.startAt ?? preference.endAt;
 
       return {
         id: itemId,
@@ -1097,11 +1065,12 @@ function createStoredCanvasCourseworkRows(
         courseworkKey: `canvas:${itemId}`,
         courseworkSource: 'canvas',
         courseworkType: formatCourseworkType(preference.courseworkType),
-        description: formatCourseworkDue(preference.dueAt, locale),
-        dueAt: preference.dueAt,
-        dueState: getCourseworkDueState(preference.dueAt, isCompleted),
+        description: formatCourseworkDue(dateValue, locale),
+        dueAt: dateValue,
+        dueState: getCourseworkDueState(dateValue, isCompleted),
         href: preference.htmlUrl,
         isCanvasSubmitted: Boolean(preference.isSubmitted),
+        isArchivedCanvasItem: true,
         isCompleted,
         isStarred: Boolean(preference.starred),
         originalCourseCode: preference.originalCourseCode ?? preference.courseCode,
@@ -1122,25 +1091,29 @@ function createStoredCanvasAssessmentRows(
   hideSettings: CourseworkHideSettings,
 ): RenderableDashboardRow[] {
   return Object.entries(preferences)
-    .filter(([itemId, preference]) => (
-      !currentItemIds.has(itemId) &&
-      !preference.hidden &&
-      Boolean(preference.title?.trim()) &&
-      semesterMatches(preference.semester, selectedSemester, fallbackSemester) &&
-      shouldShowCourseworkItem(
-        preference.dueAt,
-        Boolean(preference.isSubmitted) || Boolean(preference.completed),
-        preference.submittedAt ?? preference.completedAt,
-        hideSettings,
-      )
-    ))
+    .filter(([itemId, preference]) => {
+      const dateValue = preference.dueAt ?? preference.startAt ?? preference.endAt;
+
+      return !currentItemIds.has(itemId) &&
+        !preference.hidden &&
+        Boolean(preference.title?.trim()) &&
+        semesterMatches(preference.semester, selectedSemester, fallbackSemester) &&
+        shouldShowCourseworkItem(
+          dateValue,
+          Boolean(preference.isSubmitted) || Boolean(preference.completed),
+          preference.submittedAt ?? preference.completedAt,
+          hideSettings,
+        );
+    })
     .sort(([, firstPreference], [, secondPreference]) => (
-      new Date(firstPreference.dueAt || 0).getTime() - new Date(secondPreference.dueAt || 0).getTime()
+      new Date(firstPreference.dueAt ?? firstPreference.startAt ?? firstPreference.endAt ?? 0).getTime() -
+      new Date(secondPreference.dueAt ?? secondPreference.startAt ?? secondPreference.endAt ?? 0).getTime()
     ))
     .map(([itemId, preference]) => {
       const coursePreferences = preference.courseId ? lecturePreferences[preference.courseId] : undefined;
       const courseCode = preference.courseCode?.trim() || preference.originalCourseCode?.trim() || '';
       const isCompleted = Boolean(preference.isSubmitted) || Boolean(preference.completed);
+      const dateValue = preference.dueAt ?? preference.startAt ?? preference.endAt;
 
       return {
         id: itemId,
@@ -1155,11 +1128,12 @@ function createStoredCanvasAssessmentRows(
         canvasCourseId: preference.courseId,
         chipColor: coursePreferences?.chipColor ??
           getCourseChipColorForCode(courseCode, manualLectures, lecturePreferences),
-        description: formatCourseworkDue(preference.dueAt, locale),
-        dueAt: preference.dueAt,
-        dueState: getCourseworkDueState(preference.dueAt, isCompleted),
+        description: formatCourseworkDue(dateValue, locale),
+        dueAt: dateValue,
+        dueState: getCourseworkDueState(dateValue, isCompleted),
         href: preference.htmlUrl,
         isCanvasSubmitted: Boolean(preference.isSubmitted),
+        isArchivedCanvasItem: true,
         isCompleted,
         isStarred: Boolean(preference.starred),
         originalCourseCode: preference.originalCourseCode ?? preference.courseCode,
@@ -1201,25 +1175,6 @@ function getVisibleManualLectures(lectures: ManualLecture[]) {
     .sort((firstLecture, secondLecture) => Number(Boolean(secondLecture.starred)) - Number(Boolean(firstLecture.starred)));
 }
 
-function getManualLectureScheduleEntries(lecture: ManualLecture): ManualLectureScheduleEntry[] {
-  if (Array.isArray(lecture.schedule?.entries) && lecture.schedule.entries.length > 0) {
-    return lecture.schedule.entries;
-  }
-
-  if (lecture.schedule?.day || lecture.schedule?.time || lecture.schedule?.location) {
-    return [{
-      id: `${lecture.id}-legacy-schedule`,
-      classType: 'lecture',
-      deliveryMode: lecture.schedule.deliveryMode ?? 'inPerson',
-      day: lecture.schedule.day ?? '',
-      time: lecture.schedule.time ?? '',
-      location: lecture.schedule.location ?? '',
-    }];
-  }
-
-  return [];
-}
-
 function getManualLectureLinkUrl(lecture: ManualLecture, linkId: string) {
   const url = lecture.links.find((link) => link.id === linkId)?.url.trim();
 
@@ -1233,26 +1188,13 @@ function getManualLectureLinkUrl(lecture: ManualLecture, linkId: string) {
 function createManualLectureRows(lectures: ManualLecture[]): RenderableDashboardRow[] {
   return lectures.map((lecture) => {
     const sections = createLectureSectionsSummary(lecture);
-    const schedule = getManualLectureScheduleEntries(lecture)
-      .slice(0, 2)
-      .map((entry) => [
-        formatClassType(entry.classType),
-        entry.deliveryMode === 'online' ? 'Online' : '',
-        entry.day,
-        entry.time,
-        entry.location,
-      ].filter(Boolean).join(' '))
-      .join(' · ');
 
     return {
       id: lecture.id,
       label: lecture.friendlyCourseCode || lecture.code || 'Manual',
-      value: [
-        sections
-          ? `${lecture.friendlyName || lecture.name} · ${sections}`
-          : lecture.friendlyName || lecture.name,
-        schedule,
-      ].filter(Boolean).join(' · '),
+      value: sections
+        ? `${lecture.friendlyName || lecture.name} · ${sections}`
+        : lecture.friendlyName || lecture.name,
       chipColor: lecture.chipColor ?? defaultCourseChipColor,
       courseName: lecture.name,
       friendlyCourseCode: lecture.friendlyCourseCode,
@@ -1718,12 +1660,15 @@ function DashboardRows({
   const { dictionary } = useLanguage();
   const courseworkLongPressTimeoutRef = useRef<number | null>(null);
   const courseworkLongPressTriggeredRef = useRef(false);
+  const courseworkScrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const resetCourseworkScrollAfterMoveRef = useRef(false);
   const suppressLectureOpenUntilRef = useRef(0);
   const [dropdownColorVariantPage, setDropdownColorVariantPage] = useState(0);
   const [contextColorVariantPage, setContextColorVariantPage] = useState(0);
   const rows = card.id === 'upcoming-coursework'
     ? card.rows
     : card.rows.slice(0, card.maxRows ?? card.rows.length);
+  const rowOrderKey = rows.map((row) => row.courseworkKey ?? row.assessmentKey ?? row.id).join('|');
   const chipColorLabels: Partial<Record<ColorToken, string>> = {
     blue: dictionary.manualLectureChipColorBlue,
     sky: dictionary.manualLectureChipColorSky,
@@ -1759,6 +1704,13 @@ function DashboardRows({
       return null;
     }
 
+    if (
+      (row.courseworkSource === 'canvas' || row.assessmentSource === 'canvas') &&
+      !row.isArchivedCanvasItem
+    ) {
+      return null;
+    }
+
     const dueDate = new Date(row.dueAt);
 
     if (Number.isNaN(dueDate.getTime())) {
@@ -1778,6 +1730,61 @@ function DashboardRows({
     }
 
     return null;
+  };
+  const confirmArchivedCanvasMove = (row: RenderableDashboardRow) => (
+    !row.isArchivedCanvasItem ||
+    window.confirm(dictionary.courseworkMoveArchivedCanvasConfirm)
+  );
+  const forceCourseworkListToTop = () => {
+    if (courseworkScrollContainerRef.current) {
+      courseworkScrollContainerRef.current.scrollTop = 0;
+    }
+  };
+  const scheduleCourseworkListToTop = () => {
+    resetCourseworkScrollAfterMoveRef.current = true;
+    forceCourseworkListToTop();
+    window.setTimeout(() => {
+      forceCourseworkListToTop();
+      window.requestAnimationFrame(() => {
+        forceCourseworkListToTop();
+        window.setTimeout(() => {
+          forceCourseworkListToTop();
+          resetCourseworkScrollAfterMoveRef.current = false;
+        }, 80);
+      });
+    }, 0);
+  };
+  const handleCourseworkMenuCloseAutoFocus = (event: Event) => {
+    if (!resetCourseworkScrollAfterMoveRef.current) {
+      return;
+    }
+
+    event.preventDefault();
+    window.requestAnimationFrame(forceCourseworkListToTop);
+  };
+  const moveCourseworkDueDate = (row: RenderableDashboardRow, target: 'today' | 'tomorrow') => {
+    if (!confirmArchivedCanvasMove(row)) {
+      return;
+    }
+
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    resetCourseworkScrollAfterMoveRef.current = true;
+    onMoveCourseworkDueDate(row, target);
+    scheduleCourseworkListToTop();
+  };
+  const moveAssessmentDueDate = (row: RenderableDashboardRow, target: 'today' | 'tomorrow') => {
+    if (!confirmArchivedCanvasMove(row)) {
+      return;
+    }
+
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    resetCourseworkScrollAfterMoveRef.current = true;
+    onMoveAssessmentDueDate(row, target);
+    scheduleCourseworkListToTop();
   };
   const clearCourseworkLongPress = () => {
     if (courseworkLongPressTimeoutRef.current) {
@@ -1886,6 +1893,13 @@ function DashboardRows({
   useEffect(() => () => {
     clearCourseworkLongPress();
   }, []);
+  useEffect(() => {
+    if (card.id !== 'upcoming-coursework' || !resetCourseworkScrollAfterMoveRef.current) {
+      return;
+    }
+
+    scheduleCourseworkListToTop();
+  }, [card.id, rowOrderKey]);
   const renderTouchMenuTrigger = () => (
     <DropdownMenuTrigger asChild>
       <Button
@@ -1910,7 +1924,7 @@ function DashboardRows({
     return (
       <DropdownMenu>
         {renderTouchMenuTrigger()}
-        <DropdownMenuContent align="end" className="w-56">
+        <DropdownMenuContent align="end" className="w-56" onCloseAutoFocus={handleCourseworkMenuCloseAutoFocus}>
           <DropdownMenuItem onSelect={() => onOpenLectureDetails(row)}>
             <BookOpen className="size-4" />
             <span>{dictionary.manualLectureOpenDetails}</span>
@@ -1978,7 +1992,7 @@ function DashboardRows({
     return (
       <DropdownMenu>
         {renderTouchMenuTrigger()}
-        <DropdownMenuContent align="end" className="w-56">
+        <DropdownMenuContent align="end" className="w-56" onCloseAutoFocus={handleCourseworkMenuCloseAutoFocus}>
           <DropdownMenuItem onSelect={() => onOpenCourseworkLink(row)}>
             <ExternalLink className="size-4" />
             <span>{dictionary.courseOverviewOpenCanvas}</span>
@@ -1992,7 +2006,7 @@ function DashboardRows({
             <span>{row.isStarred ? dictionary.courseworkUnstar : dictionary.courseworkStar}</span>
           </DropdownMenuItem>
           {moveTarget ? (
-            <DropdownMenuItem onSelect={() => onMoveCourseworkDueDate(row, moveTarget)}>
+            <DropdownMenuItem onSelect={() => moveCourseworkDueDate(row, moveTarget)}>
               <CalendarPlus className="size-4" />
               <span>
                 {moveTarget === 'today'
@@ -2059,7 +2073,7 @@ function DashboardRows({
             <span>{row.isStarred ? dictionary.assessmentUnstar : dictionary.assessmentStar}</span>
           </DropdownMenuItem>
           {moveTarget ? (
-            <DropdownMenuItem onSelect={() => onMoveAssessmentDueDate(row, moveTarget)}>
+            <DropdownMenuItem onSelect={() => moveAssessmentDueDate(row, moveTarget)}>
               <CalendarPlus className="size-4" />
               <span>
                 {moveTarget === 'today'
@@ -2110,7 +2124,7 @@ function DashboardRows({
     return (
       <ContextMenu key={`${card.id}-${row.lectureKey}`}>
         <ContextMenuTrigger asChild>{trigger}</ContextMenuTrigger>
-        <ContextMenuContent className="w-56">
+        <ContextMenuContent className="w-56" onCloseAutoFocus={handleCourseworkMenuCloseAutoFocus}>
           <ContextMenuLabel>{row.label}</ContextMenuLabel>
           <ContextMenuItem onSelect={() => onOpenLectureDetails(row)}>
             <BookOpen className="size-4" />
@@ -2180,7 +2194,7 @@ function DashboardRows({
     return (
       <ContextMenu key={`${card.id}-${row.courseworkKey}`}>
         <ContextMenuTrigger asChild>{trigger}</ContextMenuTrigger>
-        <ContextMenuContent className="w-56">
+        <ContextMenuContent className="w-56" onCloseAutoFocus={handleCourseworkMenuCloseAutoFocus}>
           <ContextMenuLabel>{row.label}</ContextMenuLabel>
           <ContextMenuItem onSelect={() => onOpenCourseworkLink(row)}>
             <ExternalLink className="size-4" />
@@ -2195,7 +2209,7 @@ function DashboardRows({
             <span>{row.isStarred ? dictionary.courseworkUnstar : dictionary.courseworkStar}</span>
           </ContextMenuItem>
           {moveTarget ? (
-            <ContextMenuItem onSelect={() => onMoveCourseworkDueDate(row, moveTarget)}>
+            <ContextMenuItem onSelect={() => moveCourseworkDueDate(row, moveTarget)}>
               <CalendarPlus className="size-4" />
               <span>
                 {moveTarget === 'today'
@@ -2263,7 +2277,7 @@ function DashboardRows({
             <span>{row.isStarred ? dictionary.assessmentUnstar : dictionary.assessmentStar}</span>
           </ContextMenuItem>
           {moveTarget ? (
-            <ContextMenuItem onSelect={() => onMoveAssessmentDueDate(row, moveTarget)}>
+            <ContextMenuItem onSelect={() => moveAssessmentDueDate(row, moveTarget)}>
               <CalendarPlus className="size-4" />
               <span>
                 {moveTarget === 'today'
@@ -2455,7 +2469,7 @@ function DashboardRows({
     });
 
     return card.id === 'upcoming-coursework'
-      ? <div className="max-h-64 overflow-y-auto pr-1">{renderedRows}</div>
+      ? <div className="max-h-64 overflow-y-auto pr-1" ref={courseworkScrollContainerRef}>{renderedRows}</div>
       : renderedRows;
   }
 
@@ -3240,8 +3254,9 @@ export function DashboardCards({
   const selectedCanvasAssessmentPreference = selectedCanvasAssessmentId
     ? canvasAssessmentPreferences[selectedCanvasAssessmentId]
     : undefined;
-  const reportedCanvasSemester = normalizeCanvasSemesterName(canvasTermName) ??
-    getCommonReportedCanvasSemester(canvasCourses);
+  const reportedCanvasSemester = canvasTermName?.trim()
+    ? normalizeCanvasSemesterName(canvasTermName)
+    : getCommonReportedCanvasSemester(canvasCourses);
   const fallbackCourseSemester = reportedCanvasSemester ?? defaultAcademySemester;
   const activeCourseSemester = normalizeSemesterName(
     selectedCourseSemester ?? reportedCanvasSemester,
@@ -3259,17 +3274,17 @@ export function DashboardCards({
           selectedCanvasAssessment?.courseCode ??
           '',
         dueAt:
-          selectedCanvasAssessmentPreference?.dueAt ??
           selectedCanvasAssessment?.dueAt ??
           selectedCanvasAssessment?.startAt ??
+          selectedCanvasAssessmentPreference?.dueAt ??
           '',
         startAt:
-          selectedCanvasAssessmentPreference?.startAt ??
           selectedCanvasAssessment?.startAt ??
+          selectedCanvasAssessmentPreference?.startAt ??
           '',
         endAt:
-          selectedCanvasAssessmentPreference?.endAt ??
           selectedCanvasAssessment?.endAt ??
+          selectedCanvasAssessmentPreference?.endAt ??
           '',
         assessmentType:
           selectedCanvasAssessmentPreference?.assessmentType ??
@@ -3299,17 +3314,17 @@ export function DashboardCards({
           selectedCanvasCoursework?.courseCode ??
           '',
         dueAt:
-          selectedCanvasCourseworkPreference?.dueAt ??
           selectedCanvasCoursework?.dueAt ??
           selectedCanvasCoursework?.startAt ??
+          selectedCanvasCourseworkPreference?.dueAt ??
           '',
         startAt:
-          selectedCanvasCourseworkPreference?.startAt ??
           selectedCanvasCoursework?.startAt ??
+          selectedCanvasCourseworkPreference?.startAt ??
           '',
         endAt:
-          selectedCanvasCourseworkPreference?.endAt ??
           selectedCanvasCoursework?.endAt ??
+          selectedCanvasCourseworkPreference?.endAt ??
           '',
         courseworkType:
           selectedCanvasCourseworkPreference?.courseworkType ??
@@ -4124,7 +4139,7 @@ export function DashboardCards({
     const liveSemesters = new Set(
       canvasCourses
         .map((course) => normalizeCanvasSemesterName(course.termName))
-        .filter(Boolean) as string[],
+        .filter((semester) => semester !== noTermSemester),
     );
 
     if (liveSemesters.size === 0) {
@@ -4229,12 +4244,14 @@ export function DashboardCards({
           courseId: item.courseId,
           courseName: item.courseName,
           courseworkType: preference.courseworkType ?? item.type,
-          dueAt: item.dueAt ?? item.startAt ?? preference.dueAt,
+          dueAt: item.dueAt ?? preference.dueAt,
+          endAt: item.endAt ?? preference.endAt,
           htmlUrl: item.htmlUrl,
           completedAt: item.isSubmitted ? item.submittedAt ?? preference.completedAt : preference.completedAt,
           isSubmitted: Boolean(item.isSubmitted),
           originalCourseCode: item.courseCode?.trim() || courseCode,
           semester,
+          startAt: item.startAt ?? preference.startAt,
           submittedAt: item.submittedAt,
           submissionType: preference.submissionType ?? item.submissionTypes?.[0] ?? formatSubmissionType(item.type),
           title: preference.title ?? item.title,
@@ -4273,12 +4290,14 @@ export function DashboardCards({
           courseCode,
           courseId: item.courseId,
           courseName: item.courseName,
-          dueAt: item.dueAt ?? item.startAt ?? preference.dueAt,
+          dueAt: item.dueAt ?? preference.dueAt,
+          endAt: item.endAt ?? preference.endAt,
           htmlUrl: item.htmlUrl,
           completedAt: item.isSubmitted ? item.submittedAt ?? preference.completedAt : preference.completedAt,
           isSubmitted: Boolean(item.isSubmitted),
           originalCourseCode: item.courseCode?.trim() || courseCode,
           semester,
+          startAt: item.startAt ?? preference.startAt,
           submittedAt: item.submittedAt,
           title: preference.title ?? item.title,
         });
@@ -4301,11 +4320,96 @@ export function DashboardCards({
   };
 
   const handleUpdateManualLecture = (updatedLecture: ManualLecture) => {
+    const previousLecture = manualLecturesRef.current.find((lecture) => lecture.id === updatedLecture.id);
+    const nextSemester = normalizeSemesterName(updatedLecture.semester, activeCourseSemester);
+
     updateStoredManualLectures((currentLectures) => currentLectures.map((lecture) => (
       lecture.id === updatedLecture.id
-        ? { ...updatedLecture, semester: normalizeSemesterName(updatedLecture.semester, activeCourseSemester) }
+        ? { ...updatedLecture, semester: nextSemester }
         : lecture
     )));
+
+    if (!previousLecture || lectureSemesterMatches(previousLecture, nextSemester, fallbackCourseSemester)) {
+      return;
+    }
+
+    updateStoredManualCoursework((currentCoursework) => {
+      let changed = false;
+      const nextCoursework = currentCoursework.map((item) => {
+        if (!isManualCourseworkForLecture(item, previousLecture, fallbackCourseSemester)) {
+          return item;
+        }
+
+        changed = true;
+        return { ...item, semester: nextSemester };
+      });
+
+      return changed ? nextCoursework : currentCoursework;
+    });
+    updateStoredManualAssessments((currentAssessments) => {
+      let changed = false;
+      const nextAssessments = currentAssessments.map((item) => {
+        if (!isManualCourseworkForLecture(item, previousLecture, fallbackCourseSemester)) {
+          return item;
+        }
+
+        changed = true;
+        return { ...item, semester: nextSemester };
+      });
+
+      return changed ? nextAssessments : currentAssessments;
+    });
+
+    const archivedCanvasCourseId = findArchivedCanvasCourseId(previousLecture, canvasLecturePreferencesRef.current);
+
+    if (!archivedCanvasCourseId) {
+      return;
+    }
+
+    updateStoredCanvasCourseworkPreferences((currentPreferences) => {
+      let changed = false;
+      const nextPreferences = Object.fromEntries(
+        Object.entries(currentPreferences).map(([itemId, preference]) => {
+          if (
+            !isCanvasCourseworkPreferenceForLecture(
+              preference,
+              previousLecture,
+              archivedCanvasCourseId,
+              fallbackCourseSemester,
+            )
+          ) {
+            return [itemId, preference];
+          }
+
+          changed = true;
+          return [itemId, { ...preference, semester: nextSemester }];
+        }),
+      );
+
+      return changed ? nextPreferences : currentPreferences;
+    });
+    updateStoredCanvasAssessmentPreferences((currentPreferences) => {
+      let changed = false;
+      const nextPreferences = Object.fromEntries(
+        Object.entries(currentPreferences).map(([itemId, preference]) => {
+          if (
+            !isCanvasCourseworkPreferenceForLecture(
+              preference,
+              previousLecture,
+              archivedCanvasCourseId,
+              fallbackCourseSemester,
+            )
+          ) {
+            return [itemId, preference];
+          }
+
+          changed = true;
+          return [itemId, { ...preference, semester: nextSemester }];
+        }),
+      );
+
+      return changed ? nextPreferences : currentPreferences;
+    });
   };
 
   const handleDeleteManualLecture = (lecture: ManualLecture, shouldDeleteCoursework: boolean) => {
@@ -4391,6 +4495,7 @@ export function DashboardCards({
       selectedCanvasCourse?.courseCode?.trim() ||
       selectedCanvasCourse?.id ||
       updatedLecture.code;
+    const nextSemester = normalizeSemesterName(updatedLecture.semester, activeCourseSemester);
 
     updateStoredCanvasLecturePreferences((currentPreferences) => ({
       ...currentPreferences,
@@ -4405,11 +4510,41 @@ export function DashboardCards({
         links: updatedLecture.links,
         originalCourseCode,
         schedule: updatedLecture.schedule,
-        semester: normalizeSemesterName(updatedLecture.semester, activeCourseSemester),
-        termName: normalizeSemesterName(updatedLecture.semester, activeCourseSemester),
+        semester: nextSemester,
+        termName: nextSemester,
         tutorialSection: updatedLecture.tutorialSection,
       },
     }));
+    updateStoredCanvasCourseworkPreferences((currentPreferences) => {
+      let changed = false;
+      const nextPreferences = Object.fromEntries(
+        Object.entries(currentPreferences).map(([itemId, preference]) => {
+          if (preference.courseId !== selectedCanvasCourseId || preference.semester === nextSemester) {
+            return [itemId, preference];
+          }
+
+          changed = true;
+          return [itemId, { ...preference, semester: nextSemester }];
+        }),
+      );
+
+      return changed ? nextPreferences : currentPreferences;
+    });
+    updateStoredCanvasAssessmentPreferences((currentPreferences) => {
+      let changed = false;
+      const nextPreferences = Object.fromEntries(
+        Object.entries(currentPreferences).map(([itemId, preference]) => {
+          if (preference.courseId !== selectedCanvasCourseId || preference.semester === nextSemester) {
+            return [itemId, preference];
+          }
+
+          changed = true;
+          return [itemId, { ...preference, semester: nextSemester }];
+        }),
+      );
+
+      return changed ? nextPreferences : currentPreferences;
+    });
   };
 
   const handleAddManualCoursework = (coursework: ManualCourseworkItem) => {
@@ -4447,6 +4582,8 @@ export function DashboardCards({
 
     updateStoredCanvasCourseworkPreferences((currentPreferences) => {
       const currentItemPreferences = currentPreferences[selectedCanvasCourseworkId] ?? {};
+      const isLiveCanvasItem = Boolean(selectedCanvasCoursework);
+      const canvasDueAt = selectedCanvasCoursework?.dueAt ?? selectedCanvasCoursework?.startAt;
 
       return {
         ...currentPreferences,
@@ -4459,10 +4596,10 @@ export function DashboardCards({
             : undefined,
           courseCode: updatedCoursework.courseCode || undefined,
           courseworkType: updatedCoursework.courseworkType || undefined,
-          dueAt: updatedCoursework.dueAt || undefined,
-          endAt: updatedCoursework.endAt || undefined,
+          dueAt: isLiveCanvasItem ? canvasDueAt ?? currentItemPreferences.dueAt : updatedCoursework.dueAt || undefined,
+          endAt: isLiveCanvasItem ? selectedCanvasCoursework?.endAt ?? currentItemPreferences.endAt : updatedCoursework.endAt || undefined,
           semester: normalizeSemesterName(updatedCoursework.semester, activeCourseSemester),
-          startAt: updatedCoursework.startAt || undefined,
+          startAt: isLiveCanvasItem ? selectedCanvasCoursework?.startAt ?? currentItemPreferences.startAt : updatedCoursework.startAt || undefined,
           submissionType: updatedCoursework.submissionType || undefined,
           title: updatedCoursework.title || undefined,
         },
@@ -4501,6 +4638,8 @@ export function DashboardCards({
 
     updateStoredCanvasAssessmentPreferences((currentPreferences) => {
       const currentItemPreferences = currentPreferences[selectedCanvasAssessmentId] ?? {};
+      const isLiveCanvasItem = Boolean(selectedCanvasAssessment);
+      const canvasDueAt = selectedCanvasAssessment?.dueAt ?? selectedCanvasAssessment?.startAt;
 
       return {
         ...currentPreferences,
@@ -4512,10 +4651,10 @@ export function DashboardCards({
             ? currentItemPreferences.completedAt ?? new Date().toISOString()
             : undefined,
           courseCode: updatedAssessment.courseCode || undefined,
-          dueAt: updatedAssessment.dueAt || undefined,
-          endAt: updatedAssessment.endAt || undefined,
+          dueAt: isLiveCanvasItem ? canvasDueAt ?? currentItemPreferences.dueAt : updatedAssessment.dueAt || undefined,
+          endAt: isLiveCanvasItem ? selectedCanvasAssessment?.endAt ?? currentItemPreferences.endAt : updatedAssessment.endAt || undefined,
           semester: normalizeSemesterName(updatedAssessment.semester, activeCourseSemester),
-          startAt: updatedAssessment.startAt || undefined,
+          startAt: isLiveCanvasItem ? selectedCanvasAssessment?.startAt ?? currentItemPreferences.startAt : updatedAssessment.startAt || undefined,
           title: updatedAssessment.title || undefined,
         },
       };

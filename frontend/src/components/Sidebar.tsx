@@ -3,6 +3,7 @@ import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { useLanguage } from '../context/LanguageContext';
 import { useWorkspaceMode } from '../context/WorkspaceModeContext';
 import { cn } from '../lib/utils';
+import type { WorkspaceModeConfig } from '../modes/types';
 import { Button } from './ui/button';
 import { Card, CardContent, CardHeader } from './ui/card';
 import { ScrollArea } from './ui/scroll-area';
@@ -11,11 +12,12 @@ import { WorkspaceIcon } from './WorkspaceIcon';
 interface SidebarProps {
   activeItemId: string;
   collapsed: boolean;
+  mode?: WorkspaceModeConfig;
   onToggleCollapsed: () => void;
   onSelectItem: (itemId: string) => void;
 }
 
-export function Sidebar({ activeItemId, collapsed, onSelectItem, onToggleCollapsed }: SidebarProps) {
+export function Sidebar({ activeItemId, collapsed, mode, onSelectItem, onToggleCollapsed }: SidebarProps) {
   const { activeMode } = useWorkspaceMode();
   const {
     dictionary,
@@ -23,7 +25,8 @@ export function Sidebar({ activeItemId, collapsed, onSelectItem, onToggleCollaps
     translateModeName,
     translateSectionLabel,
   } = useLanguage();
-  const modeName = translateModeName(activeMode.id, activeMode.displayName);
+  const sidebarMode = mode ?? activeMode;
+  const modeName = translateModeName(sidebarMode.id, sidebarMode.displayName);
   const ToggleIcon = collapsed ? PanelLeftOpen : PanelLeftClose;
 
   return (
@@ -40,7 +43,7 @@ export function Sidebar({ activeItemId, collapsed, onSelectItem, onToggleCollaps
           type="button"
           variant="ghost"
         >
-          <WorkspaceIcon className="shrink-0" name={activeMode.icon} />
+          <WorkspaceIcon className="shrink-0" name={sidebarMode.icon} />
           <span className={cn('min-w-0 flex-1 truncate text-left', collapsed && 'hidden')}>
             {modeName}
           </span>
@@ -49,7 +52,7 @@ export function Sidebar({ activeItemId, collapsed, onSelectItem, onToggleCollaps
       </CardHeader>
       <CardContent className={cn('min-h-0 flex-1 px-3', collapsed && 'px-2')}>
         <ScrollArea className={cn('h-full', collapsed ? 'pr-0' : 'pr-2')}>
-          {activeMode.sidebar.map((section) => (
+          {sidebarMode.sidebar.map((section) => (
             <div className="mb-5" key={section.id}>
               <div
                 className={cn(

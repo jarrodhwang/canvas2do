@@ -174,14 +174,18 @@ export type AdminUserStatus = 'active' | 'inactive' | 'pending';
 
 export interface AuthSession {
   accountStatus?: AdminUserStatus;
+  access?: string[];
   canAccessWorkspace?: boolean;
   displayName?: string;
   email?: string;
   hostedDomain?: string;
   isAuthenticated: boolean;
+  permissions?: string[];
   pictureUrl?: string;
   provider?: string;
+  requiresAssignment?: boolean;
   requiresApproval?: boolean;
+  settings?: string[];
 }
 
 export interface AdminUser {
@@ -798,8 +802,18 @@ export interface GoogleChatSpaces {
 export const workspaceApi = {
   apiBaseUrl,
 
-  getGoogleLoginUrl(returnUrl = '/') {
-    return `${apiBaseUrl}/auth/google/workspace/login?returnUrl=${encodeURIComponent(returnUrl)}`;
+  getGoogleLoginUrl(returnUrl = '/', options: { forceConsent?: boolean; forceLogin?: boolean } = {}) {
+    const params = new URLSearchParams({ returnUrl });
+
+    if (options.forceConsent) {
+      params.set('forceConsent', 'true');
+    }
+
+    if (options.forceLogin) {
+      params.set('forceLogin', 'true');
+    }
+
+    return `${apiBaseUrl}/auth/google/workspace/login?${params.toString()}`;
   },
 
   async getAuthSession() {

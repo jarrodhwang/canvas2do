@@ -31,6 +31,18 @@ export interface ManualLectureAssessment {
   count: string;
   details: string;
   gradePortion: string;
+  gradeInputMode?: ManualLectureGradeInputMode;
+  gradeItems?: ManualLectureGradeItem[];
+}
+
+export type ManualLectureGradeInputMode = 'percentage' | 'points';
+
+export interface ManualLectureGradeItem {
+  id: string;
+  label: string;
+  percentage?: string;
+  pointsEarned?: string;
+  pointsPossible?: string;
 }
 
 export interface ManualLectureLink {
@@ -41,13 +53,19 @@ export interface ManualLectureLink {
 
 export type ManualLectureDeliveryMode = 'inPerson' | 'online';
 export type ManualLectureClassType = 'lecture' | 'lab' | 'tutorial' | 'seminar';
+export type ManualLectureWeekday = 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun';
 
 export interface ManualLectureScheduleEntry {
   id: string;
   classType: ManualLectureClassType;
   deliveryMode: ManualLectureDeliveryMode;
   day: string;
+  days?: ManualLectureWeekday[];
   time: string;
+  startTime?: string;
+  endTime?: string;
+  startDate?: string;
+  endDate?: string;
   location: string;
 }
 
@@ -128,6 +146,14 @@ type ClassTypeLabelKey =
   | 'manualLectureClassTypeLab'
   | 'manualLectureClassTypeTutorial'
   | 'manualLectureClassTypeSeminar';
+type WeekdayLabelKey =
+  | 'manualLectureWeekdayMon'
+  | 'manualLectureWeekdayTue'
+  | 'manualLectureWeekdayWed'
+  | 'manualLectureWeekdayThu'
+  | 'manualLectureWeekdayFri'
+  | 'manualLectureWeekdaySat'
+  | 'manualLectureWeekdaySun';
 
 const assessmentOptions: Array<{ id: AssessmentKey; labelKey: AssessmentLabelKey }> = [
   { id: 'quiz', labelKey: 'manualLectureAssessmentQuiz' },
@@ -153,11 +179,41 @@ const classTypeOptions: Array<{ id: ManualLectureClassType; labelKey: ClassTypeL
   { id: 'tutorial', labelKey: 'manualLectureClassTypeTutorial' },
   { id: 'seminar', labelKey: 'manualLectureClassTypeSeminar' },
 ];
+const weekdayOptions: Array<{ id: ManualLectureWeekday; labelKey: WeekdayLabelKey }> = [
+  { id: 'Mon', labelKey: 'manualLectureWeekdayMon' },
+  { id: 'Tue', labelKey: 'manualLectureWeekdayTue' },
+  { id: 'Wed', labelKey: 'manualLectureWeekdayWed' },
+  { id: 'Thu', labelKey: 'manualLectureWeekdayThu' },
+  { id: 'Fri', labelKey: 'manualLectureWeekdayFri' },
+  { id: 'Sat', labelKey: 'manualLectureWeekdaySat' },
+  { id: 'Sun', labelKey: 'manualLectureWeekdaySun' },
+];
+const weekdayAliases: Record<string, ManualLectureWeekday> = {
+  friday: 'Fri',
+  fri: 'Fri',
+  monday: 'Mon',
+  mon: 'Mon',
+  saturday: 'Sat',
+  sat: 'Sat',
+  sunday: 'Sun',
+  sun: 'Sun',
+  thursday: 'Thu',
+  thu: 'Thu',
+  thur: 'Thu',
+  thurs: 'Thu',
+  tuesday: 'Tue',
+  tue: 'Tue',
+  tues: 'Tue',
+  wednesday: 'Wed',
+  wed: 'Wed',
+};
 
 type AssessmentFormState = Record<AssessmentKey, {
   count: string;
   details: string;
   enabled: boolean;
+  gradeInputMode: ManualLectureGradeInputMode;
+  gradeItems: ManualLectureGradeItem[];
   gradePortion: string;
 }>;
 
@@ -167,6 +223,8 @@ function createAssessmentState(storedAssessments: ManualLectureAssessment[] = []
       count: '',
       details: '',
       enabled: false,
+      gradeInputMode: 'points',
+      gradeItems: [],
       gradePortion: '',
     };
 
@@ -182,6 +240,8 @@ function createAssessmentState(storedAssessments: ManualLectureAssessment[] = []
       count: assessment.count,
       details: assessment.details,
       enabled: assessment.enabled,
+      gradeInputMode: assessment.gradeInputMode ?? 'points',
+      gradeItems: Array.isArray(assessment.gradeItems) ? assessment.gradeItems : [],
       gradePortion: assessment.gradePortion,
     };
   });
@@ -213,10 +273,95 @@ function createScheduleEntry(
     classType: 'lecture',
     deliveryMode: 'inPerson',
     day: '',
+    days: [],
     time: '',
+    startTime: '',
+    endTime: '',
+    startDate: '',
+    endDate: '',
     location: '',
     ...overrides,
   };
+}
+
+function parseScheduleDays(value?: string): ManualLectureWeekday[] {
+  if (!value) {
+    return [];
+  }
+
+  const selectedDays = value
+    .split(/[,/·|]+|\band\b/i)
+    .map((part) => part.trim().toLowerCase())
+    .map((part) => weekdayAliases[part])
+    .filter((day): day is ManualLectureWeekday => Boolean(day));
+
+  return weekdayOptions
+    .map((option) => option.id)
+    .filter((day) => selectedDays.includes(day));
+}
+
+function normalizeScheduleDays(entry: ManualLectureScheduleEntry): ManualLectureWeekday[] {
+  const selectedDays = Array.isArray(entry.days)
+    ? entry.days.filter((day): day is ManualLectureWeekday => weekdayOptions.some((option) => option.id === day))
+    : [];
+
+  return selectedDays.length > 0 ? selectedDays : parseScheduleDays(entry.day);
+}
+
+function normalizeTimePart(value: string) {
+  const trimmedValue = value.trim().toLowerCase().replace(/\s+/g, '');
+  const meridiem = trimmedValue.match(/(am|pm)$/)?.[1];
+  const timeValue = trimmedValue.replace(/(am|pm)$/i, '');
+  const compactMatch = timeValue.match(/^(\d{1,2})(\d{2})$/);
+  const colonMatch = timeValue.match(/^(\d{1,2})(?::(\d{2}))?$/);
+  const match = compactMatch || colonMatch;
+
+  if (!match) {
+    return '';
+  }
+
+  let hour = Number.parseInt(match[1], 10);
+  const minute = Number.parseInt(match[2] ?? '0', 10);
+
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || minute > 59) {
+    return '';
+  }
+
+  if (meridiem === 'pm' && hour < 12) {
+    hour += 12;
+  } else if (meridiem === 'am' && hour === 12) {
+    hour = 0;
+  }
+
+  if (hour > 23) {
+    return '';
+  }
+
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
+function parseLegacyTimeRange(value?: string) {
+  if (!value) {
+    return { endTime: '', startTime: '' };
+  }
+
+  const [rawStart = '', rawEnd = ''] = value.split(/\s*(?:-|–|—|\bto\b)\s*/i);
+
+  return {
+    endTime: normalizeTimePart(rawEnd),
+    startTime: normalizeTimePart(rawStart),
+  };
+}
+
+function formatTimeRange(startTime?: string, endTime?: string, fallback = '') {
+  const normalizedStartTime = startTime?.trim();
+  const normalizedEndTime = endTime?.trim();
+
+  if (normalizedStartTime && normalizedEndTime) {
+    return `${normalizedStartTime} - ${normalizedEndTime}`;
+  }
+
+  return normalizedStartTime || normalizedEndTime || fallback.trim();
 }
 
 function normalizeDecimalInput(value: string) {
@@ -266,15 +411,31 @@ function createUsefulLinksValue(lecture: ManualLecture | undefined) {
 
 function createScheduleEntriesFromLecture(lecture: ManualLecture | undefined) {
   if (lecture?.schedule.entries?.length) {
-    return lecture.schedule.entries.map((entry) => ({ ...entry }));
+    return lecture.schedule.entries.map((entry) => {
+      const legacyTimeRange = parseLegacyTimeRange(entry.time);
+
+      return {
+        ...entry,
+        days: normalizeScheduleDays(entry),
+        endDate: entry.endDate ?? '',
+        endTime: entry.endTime ?? legacyTimeRange.endTime,
+        startDate: entry.startDate ?? '',
+        startTime: entry.startTime ?? legacyTimeRange.startTime,
+      };
+    });
   }
 
   if (lecture?.schedule.day || lecture?.schedule.time || lecture?.schedule.location) {
+    const legacyTimeRange = parseLegacyTimeRange(lecture.schedule.time);
+
     return [
       createScheduleEntry({
         deliveryMode: lecture.schedule.deliveryMode,
         day: lecture.schedule.day,
+        days: parseScheduleDays(lecture.schedule.day),
+        endTime: legacyTimeRange.endTime,
         time: lecture.schedule.time,
+        startTime: legacyTimeRange.startTime,
         location: lecture.schedule.location,
       }),
     ];
@@ -389,13 +550,30 @@ export function ManualLectureDialog({
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const normalizedScheduleEntries = scheduleEntries
-      .map((entry) => ({
-        ...entry,
-        day: entry.day.trim(),
-        time: entry.time.trim(),
-        location: entry.location.trim(),
-      }))
-      .filter((entry) => entry.deliveryMode === 'online' || entry.day || entry.time || entry.location);
+      .map((entry) => {
+        const days = normalizeScheduleDays(entry);
+        const startTime = entry.startTime?.trim() || parseLegacyTimeRange(entry.time).startTime;
+        const endTime = entry.endTime?.trim() || parseLegacyTimeRange(entry.time).endTime;
+        const startDate = entry.startDate?.trim() ?? '';
+        const endDate = entry.endDate?.trim() ?? '';
+        const location = entry.location.trim();
+
+        return {
+          ...entry,
+          day: days.join(', '),
+          days,
+          endDate,
+          endTime,
+          location,
+          startDate,
+          startTime,
+          time: formatTimeRange(startTime, endTime, entry.time),
+        };
+      })
+      .filter((entry) => (
+        entry.days.length > 0 ||
+        Boolean(entry.startTime || entry.endTime || entry.startDate || entry.endDate || entry.location)
+      ));
     const firstTimedEntry = normalizedScheduleEntries.find((entry) => entry.deliveryMode === 'inPerson')
       ?? normalizedScheduleEntries[0];
 
@@ -471,6 +649,27 @@ export function ManualLectureDialog({
     setScheduleEntries((currentEntries) => currentEntries.map((entry) => (
       entry.id === entryId ? { ...entry, ...update } : entry
     )));
+  };
+
+  const toggleScheduleEntryDay = (entryId: string, day: ManualLectureWeekday) => {
+    setScheduleEntries((currentEntries) => currentEntries.map((entry) => {
+      if (entry.id !== entryId) {
+        return entry;
+      }
+
+      const currentDays = normalizeScheduleDays(entry);
+      const nextDays = currentDays.includes(day)
+        ? currentDays.filter((currentDay) => currentDay !== day)
+        : weekdayOptions
+            .map((option) => option.id)
+            .filter((weekday) => [...currentDays, day].includes(weekday));
+
+      return {
+        ...entry,
+        day: nextDays.join(', '),
+        days: nextDays,
+      };
+    }));
   };
 
   const addScheduleEntry = () => {
@@ -676,95 +875,148 @@ export function ManualLectureDialog({
             <div className="grid gap-2">
               {scheduleEntries.map((entry) => (
                 <div
-                  className="grid gap-2 rounded-lg border bg-muted/25 p-3 xl:grid-cols-[130px_130px_minmax(0,120px)_minmax(0,1fr)_minmax(0,1fr)_36px]"
+                  className="grid gap-3 rounded-lg border bg-muted/25 p-3"
                   key={entry.id}
                 >
-                  <div className="space-y-2">
-                    <Label className="text-xs font-black uppercase text-muted-foreground">
-                      {dictionary.manualLectureClassType}
-                    </Label>
-                    <Select
-                      onValueChange={(value) => updateScheduleEntry(entry.id, {
-                        classType: value as ManualLectureClassType,
-                      })}
-                      value={entry.classType}
-                    >
-                      <SelectTrigger className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {classTypeOptions.map((option) => (
-                          <SelectItem key={option.id} value={option.id}>
-                            {dictionary[option.labelKey]}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                  <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                    <div className="space-y-2">
+                      <Label className="text-xs font-black uppercase text-muted-foreground">
+                        {dictionary.manualLectureClassType}
+                      </Label>
+                      <Select
+                        onValueChange={(value) => updateScheduleEntry(entry.id, {
+                          classType: value as ManualLectureClassType,
+                        })}
+                        value={entry.classType}
+                      >
+                        <SelectTrigger className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {classTypeOptions.map((option) => (
+                            <SelectItem key={option.id} value={option.id}>
+                              {dictionary[option.labelKey]}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-xs font-black uppercase text-muted-foreground">
+                        {dictionary.manualLectureDeliveryMode}
+                      </Label>
+                      <Select
+                        onValueChange={(value) => updateScheduleEntry(entry.id, {
+                          deliveryMode: value as ManualLectureDeliveryMode,
+                        })}
+                        value={entry.deliveryMode}
+                      >
+                        <SelectTrigger className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="inPerson">{dictionary.manualLectureInPerson}</SelectItem>
+                          <SelectItem value="online">{dictionary.manualLectureOnline}</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex items-end">
+                      <Button
+                        aria-label={dictionary.manualLectureRemoveClassTime}
+                        disabled={scheduleEntries.length === 1}
+                        onClick={() => removeScheduleEntry(entry.id)}
+                        size="icon-sm"
+                        title={dictionary.manualLectureRemoveClassTime}
+                        type="button"
+                        variant="outline"
+                      >
+                        <Trash2 className="size-4" />
+                      </Button>
+                    </div>
                   </div>
                   <div className="space-y-2">
                     <Label className="text-xs font-black uppercase text-muted-foreground">
-                      {dictionary.manualLectureDeliveryMode}
-                    </Label>
-                    <Select
-                      onValueChange={(value) => updateScheduleEntry(entry.id, {
-                        deliveryMode: value as ManualLectureDeliveryMode,
-                      })}
-                      value={entry.deliveryMode}
-                    >
-                      <SelectTrigger className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="inPerson">{dictionary.manualLectureInPerson}</SelectItem>
-                        <SelectItem value="online">{dictionary.manualLectureOnline}</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label className="text-xs font-black uppercase text-muted-foreground" htmlFor={`manual-class-day-${entry.id}`}>
                       {dictionary.manualLectureClassDay}
                     </Label>
-                    <Input
-                      id={`manual-class-day-${entry.id}`}
-                      onChange={(event) => updateScheduleEntry(entry.id, { day: event.target.value })}
-                      placeholder="Mon"
-                      value={entry.day}
-                    />
+                    <div className="flex flex-wrap gap-1.5">
+                      {weekdayOptions.map((option) => {
+                        const selectedDays = normalizeScheduleDays(entry);
+                        const isSelected = selectedDays.includes(option.id);
+
+                        return (
+                          <Button
+                            className={isSelected
+                              ? 'h-8 rounded-md px-2.5 text-xs font-black'
+                              : 'h-8 rounded-md bg-background px-2.5 text-xs font-black text-muted-foreground hover:bg-muted hover:text-foreground'}
+                            key={option.id}
+                            onClick={() => toggleScheduleEntryDay(entry.id, option.id)}
+                            type="button"
+                            variant={isSelected ? 'default' : 'outline'}
+                          >
+                            {dictionary[option.labelKey]}
+                          </Button>
+                        );
+                      })}
+                    </div>
                   </div>
-                  <div className="space-y-2">
-                    <Label className="text-xs font-black uppercase text-muted-foreground" htmlFor={`manual-class-time-${entry.id}`}>
-                      {dictionary.manualLectureClassTime}
-                    </Label>
-                    <Input
-                      id={`manual-class-time-${entry.id}`}
-                      onChange={(event) => updateScheduleEntry(entry.id, { time: event.target.value })}
-                      placeholder="12:30 PM - 2:00 PM"
-                      value={entry.time}
-                    />
+                  <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+                    <div className="space-y-2">
+                      <Label className="text-xs font-black uppercase text-muted-foreground" htmlFor={`manual-class-start-time-${entry.id}`}>
+                        {dictionary.manualLectureStartTime}
+                      </Label>
+                      <Input
+                        id={`manual-class-start-time-${entry.id}`}
+                        onChange={(event) => updateScheduleEntry(entry.id, { startTime: event.target.value })}
+                        type="time"
+                        value={entry.startTime ?? ''}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-xs font-black uppercase text-muted-foreground" htmlFor={`manual-class-end-time-${entry.id}`}>
+                        {dictionary.manualLectureEndTime}
+                      </Label>
+                      <Input
+                        id={`manual-class-end-time-${entry.id}`}
+                        onChange={(event) => updateScheduleEntry(entry.id, { endTime: event.target.value })}
+                        type="time"
+                        value={entry.endTime ?? ''}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-xs font-black uppercase text-muted-foreground" htmlFor={`manual-class-start-date-${entry.id}`}>
+                        {dictionary.manualLectureStartDate}
+                      </Label>
+                      <Input
+                        id={`manual-class-start-date-${entry.id}`}
+                        onChange={(event) => updateScheduleEntry(entry.id, { startDate: event.target.value })}
+                        type="date"
+                        value={entry.startDate ?? ''}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-xs font-black uppercase text-muted-foreground" htmlFor={`manual-class-end-date-${entry.id}`}>
+                        {dictionary.manualLectureEndDate}
+                      </Label>
+                      <Input
+                        id={`manual-class-end-date-${entry.id}`}
+                        onChange={(event) => updateScheduleEntry(entry.id, { endDate: event.target.value })}
+                        type="date"
+                        value={entry.endDate ?? ''}
+                      />
+                    </div>
                   </div>
                   <div className="space-y-2">
                     <Label className="text-xs font-black uppercase text-muted-foreground" htmlFor={`manual-class-location-${entry.id}`}>
-                      {dictionary.manualLectureClassLocation}
+                      {entry.deliveryMode === 'online'
+                        ? dictionary.manualLectureMeetingLink
+                        : dictionary.manualLectureClassLocation}
                     </Label>
                     <Input
                       id={`manual-class-location-${entry.id}`}
                       onChange={(event) => updateScheduleEntry(entry.id, { location: event.target.value })}
-                      placeholder={entry.deliveryMode === 'online' ? 'Zoom link' : 'AQ9001'}
+                      placeholder={entry.deliveryMode === 'online' ? 'https://...' : 'AQ9001'}
                       value={entry.location}
                     />
-                  </div>
-                  <div className="flex items-end">
-                    <Button
-                      aria-label={dictionary.manualLectureRemoveClassTime}
-                      disabled={scheduleEntries.length === 1}
-                      onClick={() => removeScheduleEntry(entry.id)}
-                      size="icon-sm"
-                      title={dictionary.manualLectureRemoveClassTime}
-                      type="button"
-                      variant="outline"
-                    >
-                      <Trash2 className="size-4" />
-                    </Button>
                   </div>
                 </div>
               ))}

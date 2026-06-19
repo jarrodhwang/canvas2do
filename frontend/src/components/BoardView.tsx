@@ -156,6 +156,10 @@ function getMoveDueDateTarget(item: BoardItem, complete: boolean) {
     return null;
   }
 
+  if (item.isCanvasSource && !item.isArchivedCanvasItem) {
+    return null;
+  }
+
   const dueDate = new Date(item.dueAt);
 
   if (Number.isNaN(dueDate.getTime())) {
@@ -398,27 +402,34 @@ export function BoardView({
                         <div className="w-11 shrink-0 pt-1 text-right text-[11px] font-black tabular-nums text-muted-foreground">
                           {item.time || '—'}
                         </div>
-                        <button
-                          aria-label={item.isLocked ? item.title : dictionary.boardAddTodoItem}
-                          className={cn(
-                            'mt-0.5 grid size-6 shrink-0 place-items-center rounded-[10px] transition-colors',
-                            complete
-                              ? dotColorClasses[item.color]
-                              : 'bg-muted-foreground/20 group-hover:bg-muted-foreground/30',
-                            item.isLocked ? 'opacity-70' : 'cursor-pointer',
-                          )}
-                          disabled={item.isLocked}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            if (!item.isLocked) {
-                              onToggleItemDone?.(item);
-                            }
-                          }}
-                          title={item.title}
-                          type="button"
-                        >
-                          {complete ? <Check className="size-4 stroke-[3] text-white" /> : null}
-                        </button>
+                        {item.isClassSession ? (
+                          <span
+                            aria-hidden="true"
+                            className={cn('mt-2 size-3 shrink-0 rounded-full', dotColorClasses[item.color])}
+                          />
+                        ) : (
+                          <button
+                            aria-label={item.isLocked ? item.title : dictionary.boardAddTodoItem}
+                            className={cn(
+                              'mt-0.5 grid size-6 shrink-0 place-items-center rounded-[10px] transition-colors',
+                              complete
+                                ? dotColorClasses[item.color]
+                                : 'bg-muted-foreground/20 group-hover:bg-muted-foreground/30',
+                              item.isLocked ? 'opacity-70' : 'cursor-pointer',
+                            )}
+                            disabled={item.isLocked}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              if (!item.isLocked) {
+                                onToggleItemDone?.(item);
+                              }
+                            }}
+                            title={item.title}
+                            type="button"
+                          >
+                            {complete ? <Check className="size-4 stroke-[3] text-white" /> : null}
+                          </button>
+                        )}
                         <div
                           className="min-w-0 flex-1 text-left"
                           onKeyDown={(event) => {

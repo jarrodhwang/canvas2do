@@ -1,5 +1,6 @@
 import {
   BookOpen,
+  BarChart3,
   Boxes,
   Building2,
   Bug,
@@ -76,6 +77,7 @@ function TopTrackIcon({ size = 18, className }: IconProps) {
 }
 
 const iconMap: Record<string, ComponentType<IconProps>> = {
+  'bar-chart-3': BarChart3,
   'book-open': BookOpen,
   boxes: Boxes,
   'building-2': Building2,

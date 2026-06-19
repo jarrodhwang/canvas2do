@@ -42,11 +42,11 @@ function getTimeMinutes(value: string) {
 
 function CurrentTimeLine() {
   return (
-    <div className="my-2 grid grid-cols-[86px_minmax(0,1fr)] items-center gap-3 max-sm:grid-cols-[70px_minmax(0,1fr)]">
-      <div className="text-right text-[10px] font-black text-red-500">
+    <div className="my-2 flex items-center gap-2">
+      <div className="shrink-0 text-[10px] font-black text-red-500">
         Now
       </div>
-      <div className="h-0.5 rounded-full bg-red-500 shadow-[0_0_0_1px_hsl(var(--card))]" />
+      <div className="h-0.5 min-w-0 flex-1 rounded-full bg-red-500 shadow-[0_0_0_1px_hsl(var(--card))]" />
     </div>
   );
 }

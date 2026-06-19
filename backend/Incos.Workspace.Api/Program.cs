@@ -19,6 +19,8 @@ var googleClientSecret = googleSection["ClientSecret"];
 var isGoogleAuthenticationConfigured =
     !string.IsNullOrWhiteSpace(googleClientId) &&
     !string.IsNullOrWhiteSpace(googleClientSecret);
+var workspaceSessionHours = Math.Clamp(googleSection.GetValue<double?>("WorkspaceSessionHours") ?? 8, 1, 24 * 14);
+var workspaceSessionDuration = TimeSpan.FromHours(workspaceSessionHours);
 
 builder.Services.AddOpenApi();
 builder.Services.AddHttpClient();
@@ -63,9 +65,9 @@ var authenticationBuilder = builder.Services
         options.Cookie.HttpOnly = true;
         options.Cookie.SameSite = SameSiteMode.Lax;
         options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
-        options.ExpireTimeSpan = TimeSpan.FromDays(14);
-        options.SlidingExpiration = true;
-        options.LoginPath = "/api/auth/google/login";
+        options.ExpireTimeSpan = workspaceSessionDuration;
+        options.SlidingExpiration = false;
+        options.LoginPath = "/api/auth/google/workspace/login";
         options.LogoutPath = "/api/auth/logout";
         options.AccessDeniedPath = "/api/auth/denied";
         options.Events.OnRedirectToLogin = context =>
@@ -143,7 +145,7 @@ if (isGoogleAuthenticationConfigured)
         options.CorrelationCookie.SameSite = SameSiteMode.Lax;
         options.CorrelationCookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
         options.AccessType = "offline";
-        options.SaveTokens = true;
+        options.SaveTokens = false;
 
         if (!options.Scope.Contains("profile"))
         {
@@ -155,6 +157,14 @@ if (isGoogleAuthenticationConfigured)
             options.Scope.Add("email");
         }
 
+        foreach (var scope in GoogleWorkspaceScopes.All)
+        {
+            if (!options.Scope.Contains(scope))
+            {
+                options.Scope.Add(scope);
+            }
+        }
+
         options.Events.OnRedirectToAuthorizationEndpoint = context =>
         {
             var redirectUri = context.RedirectUri;
@@ -162,6 +172,11 @@ if (isGoogleAuthenticationConfigured)
             if (restrictToHostedDomain && !string.IsNullOrWhiteSpace(hostedDomain))
             {
                 redirectUri = QueryHelpers.AddQueryString(redirectUri, "hd", hostedDomain);
+            }
+
+            if (context.Properties.Items.ContainsKey(AuthEndpoints.GoogleForceLoginProperty))
+            {
+                redirectUri = QueryHelpers.AddQueryString(redirectUri, "max_age", "0");
             }
 
             context.Response.Redirect(redirectUri);
@@ -176,7 +191,7 @@ if (isGoogleAuthenticationConfigured)
             var redirectUrl = QueryHelpers.AddQueryString(
                 returnUrl,
                 "authError",
-                "Google sign-in could not be completed. Please sign in again.");
+                GetGoogleAuthFailureMessage(context.Failure?.Message));
 
             context.Response.Redirect(redirectUrl);
             return Task.CompletedTask;
@@ -206,10 +221,30 @@ if (isGoogleAuthenticationConfigured)
             var tokenResponseScopes = context.TokenResponse.Response is null
                 ? null
                 : TryGetJsonString(context.TokenResponse.Response.RootElement, "scope");
+            var verifiedTokenScopes = string.IsNullOrWhiteSpace(context.AccessToken)
+                ? null
+                : await GetGoogleAccessTokenScopeStringAsync(
+                    context.HttpContext.RequestServices.GetRequiredService<IHttpClientFactory>(),
+                    context.AccessToken,
+                    context.HttpContext.RequestAborted);
             var effectiveWorkspaceScopes = GetEffectiveGoogleWorkspaceScopes(
                 requestedWorkspaceScopes,
-                tokenResponseScopes,
+                string.IsNullOrWhiteSpace(verifiedTokenScopes) ? tokenResponseScopes : verifiedTokenScopes,
                 context.Properties.RedirectUri);
+
+            if (!string.IsNullOrWhiteSpace(requestedWorkspaceScopes) &&
+                string.IsNullOrWhiteSpace(tokenResponseScopes) &&
+                string.IsNullOrWhiteSpace(verifiedTokenScopes))
+            {
+                context.Fail("Google returned an access token, but its Workspace API scopes could not be verified. Sign in again and approve Gmail, Drive, and Chat access.");
+                return;
+            }
+
+            if (!HasAnyRequestedWorkspaceScope(requestedWorkspaceScopes, effectiveWorkspaceScopes))
+            {
+                context.Fail("Google did not grant any Workspace API scopes. Sign in again and approve Gmail, Drive, and Chat access.");
+                return;
+            }
 
             context.Identity?.AddClaim(new Claim("urn:google:scopes", effectiveWorkspaceScopes));
 
@@ -257,7 +292,7 @@ if (isGoogleAuthenticationConfigured)
             }
 
             context.Properties.IsPersistent = true;
-            context.Properties.ExpiresUtc = DateTimeOffset.UtcNow.AddDays(14);
+            context.Properties.ExpiresUtc = DateTimeOffset.UtcNow.Add(workspaceSessionDuration);
 
             if (!string.IsNullOrWhiteSpace(email) &&
                 !string.IsNullOrWhiteSpace(effectiveWorkspaceScopes) &&
@@ -296,12 +331,10 @@ if (isGoogleAuthenticationConfigured)
                 existingToken.Scope = effectiveWorkspaceScopes;
                 existingToken.UpdatedAt = now;
 
-                var authenticationTokens = context.Properties.GetTokens().ToList();
-                StoreToken(authenticationTokens, "scope", effectiveWorkspaceScopes);
-                context.Properties.StoreTokens(authenticationTokens);
-
                 await db.SaveChangesAsync(context.HttpContext.RequestAborted);
             }
+
+            RemoveGoogleOAuthTokens(context.Properties);
         };
     });
 }
@@ -408,6 +441,35 @@ app.Use(async (context, next) =>
 
     if (status == "active")
     {
+        var grants = await AuthEndpoints.GetAdminAccessGrantsAsync(db, email, context.RequestAborted);
+        var access = grants.Access.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (access.Count == 0)
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            context.Response.ContentType = "application/problem+json";
+            await context.Response.WriteAsJsonAsync(new
+            {
+                title = "Waiting for assignment.",
+                detail = "Your account is active, but no workspace menus have been assigned yet.",
+                status = StatusCodes.Status403Forbidden,
+            });
+            return;
+        }
+
+        if (!IsApiPathAllowedByAccess(context.Request.Path, access))
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            context.Response.ContentType = "application/problem+json";
+            await context.Response.WriteAsJsonAsync(new
+            {
+                title = "Access not assigned.",
+                detail = "This menu is not assigned to your account.",
+                status = StatusCodes.Status403Forbidden,
+            });
+            return;
+        }
+
         await next();
         return;
     }
@@ -486,6 +548,29 @@ static string NormalizeLocalReturnUrl(string? returnUrl)
         : "/";
 }
 
+static string GetGoogleAuthFailureMessage(string? failureMessage)
+{
+    const string genericMessage = "Google Workspace sign-in could not be completed. Please sign in again.";
+
+    if (string.IsNullOrWhiteSpace(failureMessage))
+    {
+        return genericMessage;
+    }
+
+    var knownWorkspaceFailures = new[]
+    {
+        "Google did not grant the required Workspace API scopes.",
+        "Use an ",
+        "Only Google Workspace accounts",
+        "This Google Workspace account",
+    };
+
+    return knownWorkspaceFailures.Any(prefix =>
+            failureMessage.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        ? failureMessage
+        : genericMessage;
+}
+
 static bool IsBrowserNavigationRequest(HttpContext context)
 {
     if (!HttpMethods.IsGet(context.Request.Method))
@@ -508,12 +593,72 @@ static bool IsBrowserNavigationRequest(HttpContext context)
 
 static string NormalizeGoogleUserKey(string email) => email.Trim().ToLowerInvariant();
 
+static async Task<string?> GetGoogleAccessTokenScopeStringAsync(
+    IHttpClientFactory httpClientFactory,
+    string accessToken,
+    CancellationToken cancellationToken)
+{
+    var requestUrl = QueryHelpers.AddQueryString(
+        "https://www.googleapis.com/oauth2/v3/tokeninfo",
+        new Dictionary<string, string?>
+        {
+            ["access_token"] = accessToken,
+        });
+
+    try
+    {
+        var response = await httpClientFactory
+            .CreateClient()
+            .GetAsync(requestUrl, cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        var payload = await response.Content.ReadAsStringAsync(cancellationToken);
+        using var document = JsonDocument.Parse(payload);
+
+        return TryGetJsonString(document.RootElement, "scope");
+    }
+    catch (HttpRequestException)
+    {
+        return null;
+    }
+    catch (TaskCanceledException)
+    {
+        return null;
+    }
+    catch (JsonException)
+    {
+        return null;
+    }
+}
+
+static bool HasAnyRequestedWorkspaceScope(string requestedWorkspaceScopes, string effectiveWorkspaceScopes)
+{
+    var requestedScopes = ParseScopes(requestedWorkspaceScopes)
+        .Where(scope => GoogleWorkspaceScopes.All.Contains(scope, StringComparer.OrdinalIgnoreCase))
+        .ToArray();
+
+    if (requestedScopes.Length == 0)
+    {
+        return true;
+    }
+
+    var effectiveScopes = ParseScopes(effectiveWorkspaceScopes)
+        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    return requestedScopes.Any(effectiveScopes.Contains);
+}
+
 static string GetEffectiveGoogleWorkspaceScopes(
     string requestedWorkspaceScopes,
     string? tokenResponseScopes,
     string? redirectUri)
 {
-    var tokenWorkspaceScopes = ParseScopes(tokenResponseScopes)
+    var tokenScopes = ParseScopes(tokenResponseScopes).ToArray();
+    var tokenWorkspaceScopes = tokenScopes
         .Where(scope => GoogleWorkspaceScopes.All.Contains(scope, StringComparer.OrdinalIgnoreCase))
         .ToArray();
 
@@ -522,42 +667,17 @@ static string GetEffectiveGoogleWorkspaceScopes(
         return string.Join(' ', tokenWorkspaceScopes);
     }
 
+    if (tokenScopes.Length > 0)
+    {
+        return string.Empty;
+    }
+
     if (!string.IsNullOrWhiteSpace(requestedWorkspaceScopes))
     {
         return requestedWorkspaceScopes;
     }
 
-    return IsGoogleWorkspaceReconnectRedirect(redirectUri)
-        ? string.Join(' ', GoogleWorkspaceScopes.All)
-        : string.Empty;
-}
-
-static bool IsGoogleWorkspaceReconnectRedirect(string? redirectUri)
-{
-    if (string.IsNullOrWhiteSpace(redirectUri))
-    {
-        return false;
-    }
-
-    var queryIndex = redirectUri.IndexOf("?", StringComparison.Ordinal);
-
-    if (queryIndex < 0 || queryIndex == redirectUri.Length - 1)
-    {
-        return false;
-    }
-
-    var query = QueryHelpers.ParseQuery(redirectUri[queryIndex..]);
-
-    if (!query.TryGetValue("returnUrl", out var returnUrlValue))
-    {
-        return false;
-    }
-
-    var returnUrl = returnUrlValue.ToString();
-
-    return returnUrl.Contains("integration=google_", StringComparison.OrdinalIgnoreCase) ||
-           returnUrl.Contains("item=email", StringComparison.OrdinalIgnoreCase) ||
-           returnUrl.Contains("item=chat", StringComparison.OrdinalIgnoreCase);
+    return string.Empty;
 }
 
 static IEnumerable<string> ParseScopes(string? scopes) =>
@@ -565,21 +685,13 @@ static IEnumerable<string> ParseScopes(string? scopes) =>
         ? []
         : scopes.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-static void StoreToken(List<AuthenticationToken> tokens, string name, string value)
+static void RemoveGoogleOAuthTokens(AuthenticationProperties properties)
 {
-    var token = tokens.FirstOrDefault(currentToken => currentToken.Name == name);
+    var tokens = properties.GetTokens()
+        .Where(token => token.Name is not "access_token" and not "refresh_token" and not "id_token" and not "expires_at" and not "token_type" and not "scope")
+        .ToArray();
 
-    if (token is null)
-    {
-        tokens.Add(new AuthenticationToken
-        {
-            Name = name,
-            Value = value,
-        });
-        return;
-    }
-
-    token.Value = value;
+    properties.StoreTokens(tokens);
 }
 
 static string GetGoogleWorkspaceDataDomain(IConfigurationSection googleSection)
@@ -596,3 +708,89 @@ static bool IsWorkspaceGoogleAccount(string? email, string? hostedDomain, string
      string.Equals(hostedDomain, workspaceDataDomain, StringComparison.OrdinalIgnoreCase)) ||
     (!string.IsNullOrWhiteSpace(email) &&
      email.EndsWith($"@{workspaceDataDomain}", StringComparison.OrdinalIgnoreCase));
+
+static bool IsApiPathAllowedByAccess(PathString path, IReadOnlySet<string> access)
+{
+    if (path.StartsWithSegments("/api/health") ||
+        path.StartsWithSegments("/api/images/config"))
+    {
+        return true;
+    }
+
+    if (path.StartsWithSegments("/api/admin/users"))
+    {
+        return HasAccess(access, "admin-users");
+    }
+
+    if (path.StartsWithSegments("/api/admin/groups"))
+    {
+        return HasAccess(access, "admin-groups");
+    }
+
+    if (path.StartsWithSegments("/api/admin"))
+    {
+        return HasPrefixAccess(access, "admin-");
+    }
+
+    if (path.StartsWithSegments("/api/canvas/admin"))
+    {
+        return HasAccess(access, "admin-users");
+    }
+
+    if (path.StartsWithSegments("/api/canvas") ||
+        path.StartsWithSegments("/api/academy"))
+    {
+        return HasPrefixAccess(access, "academy-");
+    }
+
+    if (path.StartsWithSegments("/api/google/drive") ||
+        path.StartsWithSegments("/api/google/integrations/google_drive"))
+    {
+        return HasAccess(access, "workspace-drive");
+    }
+
+    if (path.StartsWithSegments("/api/google/gmail") ||
+        path.StartsWithSegments("/api/google/integrations/gmail"))
+    {
+        return HasAccess(access, "workspace-email");
+    }
+
+    if (path.StartsWithSegments("/api/google/chat") ||
+        path.StartsWithSegments("/api/google/integrations/google_chat"))
+    {
+        return HasAccess(access, "workspace-chat");
+    }
+
+    if (path.StartsWithSegments("/api/google"))
+    {
+        return HasAccess(access, "workspace-drive", "workspace-email", "workspace-chat");
+    }
+
+    if (path.StartsWithSegments("/api/microsoft"))
+    {
+        return HasAccess(access, "academy-outlook");
+    }
+
+    if (path.StartsWithSegments("/api/workspace-modes"))
+    {
+        return HasAnyModeAccess(access);
+    }
+
+    if (path.StartsWithSegments("/api/image-assets"))
+    {
+        return HasAnyModeAccess(access);
+    }
+
+    return HasAnyModeAccess(access);
+}
+
+static bool HasAccess(IReadOnlySet<string> access, params string[] allowedValues) =>
+    allowedValues.Any(access.Contains);
+
+static bool HasPrefixAccess(IReadOnlySet<string> access, string prefix) =>
+    access.Any(value => value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+
+static bool HasAnyModeAccess(IReadOnlySet<string> access) =>
+    HasPrefixAccess(access, "academy-") ||
+    HasPrefixAccess(access, "workspace-") ||
+    HasPrefixAccess(access, "admin-");

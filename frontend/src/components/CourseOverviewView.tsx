@@ -36,8 +36,14 @@ import type {
 } from '../api/workspaceApi';
 import { useLanguage } from '../context/LanguageContext';
 import { badgeColorClasses, dotColorClasses } from '../lib/colorStyles';
+import {
+  defaultGradeProgressColorThresholds,
+  normalizeGradeProgressColorThresholds,
+  type GradeProgressColorThresholds,
+} from '../lib/gradeProgress';
 import { cn } from '../lib/utils';
 import type { ColorToken } from '../modes/types';
+import { ManualGradeEditor } from './ManualGradeEditor';
 import type { ManualLecture, ManualLectureSchedule, ManualLectureScheduleEntry } from './ManualLectureDialog';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -164,6 +170,7 @@ const canvasLecturePreferencesStorageKey = 'incos-academy-canvas-lecture-prefere
 const academyCalendarSettingsStorageKey = 'incos-academy-calendar-settings';
 const academyPreferencesUpdatedEvent = 'incos-academy-preferences-updated';
 const defaultAcademySemester = getDateBasedAcademySemester();
+const noTermSemester = 'No Term';
 
 function getDateBasedAcademySemester(date = new Date()) {
   const month = date.getMonth();
@@ -240,11 +247,28 @@ function getSelectedSemesterFromAcademyPreferences(preferences: Pick<AcademyPref
   return getSelectedSemesterFromCalendarSettings(preferences.calendarSettings);
 }
 
+function getGradeProgressThresholdsFromAcademyPreferences(
+  preferences: Pick<AcademyPreferences, 'calendarSettings'>,
+  fallback: GradeProgressColorThresholds = defaultGradeProgressColorThresholds,
+) {
+  return normalizeGradeProgressColorThresholds(preferences.calendarSettings, fallback);
+}
+
 function normalizeSemesterName(value?: string, fallback = defaultAcademySemester) {
   const trimmedValue = value?.trim();
 
   if (!trimmedValue || /^default term$/i.test(trimmedValue)) {
     return fallback;
+  }
+
+  return trimmedValue;
+}
+
+function normalizeCanvasSemesterName(value?: string) {
+  const trimmedValue = value?.trim();
+
+  if (!trimmedValue || /^default term$/i.test(trimmedValue)) {
+    return noTermSemester;
   }
 
   return trimmedValue;
@@ -404,7 +428,9 @@ function createCanvasRows(
     const courseId = String(course.id ?? '');
     const preference = getCanvasPreferenceForCourse(course, preferences);
     const courseCode = preference.friendlyCourseCode?.trim() || course.courseCode?.trim() || course.id;
-    const semester = normalizeSemesterName(preference.semester ?? preference.termName ?? course.termName);
+    const semester = preference.semester || preference.termName
+      ? normalizeSemesterName(preference.semester ?? preference.termName)
+      : normalizeCanvasSemesterName(course.termName);
 
     return {
       id: `canvas:${courseId}`,
@@ -1351,18 +1377,22 @@ function CourseDetailView({
   content,
   contentLoadStatus,
   dictionary,
+  gradeProgressThresholds,
   initialResourceUrl,
   onBack,
   onSelectItem,
+  onUpdateManualLectureAssessments,
   row,
 }: {
   activeItem: CourseNavigationItem;
   content: CanvasCourseContent | null;
   contentLoadStatus: LoadStatus;
   dictionary: ReturnType<typeof useLanguage>['dictionary'];
+  gradeProgressThresholds: GradeProgressColorThresholds;
   initialResourceUrl?: string | null;
   onBack: () => void;
   onSelectItem: (item: CourseNavigationItem) => void;
+  onUpdateManualLectureAssessments?: (lectureId: string, assessments: ManualLecture['assessments']) => void;
   row: CourseOverviewRow;
 }) {
   const navigationItems = row.source === 'canvas'
@@ -2218,25 +2248,28 @@ function CourseDetailView({
     );
   };
 
-  const renderGrades = () => (
-    <div className="space-y-3">
-      <div className="grid gap-2 sm:grid-cols-2">
+  const renderGrades = () => {
+    if (row.source === 'manual') {
+      return row.manualLecture && enabledAssessments.length > 0 ? (
+        <ManualGradeEditor
+          assessments={row.manualLecture.assessments}
+          gradeProgressThresholds={gradeProgressThresholds}
+          onChange={(assessments) => {
+            if (row.manualLecture) {
+              onUpdateManualLectureAssessments?.(row.manualLecture.id, assessments);
+            }
+          }}
+        />
+      ) : renderEmpty(dictionary.academyGradesNoBreakdown);
+    }
+
+    return (
+      <div className="space-y-3">
         <div className="rounded-lg border bg-background p-3">
           <div className="text-[10px] font-semibold uppercase text-muted-foreground">{dictionary.courseOverviewGrade}</div>
           <div className="mt-1 text-lg font-semibold text-foreground">{row.grade}</div>
         </div>
-        {enabledAssessments.length > 0 ? (
-          <div className="rounded-lg border bg-background p-3">
-            <div className="text-[10px] font-semibold uppercase text-muted-foreground">
-              {dictionary.manualLectureAssessmentTotal}
-            </div>
-            <div className="mt-1 text-lg font-semibold text-foreground">
-              {enabledAssessments.reduce((total, assessment) => total + (Number.parseFloat(assessment.gradePortion) || 0), 0)}%
-            </div>
-          </div>
-        ) : null}
-      </div>
-      {row.source === 'canvas' && content?.assignments?.length ? (
+        {row.source === 'canvas' && content?.assignments?.length ? (
         <div className="rounded-lg border bg-background">
           <div className="border-b px-3 py-2 text-xs font-semibold uppercase text-muted-foreground">Assignment grades</div>
           <div className="divide-y">
@@ -2270,8 +2303,9 @@ function CourseDetailView({
           </div>
         </div>
       ) : null}
-    </div>
-  );
+      </div>
+    );
+  };
 
   const renderLinks = () => (
     links.length > 0 ? (
@@ -3083,15 +3117,19 @@ export function CourseOverviewView({
   const [manualLectures, setManualLectures] = useState<ManualLecture[]>(() => getStoredManualLectures());
   const [notificationCounts, setNotificationCounts] = useState<Record<string, number>>({});
   const [selectedSemester, setSelectedSemester] = useState(getStoredSelectedAcademySemester);
+  const [gradeProgressThresholds, setGradeProgressThresholds] =
+    useState<GradeProgressColorThresholds>(defaultGradeProgressColorThresholds);
   const [selectedCourseRowId, setSelectedCourseRowId] = useState<string | null>(initialSelectedCourseRowId ?? null);
   const [activeCourseItem, setActiveCourseItem] = useState<CourseNavigationItem | null>(null);
   const [canvasCourseContent, setCanvasCourseContent] = useState<CanvasCourseContent | null>(null);
   const [canvasCourseContentStatus, setCanvasCourseContentStatus] = useState<LoadStatus>('idle');
+  const manualGradeSaveSequenceRef = useRef(0);
 
   useEffect(() => {
     const applyAcademyPreferences = (preferences: AcademyPreferences) => {
       setManualLectures(getManualLecturesFromAcademyPreferences(preferences));
       setCanvasLecturePreferences(getCanvasLecturePreferencesFromAcademyPreferences(preferences));
+      setGradeProgressThresholds(getGradeProgressThresholdsFromAcademyPreferences(preferences));
 
       const preferenceSemester = getSelectedSemesterFromAcademyPreferences(preferences);
 
@@ -3115,6 +3153,12 @@ export function CourseOverviewView({
 
         if (isCanvasLecturePreferences(event.detail.canvasLecturePreferences)) {
           setCanvasLecturePreferences(event.detail.canvasLecturePreferences);
+        }
+
+        if (isRecord(event.detail.calendarSettings)) {
+          setGradeProgressThresholds((currentThresholds) => (
+            normalizeGradeProgressColorThresholds(event.detail.calendarSettings, currentThresholds)
+          ));
         }
 
         const selectedSemesterFromEvent = getSelectedSemesterFromCalendarSettings(event.detail.calendarSettings);
@@ -3156,6 +3200,7 @@ export function CourseOverviewView({
 
         setManualLectures(getManualLecturesFromAcademyPreferences(preferences));
         setCanvasLecturePreferences(getCanvasLecturePreferencesFromAcademyPreferences(preferences));
+        setGradeProgressThresholds(getGradeProgressThresholdsFromAcademyPreferences(preferences));
 
         const preferenceSemester = getSelectedSemesterFromAcademyPreferences(preferences);
 
@@ -3281,6 +3326,62 @@ export function CourseOverviewView({
     setSelectedSemester(normalizedSemester);
     persistSelectedSemester(normalizedSemester);
   };
+  const handleUpdateManualLectureAssessments = (
+    lectureId: string,
+    assessments: ManualLecture['assessments'],
+  ) => {
+    const nextManualLectures = manualLectures.map((lecture) => (
+      lecture.id === lectureId ? { ...lecture, assessments } : lecture
+    ));
+
+    setManualLectures(nextManualLectures);
+    const saveSequence = manualGradeSaveSequenceRef.current + 1;
+
+    manualGradeSaveSequenceRef.current = saveSequence;
+    window.dispatchEvent(new CustomEvent(academyPreferencesUpdatedEvent, {
+      detail: {
+        canvasLecturePreferences,
+        manualLectures: nextManualLectures,
+      },
+    }));
+
+    void workspaceApi.getAcademyPreferences()
+      .then((preferences) => {
+        const storedManualLectures = getManualLecturesFromAcademyPreferences(preferences);
+        const manualLecturesToSave = storedManualLectures.some((lecture) => lecture.id === lectureId)
+          ? storedManualLectures.map((lecture) => (
+            lecture.id === lectureId ? { ...lecture, assessments } : lecture
+          ))
+          : nextManualLectures;
+
+        return workspaceApi.saveAcademyPreferences({
+          calendarSettings: preferences.calendarSettings,
+          canvasAssessmentPreferences: preferences.canvasAssessmentPreferences,
+          canvasCourseworkPreferences: preferences.canvasCourseworkPreferences,
+          canvasLecturePreferences: preferences.canvasLecturePreferences,
+          manualAssessments: preferences.manualAssessments,
+          manualCoursework: preferences.manualCoursework,
+          manualLectures: manualLecturesToSave,
+        });
+      })
+      .then((preferences) => {
+        if (manualGradeSaveSequenceRef.current !== saveSequence) {
+          return;
+        }
+
+        const savedManualLectures = getManualLecturesFromAcademyPreferences(preferences);
+
+        setManualLectures(savedManualLectures);
+        window.dispatchEvent(new CustomEvent(academyPreferencesUpdatedEvent, {
+          detail: {
+            calendarSettings: preferences.calendarSettings,
+            canvasLecturePreferences: preferences.canvasLecturePreferences,
+            manualLectures: savedManualLectures,
+          },
+        }));
+      })
+      .catch(() => undefined);
+  };
 
   useEffect(() => {
     if (!selectedCourseRow) {
@@ -3353,12 +3454,14 @@ export function CourseOverviewView({
         content={canvasCourseContent}
         contentLoadStatus={canvasCourseContentStatus}
         dictionary={dictionary}
+        gradeProgressThresholds={gradeProgressThresholds}
         initialResourceUrl={initialResourceUrl}
         onBack={() => {
           setSelectedCourseRowId(null);
           setActiveCourseItem(null);
         }}
         onSelectItem={setActiveCourseItem}
+        onUpdateManualLectureAssessments={handleUpdateManualLectureAssessments}
         row={selectedCourseRow}
       />
     );

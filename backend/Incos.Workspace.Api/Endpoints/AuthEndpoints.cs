@@ -14,9 +14,14 @@ namespace Incos.Workspace.Api.Endpoints;
 
 public static class AuthEndpoints
 {
+    public const string GoogleForceLoginProperty = "incos:google:force_login";
     public const string GoogleRequestedWorkspaceScopesProperty = "incos:google:requested_workspace_scopes";
     private const string MicrosoftOAuthStateCookie = "incos_microsoft_oauth_state";
     private const string MicrosoftOAuthReturnUrlCookie = "incos_microsoft_oauth_return_url";
+    public sealed record AdminAccessGrantSet(string[] Access, string[] Permissions, string[] Settings)
+    {
+        public static readonly AdminAccessGrantSet Empty = new([], [], []);
+    }
 
     public static IEndpointRouteBuilder MapAuthEndpoints(this IEndpointRouteBuilder app)
     {
@@ -39,6 +44,9 @@ public static class AuthEndpoints
                     ? await GetAdminAccountStatusAsync(db, email, cancellationToken)
                     : null;
                 var canAccessWorkspace = isWorkspaceAccount && accountStatus == "active";
+                var grants = canAccessWorkspace
+                    ? await GetAdminAccessGrantsAsync(db, email, cancellationToken)
+                    : AdminAccessGrantSet.Empty;
 
                 return Results.Ok(new
                 {
@@ -50,7 +58,11 @@ public static class AuthEndpoints
                     hostedDomain,
                     accountStatus,
                     requiresApproval = isWorkspaceAccount && accountStatus == "pending",
+                    requiresAssignment = canAccessWorkspace && grants.Access.Length == 0,
                     canAccessWorkspace,
+                    access = grants.Access,
+                    permissions = grants.Permissions,
+                    settings = grants.Settings,
                 });
             })
             .WithName("GetAuthSession");
@@ -79,16 +91,13 @@ public static class AuthEndpoints
             })
             .WithName("GetAuthConfig");
 
-        auth.MapGet("/google/login", (
-                HttpContext context,
-                IConfiguration configuration,
-                string? returnUrl) => StartGoogleLogin(context, configuration, returnUrl))
-            .WithName("StartGoogleWorkspaceLogin");
+        auth.MapGet("/google/login", RedirectLegacyGoogleLogin)
+            .WithName("RedirectLegacyGoogleLogin");
 
         auth.MapGet("/google/workspace/login", (
                 HttpContext context,
                 IConfiguration configuration,
-                string? returnUrl) => StartGoogleLogin(context, configuration, returnUrl))
+                string? returnUrl) => StartGoogleWorkspaceLogin(context, configuration, returnUrl))
             .WithName("StartIncosWorkspaceGoogleLogin");
 
         auth.MapGet("/google/callback", (string? returnUrl) =>
@@ -277,7 +286,16 @@ public static class AuthEndpoints
             : "/";
     }
 
-    private static async Task<IResult> StartGoogleLogin(
+    private static IResult RedirectLegacyGoogleLogin(HttpContext context)
+    {
+        var queryString = context.Request.QueryString.HasValue
+            ? context.Request.QueryString.Value
+            : string.Empty;
+
+        return Results.Redirect($"/api/auth/google/workspace/login{queryString}");
+    }
+
+    private static async Task<IResult> StartGoogleWorkspaceLogin(
         HttpContext context,
         IConfiguration configuration,
         string? returnUrl)
@@ -294,10 +312,11 @@ public static class AuthEndpoints
                 statusCode: StatusCodes.Status503ServiceUnavailable);
         }
 
-        var forceConsent = string.Equals(context.Request.Query["forceConsent"], "true", StringComparison.OrdinalIgnoreCase) ||
+        var forceConsent = string.Equals(context.Request.Query["forceConsent"], "true", StringComparison.OrdinalIgnoreCase);
+        var forceLogin = forceConsent ||
             string.Equals(context.Request.Query["forceLogin"], "true", StringComparison.OrdinalIgnoreCase);
 
-        if (forceConsent)
+        if (forceLogin)
         {
             await context.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
         }
@@ -310,22 +329,35 @@ public static class AuthEndpoints
             AccessType = "offline",
             IncludeGrantedScopes = !forceConsent,
             IsPersistent = true,
-            ExpiresUtc = DateTimeOffset.UtcNow.AddDays(14),
+            ExpiresUtc = DateTimeOffset.UtcNow.Add(GetWorkspaceSessionDuration(configuration)),
         };
+        properties.Scope ??= [];
 
-        if (forceConsent)
+        if (forceLogin)
         {
-            properties.Prompt = "consent select_account";
+            properties.Prompt = forceConsent ? "consent select_account" : "select_account";
+            properties.Items[GoogleForceLoginProperty] = "true";
+        }
 
-            foreach (var scope in GetGoogleConsentScopes())
+        foreach (var scope in GetGoogleConsentScopes())
+        {
+            if (!properties.Scope.Any(existingScope =>
+                    string.Equals(existingScope, scope, StringComparison.OrdinalIgnoreCase)))
             {
                 properties.Scope.Add(scope);
             }
-
-            properties.Items[GoogleRequestedWorkspaceScopesProperty] = string.Join(' ', GoogleWorkspaceScopes.All);
         }
 
+        properties.Items[GoogleRequestedWorkspaceScopesProperty] = string.Join(' ', GoogleWorkspaceScopes.All);
+
         return Results.Challenge(properties, [GoogleDefaults.AuthenticationScheme]);
+    }
+
+    private static TimeSpan GetWorkspaceSessionDuration(IConfiguration configuration)
+    {
+        var hours = configuration.GetValue<double?>("Authentication:Google:WorkspaceSessionHours") ?? 8;
+
+        return TimeSpan.FromHours(Math.Clamp(hours, 1, 24 * 14));
     }
 
     private static async Task<string> GetAdminAccountStatusAsync(
@@ -348,6 +380,76 @@ public static class AuthEndpoints
         return status is "active" or "inactive" or "pending"
             ? status
             : "pending";
+    }
+
+    public static async Task<AdminAccessGrantSet> GetAdminAccessGrantsAsync(
+        IncosWorkspaceDbContext db,
+        string? email,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            return AdminAccessGrantSet.Empty;
+        }
+
+        await GoogleIntegrationEndpoints.EnsureDefaultAdminGroupAsync(db, cancellationToken);
+
+        var normalizedEmail = email.Trim().ToLowerInvariant();
+        var groups = await (
+            from member in db.AdminGroupMembers
+            join adminGroup in db.AdminGroups on member.AdminGroupId equals adminGroup.Id
+            join adminUser in db.AdminUsers on member.AdminUserId equals adminUser.Id
+            where adminUser.Email == normalizedEmail && adminGroup.Status == "active"
+            select new
+            {
+                adminGroup.AccessJson,
+                adminGroup.PermissionJson,
+                adminGroup.SettingJson,
+            })
+            .AsNoTracking()
+            .ToArrayAsync(cancellationToken);
+
+        if (groups.Length == 0)
+        {
+            return AdminAccessGrantSet.Empty;
+        }
+
+        var access = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var permissions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var settings = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var group in groups)
+        {
+            access.UnionWith(ParseGrantValues(group.AccessJson));
+            permissions.UnionWith(ParseGrantValues(group.PermissionJson));
+            settings.UnionWith(ParseGrantValues(group.SettingJson));
+        }
+
+        return new AdminAccessGrantSet(
+            access.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray(),
+            permissions.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray(),
+            settings.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray());
+    }
+
+    private static string[] ParseGrantValues(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return [];
+        }
+
+        try
+        {
+            return (JsonSerializer.Deserialize<string[]>(json) ?? [])
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
     }
 
     private static string GetGoogleWorkspaceDataDomain(IConfiguration configuration)

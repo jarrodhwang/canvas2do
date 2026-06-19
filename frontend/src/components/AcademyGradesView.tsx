@@ -1,0 +1,864 @@
+import { BarChart3, ChevronDown, LoaderCircle, RefreshCw, TrendingUp } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+
+import { workspaceApi } from '../api/workspaceApi';
+import type { AcademyPreferences, CanvasCourse, CanvasCourseContent } from '../api/workspaceApi';
+import { useLanguage } from '../context/LanguageContext';
+import { badgeColorClasses, dotColorClasses } from '../lib/colorStyles';
+import {
+  defaultGradeProgressColorThresholds,
+  getGradeProgressColor,
+  normalizeGradeProgressColorThresholds,
+  type GradeProgressColorThresholds,
+} from '../lib/gradeProgress';
+import { cn } from '../lib/utils';
+import type { ColorToken } from '../modes/types';
+import { calculateManualGradeSummary, ManualGradeEditor } from './ManualGradeEditor';
+import type { ManualLecture } from './ManualLectureDialog';
+import { Badge } from './ui/badge';
+import { Button } from './ui/button';
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from './ui/card';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from './ui/select';
+
+type LoadStatus = 'idle' | 'loading' | 'loaded' | 'failed';
+
+interface CanvasLecturePreference {
+  assessments?: ManualLecture['assessments'];
+  chipColor?: ColorToken;
+  courseName?: string;
+  credits?: string;
+  friendlyCourseCode?: string;
+  friendlyName?: string;
+  hidden?: boolean;
+  originalCourseCode?: string;
+  semester?: string;
+  termName?: string;
+}
+
+type CanvasLecturePreferences = Record<string, CanvasLecturePreference>;
+
+interface GradeCourseRow {
+  id: string;
+  canvasCourseId?: string;
+  source: 'canvas' | 'manual';
+  name: string;
+  courseCode: string;
+  semester: string;
+  color: ColorToken;
+  score?: number;
+  grade?: string;
+  status?: string;
+  credits?: string;
+  assessments: ManualLecture['assessments'];
+  manualLectureId?: string;
+}
+
+interface CourseDetailState {
+  status: LoadStatus;
+  content?: CanvasCourseContent;
+  error?: string;
+}
+
+const defaultAcademySemester = getDateBasedAcademySemester();
+const noTermSemester = 'No Term';
+const academyPreferencesUpdatedEvent = 'incos-academy-preferences-updated';
+
+function getDateBasedAcademySemester(date = new Date()) {
+  const month = date.getMonth();
+  const term = month <= 3 ? 'Spring' : month <= 7 ? 'Summer' : 'Fall';
+
+  return `${term} ${date.getFullYear()}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isColorToken(value: unknown): value is ColorToken {
+  return typeof value === 'string' && value in dotColorClasses;
+}
+
+function getCalendarSettingsRecord(settings: unknown) {
+  return isRecord(settings) ? settings : {};
+}
+
+function getSelectedSemesterFromAcademyPreferences(preferences: Pick<AcademyPreferences, 'calendarSettings'>) {
+  const settings = getCalendarSettingsRecord(preferences.calendarSettings);
+  const selectedSemester = settings.selectedSemester;
+
+  return typeof selectedSemester === 'string'
+    ? normalizeSemesterName(selectedSemester)
+    : undefined;
+}
+
+function getGradeProgressThresholdsFromAcademyPreferences(
+  preferences: Pick<AcademyPreferences, 'calendarSettings'>,
+  fallback: GradeProgressColorThresholds = defaultGradeProgressColorThresholds,
+) {
+  return normalizeGradeProgressColorThresholds(getCalendarSettingsRecord(preferences.calendarSettings), fallback);
+}
+
+function normalizeSemesterName(value?: string, fallback = defaultAcademySemester) {
+  const trimmedValue = value?.trim();
+
+  if (!trimmedValue || /^default term$/i.test(trimmedValue)) {
+    return fallback;
+  }
+
+  return trimmedValue;
+}
+
+function normalizeCanvasSemesterName(value?: string) {
+  const trimmedValue = value?.trim();
+
+  if (!trimmedValue || /^default term$/i.test(trimmedValue)) {
+    return noTermSemester;
+  }
+
+  return trimmedValue;
+}
+
+function normalizeCourseMatchValue(value?: string) {
+  return value?.replace(/\s+/g, '').trim().toLowerCase() || '';
+}
+
+function getCanvasLecturePreferencesFromAcademyPreferences(
+  preferences: Pick<AcademyPreferences, 'canvasLecturePreferences'>,
+) {
+  return isRecord(preferences.canvasLecturePreferences)
+    ? preferences.canvasLecturePreferences as CanvasLecturePreferences
+    : {};
+}
+
+function getManualLecturesFromAcademyPreferences(preferences: Pick<AcademyPreferences, 'manualLectures'>) {
+  return Array.isArray(preferences.manualLectures)
+    ? preferences.manualLectures as ManualLecture[]
+    : [];
+}
+
+function getCanvasPreferenceForCourse(course: CanvasCourse, preferences: CanvasLecturePreferences) {
+  const courseId = String(course.id ?? '');
+  const directPreference = preferences[courseId];
+
+  if (directPreference) {
+    return directPreference;
+  }
+
+  const normalizedCourseCode = normalizeCourseMatchValue(course.courseCode);
+  const normalizedCourseName = normalizeCourseMatchValue(course.name);
+
+  return Object.values(preferences).find((preference) => {
+    const preferenceCodes = [
+      preference.originalCourseCode,
+      preference.friendlyCourseCode,
+      preference.courseName,
+      preference.friendlyName,
+    ].map(normalizeCourseMatchValue);
+
+    return Boolean(
+      normalizedCourseCode && preferenceCodes.includes(normalizedCourseCode) ||
+      normalizedCourseName && preferenceCodes.includes(normalizedCourseName),
+    );
+  }) ?? {};
+}
+
+function formatStatus(value?: string) {
+  if (!value) {
+    return '';
+  }
+
+  return value
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(' ');
+}
+
+function createCanvasRows(courses: CanvasCourse[], preferences: CanvasLecturePreferences): GradeCourseRow[] {
+  return courses.flatMap((course) => {
+    const courseId = String(course.id ?? '');
+    const preference = getCanvasPreferenceForCourse(course, preferences);
+
+    if (preference.hidden) {
+      return [];
+    }
+
+    const color = isColorToken(preference.chipColor) ? preference.chipColor : 'blue';
+    const semester = preference.semester || preference.termName
+      ? normalizeSemesterName(preference.semester ?? preference.termName)
+      : normalizeCanvasSemesterName(course.termName);
+
+    return [{
+      id: `canvas:${courseId}`,
+      canvasCourseId: courseId,
+      source: 'canvas',
+      name: preference.friendlyName?.trim() || course.name,
+      courseCode: preference.friendlyCourseCode?.trim() || course.courseCode?.trim() || course.id,
+      semester,
+      color,
+      score: typeof course.currentScore === 'number' ? course.currentScore : undefined,
+      grade: course.currentGrade,
+      status: formatStatus(course.workflowState),
+      credits: preference.credits,
+      assessments: preference.assessments ?? [],
+    }];
+  });
+}
+
+function createManualRows(lectures: ManualLecture[]): GradeCourseRow[] {
+  return lectures
+    .filter((lecture) => !lecture.hidden)
+    .map((lecture) => {
+      const assessments = lecture.assessments ?? [];
+      const summary = calculateManualGradeSummary(assessments);
+
+      return {
+        id: `manual:${lecture.id}`,
+        manualLectureId: lecture.id,
+        source: 'manual',
+        name: lecture.friendlyName?.trim() || lecture.name,
+        courseCode: lecture.friendlyCourseCode?.trim() || lecture.code,
+        semester: normalizeSemesterName(lecture.semester),
+        color: isColorToken(lecture.chipColor) ? lecture.chipColor : 'blue',
+        credits: lecture.credits,
+        score: summary.currentPercent,
+        assessments,
+      };
+    });
+}
+
+function getGradeVisual(
+  score?: number,
+  thresholds: GradeProgressColorThresholds = defaultGradeProgressColorThresholds,
+) {
+  if (typeof score !== 'number') {
+    return {
+      color: '#737373',
+      label: '--',
+      normalizedScore: 0,
+    };
+  }
+
+  const normalizedScore = Math.max(0, Math.min(100, score));
+
+  return {
+    color: getGradeProgressColor(normalizedScore, thresholds),
+    label: `${Math.round(normalizedScore * 10) / 10}%`,
+    normalizedScore,
+  };
+}
+
+function getExpectedLetterGrade(score?: number) {
+  if (typeof score !== 'number') {
+    return '--';
+  }
+
+  const normalizedScore = Math.max(0, Math.min(100, score));
+
+  if (normalizedScore >= 95) return 'A+';
+  if (normalizedScore >= 90) return 'A';
+  if (normalizedScore >= 85) return 'A-';
+  if (normalizedScore >= 80) return 'B+';
+  if (normalizedScore >= 75) return 'B';
+  if (normalizedScore >= 70) return 'B-';
+  if (normalizedScore >= 65) return 'C+';
+  if (normalizedScore >= 60) return 'C';
+  if (normalizedScore >= 55) return 'C-';
+  if (normalizedScore >= 50) return 'D';
+
+  return 'F';
+}
+
+function getScorePercentage(score?: number, pointsPossible?: number) {
+  if (typeof score !== 'number' || typeof pointsPossible !== 'number' || pointsPossible <= 0) {
+    return undefined;
+  }
+
+  return Math.max(0, Math.min(100, (score / pointsPossible) * 100));
+}
+
+function formatPercent(value?: number) {
+  return typeof value === 'number' ? `${Math.round(value * 10) / 10}%` : '--';
+}
+
+function formatRawScore(score?: number, pointsPossible?: number) {
+  if (typeof score !== 'number') {
+    return '';
+  }
+
+  return typeof pointsPossible === 'number' && pointsPossible > 0
+    ? `${score} / ${pointsPossible}`
+    : String(score);
+}
+
+function formatDueDate(value: string | undefined, locale: string) {
+  if (!value) {
+    return '';
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  return new Intl.DateTimeFormat(locale, {
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    month: 'short',
+  }).format(date);
+}
+
+function formatScore(row: GradeCourseRow) {
+  const expectedLetterGrade = getExpectedLetterGrade(row.score);
+
+  if (expectedLetterGrade !== '--' && typeof row.score === 'number') {
+    return `${expectedLetterGrade} · ${Math.round(row.score * 10) / 10}%`;
+  }
+
+  if (row.grade) {
+    return row.grade;
+  }
+
+  if (typeof row.score === 'number') {
+    return `${Math.round(row.score * 10) / 10}%`;
+  }
+
+  return '--';
+}
+
+export function AcademyGradesView() {
+  const { dictionary, language } = useLanguage();
+  const locale = language === 'ko' ? 'ko-KR' : 'en-CA';
+  const [rows, setRows] = useState<GradeCourseRow[]>([]);
+  const [loadStatus, setLoadStatus] = useState<LoadStatus>('idle');
+  const [loadError, setLoadError] = useState('');
+  const [canvasWarning, setCanvasWarning] = useState('');
+  const [academyPreferences, setAcademyPreferences] = useState<AcademyPreferences | null>(null);
+  const [selectedSemester, setSelectedSemester] = useState(defaultAcademySemester);
+  const [gradeProgressThresholds, setGradeProgressThresholds] =
+    useState<GradeProgressColorThresholds>(defaultGradeProgressColorThresholds);
+  const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(() => new Set());
+  const [courseDetails, setCourseDetails] = useState<Record<string, CourseDetailState>>({});
+  const manualGradeSaveSequenceRef = useRef(0);
+
+  const loadGrades = useCallback(async () => {
+    setLoadStatus('loading');
+    setLoadError('');
+    setCanvasWarning('');
+
+    const [preferencesResult, coursesResult] = await Promise.allSettled([
+      workspaceApi.getAcademyPreferences(),
+      workspaceApi.getCanvasCourses(100),
+    ]);
+
+    if (preferencesResult.status === 'rejected') {
+      setRows([]);
+      setLoadError(preferencesResult.reason instanceof Error
+        ? preferencesResult.reason.message
+        : dictionary.academyGradesUnavailable);
+      setLoadStatus('failed');
+
+      return;
+    }
+
+    const preferences = preferencesResult.value;
+    const selectedSemesterFromPreferences = getSelectedSemesterFromAcademyPreferences(preferences);
+    const canvasRows = coursesResult.status === 'fulfilled'
+      ? createCanvasRows(coursesResult.value.courses, getCanvasLecturePreferencesFromAcademyPreferences(preferences))
+      : [];
+    const manualRows = createManualRows(getManualLecturesFromAcademyPreferences(preferences));
+
+    if (coursesResult.status === 'rejected') {
+      setCanvasWarning(coursesResult.reason instanceof Error
+        ? coursesResult.reason.message
+        : dictionary.academyGradesCanvasUnavailable);
+    }
+
+    setAcademyPreferences(preferences);
+    setGradeProgressThresholds(getGradeProgressThresholdsFromAcademyPreferences(preferences));
+    if (selectedSemesterFromPreferences) {
+      setSelectedSemester(selectedSemesterFromPreferences);
+    }
+    setRows([...canvasRows, ...manualRows].sort((a, b) => {
+      const gradeSort = Number(b.score ?? -1) - Number(a.score ?? -1);
+
+      if (gradeSort !== 0) {
+        return gradeSort;
+      }
+
+      return a.courseCode.localeCompare(b.courseCode);
+    }));
+    setLoadStatus('loaded');
+  }, [dictionary.academyGradesCanvasUnavailable, dictionary.academyGradesUnavailable]);
+
+  useEffect(() => {
+    void loadGrades();
+  }, [loadGrades]);
+
+  useEffect(() => {
+    const handleAcademyPreferencesUpdated = (event: Event) => {
+      if (!(event instanceof CustomEvent) || !isRecord(event.detail)) {
+        return;
+      }
+
+      if (isRecord(event.detail.calendarSettings)) {
+        setGradeProgressThresholds((currentThresholds) => (
+          normalizeGradeProgressColorThresholds(event.detail.calendarSettings, currentThresholds)
+        ));
+      }
+    };
+
+    window.addEventListener(academyPreferencesUpdatedEvent, handleAcademyPreferencesUpdated);
+
+    return () => {
+      window.removeEventListener(academyPreferencesUpdatedEvent, handleAcademyPreferencesUpdated);
+    };
+  }, []);
+
+  useEffect(() => {
+    const expandedRowsToLoad = rows.filter((row) => (
+      expandedRowIds.has(row.id) &&
+      row.canvasCourseId &&
+      !courseDetails[row.id]?.status
+    ));
+
+    if (expandedRowsToLoad.length === 0) {
+      return;
+    }
+
+    setCourseDetails((currentDetails) => {
+      const nextDetails = { ...currentDetails };
+
+      expandedRowsToLoad.forEach((row) => {
+        nextDetails[row.id] = { status: 'loading' };
+      });
+
+      return nextDetails;
+    });
+
+    expandedRowsToLoad.forEach((row) => {
+      if (!row.canvasCourseId) {
+        return;
+      }
+
+      workspaceApi.getCanvasCourseContent(row.canvasCourseId)
+        .then((content) => {
+          setCourseDetails((currentDetails) => ({
+            ...currentDetails,
+            [row.id]: { content, status: 'loaded' },
+          }));
+        })
+        .catch((error: unknown) => {
+          setCourseDetails((currentDetails) => ({
+            ...currentDetails,
+            [row.id]: {
+              error: error instanceof Error ? error.message : dictionary.academyGradesDetailUnavailable,
+              status: 'failed',
+            },
+          }));
+        });
+    });
+  }, [courseDetails, dictionary.academyGradesDetailUnavailable, expandedRowIds, rows]);
+
+  const semesterOptions = useMemo(() => {
+    const semesters = new Set<string>();
+
+    rows.forEach((row) => semesters.add(normalizeSemesterName(row.semester)));
+    semesters.add(normalizeSemesterName(selectedSemester));
+    semesters.add(defaultAcademySemester);
+
+    return Array.from(semesters.values()).sort((firstSemester, secondSemester) => (
+      firstSemester === defaultAcademySemester
+        ? -1
+        : secondSemester === defaultAcademySemester
+          ? 1
+          : firstSemester.localeCompare(secondSemester)
+    ));
+  }, [rows, selectedSemester]);
+
+  const visibleRows = useMemo(
+    () => rows.filter((row) => normalizeSemesterName(row.semester) === normalizeSemesterName(selectedSemester)),
+    [rows, selectedSemester],
+  );
+
+  useEffect(() => {
+    const visibleRowIds = new Set(visibleRows.map((row) => row.id));
+
+    setExpandedRowIds((currentExpandedRowIds) => {
+      const nextExpandedRowIds = new Set<string>();
+
+      currentExpandedRowIds.forEach((rowId) => {
+        if (visibleRowIds.has(rowId)) {
+          nextExpandedRowIds.add(rowId);
+        }
+      });
+
+      return nextExpandedRowIds.size === currentExpandedRowIds.size
+        ? currentExpandedRowIds
+        : nextExpandedRowIds;
+    });
+  }, [visibleRows]);
+
+  const handleSelectSemester = (semester: string) => {
+    const normalizedSemester = normalizeSemesterName(semester);
+
+    setSelectedSemester(normalizedSemester);
+
+    if (!academyPreferences) {
+      return;
+    }
+
+    const nextPreferences: AcademyPreferences = {
+      ...academyPreferences,
+      calendarSettings: {
+        ...getCalendarSettingsRecord(academyPreferences.calendarSettings),
+        selectedSemester: normalizedSemester,
+      },
+    };
+
+    setAcademyPreferences(nextPreferences);
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(academyPreferencesUpdatedEvent, { detail: nextPreferences }));
+    }
+
+    void workspaceApi.saveAcademyPreferences({
+      calendarSettings: nextPreferences.calendarSettings,
+      canvasAssessmentPreferences: nextPreferences.canvasAssessmentPreferences,
+      canvasCourseworkPreferences: nextPreferences.canvasCourseworkPreferences,
+      canvasLecturePreferences: nextPreferences.canvasLecturePreferences,
+      manualAssessments: nextPreferences.manualAssessments,
+      manualCoursework: nextPreferences.manualCoursework,
+      manualLectures: nextPreferences.manualLectures,
+    }).then((savedPreferences) => {
+      setAcademyPreferences(savedPreferences);
+    }).catch((error: unknown) => {
+      setCanvasWarning(error instanceof Error ? error.message : dictionary.academyGradesUnavailable);
+    });
+  };
+
+  const courseCountLabel = visibleRows.length === 1
+    ? dictionary.courseOverviewCountLabel
+    : dictionary.courseOverviewCountLabel;
+  const isLoading = loadStatus === 'loading';
+  const toggleExpandedRow = (rowId: string) => {
+    setExpandedRowIds((currentExpandedRowIds) => {
+      const nextExpandedRowIds = new Set(currentExpandedRowIds);
+
+      if (nextExpandedRowIds.has(rowId)) {
+        nextExpandedRowIds.delete(rowId);
+      } else {
+        nextExpandedRowIds.add(rowId);
+      }
+
+      return nextExpandedRowIds;
+    });
+  };
+
+  const handleManualGradeChange = (
+    row: GradeCourseRow,
+    assessments: ManualLecture['assessments'],
+  ) => {
+    if (!row.manualLectureId || !academyPreferences) {
+      return;
+    }
+
+    const summary = calculateManualGradeSummary(assessments);
+    const nextManualLectures = getManualLecturesFromAcademyPreferences(academyPreferences).map((lecture) => (
+      lecture.id === row.manualLectureId ? { ...lecture, assessments } : lecture
+    ));
+    const nextPreferences: AcademyPreferences = {
+      ...academyPreferences,
+      manualLectures: nextManualLectures,
+    };
+
+    setRows((currentRows) => currentRows.map((currentRow) => (
+      currentRow.id === row.id
+        ? { ...currentRow, assessments, score: summary.currentPercent }
+        : currentRow
+    )));
+    setAcademyPreferences(nextPreferences);
+    const saveSequence = manualGradeSaveSequenceRef.current + 1;
+
+    manualGradeSaveSequenceRef.current = saveSequence;
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(academyPreferencesUpdatedEvent, { detail: nextPreferences }));
+    }
+
+    void workspaceApi.saveAcademyPreferences({
+      calendarSettings: nextPreferences.calendarSettings,
+      canvasAssessmentPreferences: nextPreferences.canvasAssessmentPreferences,
+      canvasCourseworkPreferences: nextPreferences.canvasCourseworkPreferences,
+      canvasLecturePreferences: nextPreferences.canvasLecturePreferences,
+      manualAssessments: nextPreferences.manualAssessments,
+      manualCoursework: nextPreferences.manualCoursework,
+      manualLectures: nextManualLectures,
+    }).then((savedPreferences) => {
+      if (manualGradeSaveSequenceRef.current !== saveSequence) {
+        return;
+      }
+
+      setAcademyPreferences(savedPreferences);
+    }).catch((error: unknown) => {
+      setCanvasWarning(error instanceof Error ? error.message : dictionary.academyGradesUnavailable);
+    });
+  };
+
+  const renderCourseDetails = (row: GradeCourseRow) => {
+    const enabledAssessments = row.assessments.filter((assessment) => assessment.enabled);
+    const detail = courseDetails[row.id];
+
+    if (row.source === 'canvas') {
+      if (detail?.status === 'loading') {
+        return (
+          <div className="flex items-center gap-2 rounded-lg border bg-background/70 px-3 py-3 text-sm text-muted-foreground">
+            <LoaderCircle className="size-4 animate-spin" />
+            {dictionary.academyGradesDetailLoading}
+          </div>
+        );
+      }
+
+      if (detail?.status === 'failed') {
+        return (
+          <div className="rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-3 text-sm text-destructive">
+            {detail.error || dictionary.academyGradesDetailUnavailable}
+          </div>
+        );
+      }
+
+      const assignments = detail?.content?.assignments ?? [];
+
+      return assignments.length ? (
+        <div className="rounded-xl border bg-background/70">
+          <div className="border-b px-3 py-2 text-[11px] font-semibold uppercase text-muted-foreground">
+            {dictionary.academyGradesAssignmentGrades}
+          </div>
+          <div className="max-h-[22rem] space-y-2 overflow-y-auto p-2">
+            {assignments.map((assignment) => {
+              const percent = getScorePercentage(assignment.score, assignment.pointsPossible);
+              const visual = getGradeVisual(percent, gradeProgressThresholds);
+              const rawScore = formatRawScore(assignment.score, assignment.pointsPossible);
+              const letterGrade = getExpectedLetterGrade(percent);
+
+              return (
+                <div className="rounded-lg border bg-card p-3 text-sm" key={assignment.id}>
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate font-semibold text-foreground">{assignment.name}</div>
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
+                        {rawScore ? <Badge className="rounded-md" variant="secondary">{rawScore}</Badge> : null}
+                        {assignment.dueAt ? (
+                          <Badge className="rounded-md" variant="outline">{formatDueDate(assignment.dueAt, locale)}</Badge>
+                        ) : null}
+                        {assignment.isSubmitted ? (
+                          <Badge className="rounded-md border-emerald-400/30 bg-emerald-400/10 text-emerald-700 dark:text-emerald-200" variant="outline">
+                            {dictionary.academyGradesSubmitted}
+                          </Badge>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-base font-black text-foreground">{formatPercent(percent)}</div>
+                      <div className="text-xs font-semibold text-muted-foreground">
+                        {letterGrade !== '--' ? letterGrade : assignment.grade || '--'}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted">
+                    <div
+                      className="h-full rounded-full"
+                      style={{
+                        backgroundColor: visual.color,
+                        width: `${visual.normalizedScore}%`,
+                      }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
+        <div className="rounded-lg border bg-background/70 px-3 py-3 text-sm text-muted-foreground">
+          {dictionary.academyGradesNoBreakdown}
+        </div>
+      );
+    }
+
+    return enabledAssessments.length ? (
+      <ManualGradeEditor
+        assessments={row.assessments}
+        gradeProgressThresholds={gradeProgressThresholds}
+        onChange={(assessments) => handleManualGradeChange(row, assessments)}
+      />
+    ) : (
+      <div className="rounded-lg border bg-background/70 px-3 py-3 text-sm text-muted-foreground">
+        {dictionary.academyGradesNoBreakdown}
+      </div>
+    );
+  };
+
+  return (
+    <div className="grid min-h-0 gap-4 pb-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
+          <Select onValueChange={handleSelectSemester} value={normalizeSemesterName(selectedSemester)}>
+            <SelectTrigger className="h-9 w-[164px] rounded-md text-sm font-semibold">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="start">
+              {semesterOptions.map((semester) => (
+                <SelectItem key={semester} value={semester}>
+                  {semester}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <div className="flex min-w-0 items-center gap-2">
+            <BarChart3 className="size-4 shrink-0 text-muted-foreground" />
+            <h1 className="truncate text-xl font-black text-foreground">{dictionary.academyGradesTitle}</h1>
+            <Badge className="rounded-md" variant="secondary">
+              {visibleRows.length} {courseCountLabel}
+            </Badge>
+          </div>
+        </div>
+        <Button disabled={isLoading} onClick={() => void loadGrades()} size="sm" type="button" variant="outline">
+          <RefreshCw className={cn('size-4', isLoading && 'animate-spin')} />
+          {dictionary.academyGradesRefresh}
+        </Button>
+      </div>
+
+      {canvasWarning ? (
+        <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-200">
+          {canvasWarning}
+        </div>
+      ) : null}
+
+      {loadStatus === 'failed' ? (
+        <Card className="border-destructive/20 bg-destructive/10 shadow-none">
+          <CardContent className="py-6 text-sm text-destructive">{loadError || dictionary.academyGradesUnavailable}</CardContent>
+        </Card>
+      ) : isLoading ? (
+        <Card className="shadow-none">
+          <CardContent className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+            <LoaderCircle className="size-4 animate-spin" />
+            {dictionary.academyGradesLoading}
+          </CardContent>
+        </Card>
+      ) : visibleRows.length ? (() => {
+        const renderGradeCard = (row: GradeCourseRow) => {
+            const visual = getGradeVisual(row.score, gradeProgressThresholds);
+            const isExpanded = expandedRowIds.has(row.id);
+            const ringStyle = {
+              background: `conic-gradient(${visual.color} ${visual.normalizedScore}%, rgba(148, 163, 184, 0.22) 0)`,
+            } satisfies CSSProperties;
+
+            return (
+              <Card className="self-start gap-0 overflow-hidden shadow-none" key={row.id}>
+                <button
+                  className="w-full text-left transition hover:bg-muted/25"
+                  onClick={() => toggleExpandedRow(row.id)}
+                  type="button"
+                >
+                  <CardHeader className="grid-cols-[1fr_auto] items-center gap-4">
+                    <div className="flex min-w-0 items-center gap-4">
+                      <div className="grid size-16 shrink-0 place-items-center rounded-full p-1" style={ringStyle}>
+                        <div className="grid size-full place-items-center rounded-full bg-card">
+                          <span className="text-sm font-bold text-foreground">{visual.label}</span>
+                        </div>
+                      </div>
+                      <div className="min-w-0">
+                        <div className="mb-2 flex flex-wrap items-center gap-2">
+                          <Badge className={cn('rounded-md border', badgeColorClasses[row.color])} variant="outline">
+                            <span className={cn('size-2 rounded-full', dotColorClasses[row.color])} />
+                            {row.courseCode}
+                          </Badge>
+                          <Badge className="rounded-md" variant="outline">
+                            {row.source === 'canvas' ? dictionary.academyGradesCanvas : dictionary.academyGradesManual}
+                          </Badge>
+                        </div>
+                        <CardTitle className="truncate">{row.name}</CardTitle>
+                        <CardDescription className="mt-1 flex flex-wrap items-center gap-2">
+                          <span>{row.semester}</span>
+                          {row.status ? <span>{row.status}</span> : null}
+                          {row.credits ? <span>{row.credits} {dictionary.courseOverviewCredits}</span> : null}
+                        </CardDescription>
+                      </div>
+                    </div>
+                    <CardAction className="flex items-center gap-3">
+                      <div className="text-right">
+                        <div className="text-lg font-semibold text-foreground">{formatScore(row)}</div>
+                        <div className="text-xs text-muted-foreground">{dictionary.academyGradesExpectedLetter}</div>
+                      </div>
+                      <ChevronDown className={cn('size-4 text-muted-foreground transition', isExpanded && 'rotate-180')} />
+                    </CardAction>
+                  </CardHeader>
+                  <CardContent className="pb-4">
+                    <div className="h-2 overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full rounded-full"
+                        style={{
+                          backgroundColor: visual.color,
+                          width: `${visual.normalizedScore}%`,
+                        }}
+                      />
+                    </div>
+                  </CardContent>
+                </button>
+                {isExpanded ? (
+                  <div className="border-t bg-muted/20 px-4 py-4">
+                    <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground">
+                      <TrendingUp className="size-4" />
+                      {dictionary.academyGradesDetails}
+                    </div>
+                    {renderCourseDetails(row)}
+                  </div>
+                ) : null}
+              </Card>
+            );
+        };
+        const columns = visibleRows.reduce<[GradeCourseRow[], GradeCourseRow[]]>((nextColumns, row, index) => {
+          nextColumns[index % 2].push(row);
+
+          return nextColumns;
+        }, [[], []]);
+
+        return (
+          <>
+            <div className="grid gap-3 xl:hidden">
+              {visibleRows.map(renderGradeCard)}
+            </div>
+            <div className="hidden items-start gap-3 xl:grid xl:grid-cols-2">
+              {columns.map((columnRows, columnIndex) => (
+                <div className="grid gap-3" key={`grade-column-${columnIndex}`}>
+                  {columnRows.map(renderGradeCard)}
+                </div>
+              ))}
+            </div>
+          </>
+        );
+      })()
+      : (
+        <Card className="shadow-none">
+          <CardContent className="py-8 text-sm text-muted-foreground">{dictionary.academyGradesEmpty}</CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}

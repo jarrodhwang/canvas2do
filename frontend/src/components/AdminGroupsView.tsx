@@ -79,12 +79,26 @@ const permissionDomains: PermissionDomain[] = [
     icon: GraduationCap,
     menus: [
       {
+        id: 'academy-dashboard',
+        label: 'Dashboard',
+        items: [
+          { field: 'access', id: 'academy-dashboard', label: 'Access menu' },
+        ],
+      },
+      {
         id: 'academy-courses',
         label: 'Courses',
         items: [
           { field: 'access', id: 'academy-courses', label: 'Access menu' },
           { field: 'permissions', id: 'academy-view-courses', label: 'View courses' },
           { field: 'permissions', id: 'academy-manage-courses', label: 'Manage courses' },
+        ],
+      },
+      {
+        id: 'academy-grades',
+        label: 'Grades',
+        items: [
+          { field: 'access', id: 'academy-grades', label: 'Access menu' },
         ],
       },
       {
@@ -102,6 +116,13 @@ const permissionDomains: PermissionDomain[] = [
           { field: 'access', id: 'academy-people', label: 'Access menu' },
           { field: 'permissions', id: 'academy-view-people', label: 'View people' },
           { field: 'permissions', id: 'academy-message-people', label: 'Message people' },
+        ],
+      },
+      {
+        id: 'academy-outlook',
+        label: 'Outlook',
+        items: [
+          { field: 'access', id: 'academy-outlook', label: 'Access menu' },
         ],
       },
       {
@@ -132,8 +153,64 @@ const permissionDomains: PermissionDomain[] = [
         id: 'workspace-calendar',
         label: 'Calendar',
         items: [
-          { field: 'access', id: 'workspace', label: 'Access workspace' },
+          { field: 'access', id: 'workspace-calendar', label: 'Access menu' },
           { field: 'permissions', id: 'workspace-manage-calendar', label: 'Manage calendar' },
+        ],
+      },
+      {
+        id: 'workspace-board',
+        label: 'Board',
+        items: [
+          { field: 'access', id: 'workspace-board', label: 'Access menu' },
+        ],
+      },
+      {
+        id: 'workspace-timeline',
+        label: 'Timeline',
+        items: [
+          { field: 'access', id: 'workspace-timeline', label: 'Access menu' },
+        ],
+      },
+      {
+        id: 'workspace-issues',
+        label: 'Issues',
+        items: [
+          { field: 'access', id: 'workspace-issues', label: 'Access menu' },
+        ],
+      },
+      {
+        id: 'workspace-bugs',
+        label: 'Bugs',
+        items: [
+          { field: 'access', id: 'workspace-bugs', label: 'Access menu' },
+        ],
+      },
+      {
+        id: 'workspace-features',
+        label: 'Feature Ideas',
+        items: [
+          { field: 'access', id: 'workspace-features', label: 'Access menu' },
+        ],
+      },
+      {
+        id: 'workspace-customers',
+        label: 'Customers',
+        items: [
+          { field: 'access', id: 'workspace-customers', label: 'Access menu' },
+        ],
+      },
+      {
+        id: 'workspace-colleagues',
+        label: 'Colleagues',
+        items: [
+          { field: 'access', id: 'workspace-colleagues', label: 'Access menu' },
+        ],
+      },
+      {
+        id: 'workspace-categories',
+        label: 'Categories',
+        items: [
+          { field: 'access', id: 'workspace-categories', label: 'Access menu' },
         ],
       },
       {
@@ -152,6 +229,20 @@ const permissionDomains: PermissionDomain[] = [
           { field: 'access', id: 'workspace-chat', label: 'Chat' },
           { field: 'permissions', id: 'workspace-manage-email', label: 'Manage email' },
           { field: 'permissions', id: 'workspace-manage-chat', label: 'Manage chat' },
+        ],
+      },
+      {
+        id: 'workspace-toptrack',
+        label: 'TopTrack',
+        items: [
+          { field: 'access', id: 'workspace-toptrack', label: 'Access menu' },
+        ],
+      },
+      {
+        id: 'workspace-links',
+        label: 'Links',
+        items: [
+          { field: 'access', id: 'workspace-links', label: 'Access menu' },
         ],
       },
       {

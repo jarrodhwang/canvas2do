@@ -43,7 +43,7 @@ export function LoginPage({ authMessage, isCheckingSession, onThemeChange, theme
         return;
       }
 
-      window.location.assign(workspaceApi.getGoogleLoginUrl('/'));
+      window.location.assign(workspaceApi.getGoogleLoginUrl('/', { forceConsent: true, forceLogin: true }));
     } catch {
       setLoginError(dictionary.googleOAuthNotConfigured);
       setIsStartingLogin(false);

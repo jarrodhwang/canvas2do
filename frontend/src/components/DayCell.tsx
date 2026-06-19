@@ -225,8 +225,9 @@ export const DayCell = forwardRef<HTMLButtonElement, DayCellProps>(function DayC
         <div className="min-h-0 flex-1 space-y-0.5 overflow-hidden pr-0.5">
           {desktopEvents.map((event) => {
             const isStudyEvent = event.type.toLowerCase() === 'study';
+            const isDotEvent = event.displayStyle === 'dot' || isStudyEvent;
 
-            return isStudyEvent ? (
+            return isDotEvent ? (
               <span
                 className="flex min-h-[18px] min-w-0 items-center gap-1.5 px-0.5 py-0.5 text-[10px] font-extrabold leading-none text-foreground"
                 key={event.id}

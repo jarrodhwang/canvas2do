@@ -22,8 +22,10 @@ import { Switch } from './ui/switch';
 import { WorkspaceIcon } from './WorkspaceIcon';
 
 interface TopBarProps {
+  academyLogoSrc?: string;
+  allowedModeIds?: string[];
   isTopBarCollapsed?: boolean;
-  onBeforeModeChange?: (modeId: string) => void;
+  onBeforeModeChange?: (modeId: string) => boolean | void;
   onOpenAddItem: () => void;
   onToggleTopBarCollapsed?: () => void;
   onThemeChange: (theme: AppTheme) => void;
@@ -31,6 +33,8 @@ interface TopBarProps {
 }
 
 export function TopBar({
+  academyLogoSrc,
+  allowedModeIds,
   isTopBarCollapsed = false,
   onBeforeModeChange,
   onOpenAddItem,
@@ -44,12 +48,18 @@ export function TopBar({
   const [pendingCanvasModeId, setPendingCanvasModeId] = useState<string | null>(null);
   const isDark = theme === 'dark';
   const activeModeName = translateModeName(activeMode.id, activeMode.displayName);
+  const allowedModeIdSet = allowedModeIds ? new Set(allowedModeIds) : null;
+  const visibleAllowedModes = allowedModeIdSet
+    ? visibleModes.filter((mode) => allowedModeIdSet.has(mode.id))
+    : visibleModes;
   const activeModePurpose = translateModePurpose(activeMode.id, activeMode.purpose);
   const isAcademyMode = activeMode.id === 'academy';
   const isAdminConsoleMode = activeMode.id === 'admin-console';
+  const showThemeControl = !isAcademyMode;
   const fallbackBrandLogoSrc = '/brand/INCOS%20New%20Logo_Crop.png';
+  const defaultAcademyLogoSrc = '/brand/SFU_block_colour_rgb.png';
   const brandLogoAlt = isAcademyMode ? 'SFU' : 'INCOS';
-  const brandLogoSrc = isAcademyMode ? '/brand/SFU_block_colour_rgb.png' : fallbackBrandLogoSrc;
+  const brandLogoSrc = isAcademyMode ? (academyLogoSrc || defaultAcademyLogoSrc) : fallbackBrandLogoSrc;
   const brandTitle = isAcademyMode ? dictionary.academyManagerName : dictionary.workspaceName;
   const canCollapseTopBar = (isAcademyMode || isAdminConsoleMode) && Boolean(onToggleTopBarCollapsed);
   const showCollapsedTopBar = canCollapseTopBar && isTopBarCollapsed;
@@ -59,7 +69,10 @@ export function TopBar({
       : `${dictionary.searchPrefix} ${activeModeName.toLowerCase()} ${dictionary.searchSuffix}...`;
 
   const activateAcademyWhenCanvasConnected = useCallback(async () => {
-    onBeforeModeChange?.('academy');
+    if (onBeforeModeChange?.('academy') === false) {
+      return false;
+    }
+
     setActiveModeId('academy');
 
     try {
@@ -82,8 +95,15 @@ export function TopBar({
   }, [onBeforeModeChange, setActiveModeId]);
 
   const handleModeChange = async (modeId: string) => {
+    if (allowedModeIdSet && !allowedModeIdSet.has(modeId)) {
+      return;
+    }
+
     if (modeId !== 'academy') {
-      onBeforeModeChange?.(modeId);
+      if (onBeforeModeChange?.(modeId) === false) {
+        return;
+      }
+
       setActiveModeId(modeId);
       setPendingCanvasModeId(null);
       setIsCanvasDialogOpen(false);
@@ -123,6 +143,15 @@ export function TopBar({
               alt={brandLogoAlt}
               className="h-7 w-auto shrink-0 object-contain"
               key={brandLogoSrc}
+              onError={(event) => {
+                if (event.currentTarget.dataset.fallbackApplied !== 'true') {
+                  event.currentTarget.dataset.fallbackApplied = 'true';
+                  event.currentTarget.src = isAcademyMode ? defaultAcademyLogoSrc : fallbackBrandLogoSrc;
+                  return;
+                }
+
+                event.currentTarget.style.visibility = 'hidden';
+              }}
               src={brandLogoSrc}
             />
             <span className="truncate text-sm font-black">{brandTitle}</span>
@@ -154,7 +183,7 @@ export function TopBar({
               onError={(event) => {
                 if (event.currentTarget.dataset.fallbackApplied !== 'true') {
                   event.currentTarget.dataset.fallbackApplied = 'true';
-                  event.currentTarget.src = fallbackBrandLogoSrc;
+                  event.currentTarget.src = isAcademyMode ? defaultAcademyLogoSrc : fallbackBrandLogoSrc;
                   return;
                 }
 
@@ -173,7 +202,7 @@ export function TopBar({
           <div className="max-[520px]:order-3 max-[520px]:w-full">
             <ModeSwitch
               activeModeId={activeModeId}
-              modes={visibleModes}
+              modes={visibleAllowedModes}
               onModeChange={(modeId) => {
                 void handleModeChange(modeId);
               }}
@@ -206,26 +235,30 @@ export function TopBar({
                 </SelectContent>
               </Select>
             </div>
-            <div className="hidden items-center gap-2 rounded-lg border bg-muted/60 px-3 py-2 md:flex">
-              <Sun aria-hidden="true" className="text-muted-foreground" size={15} />
-              <Switch
-                aria-label={dictionary.darkMode}
-                checked={isDark}
-                onCheckedChange={(checked) => onThemeChange(checked ? 'dark' : 'light')}
-              />
-              <Moon aria-hidden="true" className={isDark ? 'text-primary' : 'text-muted-foreground'} size={15} />
-              <Label className="sr-only">{dictionary.darkMode}</Label>
-            </div>
-            <Button
-              aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-              className="md:hidden max-[520px]:size-8 max-[520px]:rounded-md"
-              onClick={() => onThemeChange(isDark ? 'light' : 'dark')}
-              size="icon-lg"
-              type="button"
-              variant="outline"
-            >
-              {isDark ? <Moon aria-hidden="true" /> : <Sun aria-hidden="true" />}
-            </Button>
+            {showThemeControl ? (
+              <>
+                <div className="hidden items-center gap-2 rounded-lg border bg-muted/60 px-3 py-2 md:flex">
+                  <Sun aria-hidden="true" className="text-muted-foreground" size={15} />
+                  <Switch
+                    aria-label={dictionary.darkMode}
+                    checked={isDark}
+                    onCheckedChange={(checked) => onThemeChange(checked ? 'dark' : 'light')}
+                  />
+                  <Moon aria-hidden="true" className={isDark ? 'text-primary' : 'text-muted-foreground'} size={15} />
+                  <Label className="sr-only">{dictionary.darkMode}</Label>
+                </div>
+                <Button
+                  aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+                  className="md:hidden max-[520px]:size-8 max-[520px]:rounded-md"
+                  onClick={() => onThemeChange(isDark ? 'light' : 'dark')}
+                  size="icon-lg"
+                  type="button"
+                  variant="outline"
+                >
+                  {isDark ? <Moon aria-hidden="true" /> : <Sun aria-hidden="true" />}
+                </Button>
+              </>
+            ) : null}
             <Button
               className="h-10 rounded-lg bg-primary px-4 font-black text-primary-foreground shadow-none hover:bg-primary/90 max-[520px]:hidden"
               onClick={onOpenAddItem}

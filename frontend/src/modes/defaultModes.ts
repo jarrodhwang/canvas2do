@@ -28,6 +28,7 @@ export const defaultModeConfigs: WorkspaceModeConfig[] = [
         items: [
           { id: 'dashboard', label: 'Dashboard', icon: 'layout-dashboard' },
           { id: 'courses', label: 'Courses', icon: 'book-open' },
+          { id: 'grades', label: 'Grades', icon: 'bar-chart-3' },
           { id: 'inbox', label: 'Inbox', icon: 'inbox', feature: 'integrations' },
           { id: 'people', label: 'People', icon: 'users' },
           { id: 'outlook', label: 'Outlook', icon: 'outlook', feature: 'integrations' },

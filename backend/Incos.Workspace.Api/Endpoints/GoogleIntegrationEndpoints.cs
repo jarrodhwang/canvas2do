@@ -87,14 +87,27 @@ public static class GoogleIntegrationEndpoints
         "academy",
         "academy-dashboard",
         "academy-courses",
+        "academy-grades",
         "academy-inbox",
         "academy-people",
+        "academy-outlook",
         "academy-settings-page",
         "workspace",
         "workspace-dashboard",
+        "workspace-calendar",
+        "workspace-board",
+        "workspace-timeline",
+        "workspace-issues",
+        "workspace-bugs",
+        "workspace-features",
+        "workspace-customers",
+        "workspace-colleagues",
+        "workspace-categories",
         "workspace-drive",
         "workspace-email",
         "workspace-chat",
+        "workspace-toptrack",
+        "workspace-links",
         "admin-console",
         "admin-dashboard",
         "admin-users",
@@ -160,14 +173,18 @@ public static class GoogleIntegrationEndpoints
 
             if (IsGoogleIntegrationStatusRequest(httpContext) ||
                 IsGoogleIntegrationConnectRequest(httpContext) ||
-                CanUseGoogleWorkspaceData(httpContext.User, httpContext.RequestServices.GetRequiredService<IConfiguration>()))
+                await CanUseGoogleApiDataAsync(
+                    httpContext.User,
+                    httpContext.RequestServices.GetRequiredService<IConfiguration>(),
+                    httpContext.RequestServices.GetRequiredService<IncosWorkspaceDbContext>(),
+                    httpContext.RequestAborted))
             {
                 return await next(context);
             }
 
             return Results.Problem(
-                title: "Google Workspace data is disabled.",
-                detail: "INCOS Google Workspace data is only available to incos.co.kr accounts.",
+                title: "Google API access is disabled.",
+                detail: "Google API access is not enabled for your account. Ask an administrator to enable API access in Admin Console.",
                 statusCode: StatusCodes.Status403Forbidden);
         });
 
@@ -177,7 +194,7 @@ public static class GoogleIntegrationEndpoints
                 IConfiguration configuration,
                 IncosWorkspaceDbContext db) =>
             {
-                if (!CanUseGoogleWorkspaceData(context.User, configuration))
+                if (!await CanUseGoogleApiDataAsync(context.User, configuration, db, context.RequestAborted))
                 {
                     return Results.Ok(new[]
                     {
@@ -199,17 +216,23 @@ public static class GoogleIntegrationEndpoints
                     context.RequestAborted);
                 var storedToken = await GetStoredGoogleOAuthTokenAsync(db, context.User, context.RequestAborted);
 
-                AddGrantedScopes(grantedScopes, await context.GetTokenAsync("scope"));
-                AddGrantedScopes(grantedScopes, storedToken?.Scope);
-
                 if (!string.IsNullOrWhiteSpace(accessToken))
                 {
-                    AddGrantedScopes(
-                        grantedScopes,
-                        await GetGoogleAccessTokenScopesAsync(
+                    var tokenScopes = await GetGoogleAccessTokenScopesAsync(
                             httpClientFactory,
                             accessToken,
-                            context.RequestAborted));
+                            context.RequestAborted);
+
+                    if (tokenScopes.Count > 0)
+                    {
+                        grantedScopes = tokenScopes;
+                    }
+                }
+
+                if (grantedScopes.Count == 0)
+                {
+                    AddGrantedScopes(grantedScopes, await context.GetTokenAsync("scope"));
+                    AddGrantedScopes(grantedScopes, storedToken?.Scope);
                 }
 
                 return Results.Ok(new[]
@@ -246,7 +269,12 @@ public static class GoogleIntegrationEndpoints
             })
             .WithName("GetGoogleIntegrationStatuses");
 
-        google.MapGet("/integrations/{provider}/connect", (string provider) =>
+        google.MapGet("/integrations/{provider}/connect", async (
+                HttpContext context,
+                string provider,
+                IConfiguration configuration,
+                IncosWorkspaceDbContext db,
+                CancellationToken cancellationToken) =>
             {
                 var returnUrl = provider switch
                 {
@@ -255,8 +283,23 @@ public static class GoogleIntegrationEndpoints
                     "google_drive" => "/?integration=google_drive",
                     _ => "/",
                 };
+
+                if (context.User.Identity?.IsAuthenticated == true &&
+                    !await CanUseGoogleApiDataAsync(context.User, configuration, db, cancellationToken))
+                {
+                    return Results.Redirect(QueryHelpers.AddQueryString(
+                        returnUrl,
+                        "authError",
+                        "Google API access is not enabled for your account. Ask an administrator to enable API access in Admin Console."));
+                }
+
+                if (context.User.Identity?.IsAuthenticated == true)
+                {
+                    await DeleteStoredGoogleOAuthTokenAsync(db, context.User, cancellationToken);
+                }
+
                 var redirectUrl =
-                    $"/api/auth/google/login?returnUrl={Uri.EscapeDataString(returnUrl)}&forceConsent=true&forceLogin=true";
+                    $"/api/auth/google/workspace/login?returnUrl={Uri.EscapeDataString(returnUrl)}&forceConsent=true&forceLogin=true";
 
                 return Results.Redirect(redirectUrl);
             })
@@ -322,19 +365,27 @@ public static class GoogleIntegrationEndpoints
                             .Where(token => token.UserKey == user.Email || token.Email == user.Email)
                             .ExecuteDeleteAsync(cancellationToken);
                     }
-                    else if (nextStatus == "active")
-                    {
-                        user.ApiAccessEnabled = true;
-                    }
                     else if (nextStatus == "pending")
                     {
                         user.ApiAccessEnabled = false;
                     }
                 }
 
-                if (request.ApiAccessEnabled.HasValue && string.IsNullOrWhiteSpace(nextStatus))
+                if (request.ApiAccessEnabled.HasValue)
                 {
-                    user.ApiAccessEnabled = request.ApiAccessEnabled.Value && user.Status != "inactive";
+                    user.ApiAccessEnabled = request.ApiAccessEnabled.Value &&
+                        user.Status == "active" &&
+                        !user.IsDirectorySuspended;
+                }
+                else if (user.Status != "active" || user.IsDirectorySuspended)
+                {
+                    user.ApiAccessEnabled = false;
+                }
+
+                if (string.Equals(user.Email, MainAdminEmail, StringComparison.OrdinalIgnoreCase))
+                {
+                    user.Status = "active";
+                    user.ApiAccessEnabled = true;
                 }
 
                 user.UpdatedAt = now;
@@ -621,10 +672,7 @@ public static class GoogleIntegrationEndpoints
                     }
                     catch (GoogleApiRequestException exception)
                     {
-                        return Results.Problem(
-                            title: exception.Title,
-                            detail: exception.Detail,
-                            statusCode: exception.StatusCode);
+                        return CreateGoogleApiProblem(exception);
                     }
                 }
 
@@ -791,10 +839,7 @@ public static class GoogleIntegrationEndpoints
                 }
                 catch (GoogleApiRequestException exception)
                 {
-                    return Results.Problem(
-                        title: exception.Title,
-                        detail: exception.Detail,
-                        statusCode: exception.StatusCode);
+                    return CreateGoogleApiProblem(exception);
                 }
             })
             .WithName("GetGoogleDrivePermissions");
@@ -959,10 +1004,7 @@ public static class GoogleIntegrationEndpoints
                 }
                 catch (GoogleApiRequestException exception)
                 {
-                    return Results.Problem(
-                        title: exception.Title,
-                        detail: exception.Detail,
-                        statusCode: exception.StatusCode);
+                    return CreateGoogleApiProblem(exception);
                 }
             })
             .WithName("GetGoogleGmailMessages");
@@ -1000,10 +1042,7 @@ public static class GoogleIntegrationEndpoints
                 }
                 catch (GoogleApiRequestException exception)
                 {
-                    return Results.Problem(
-                        title: exception.Title,
-                        detail: exception.Detail,
-                        statusCode: exception.StatusCode);
+                    return CreateGoogleApiProblem(exception);
                 }
             })
             .WithName("GetGoogleGmailMessage");
@@ -1041,10 +1080,7 @@ public static class GoogleIntegrationEndpoints
                 }
                 catch (GoogleApiRequestException exception)
                 {
-                    return Results.Problem(
-                        title: exception.Title,
-                        detail: exception.Detail,
-                        statusCode: exception.StatusCode);
+                    return CreateGoogleApiProblem(exception);
                 }
             })
             .WithName("MarkGoogleGmailMessageRead");
@@ -1082,10 +1118,7 @@ public static class GoogleIntegrationEndpoints
                 }
                 catch (GoogleApiRequestException exception)
                 {
-                    return Results.Problem(
-                        title: exception.Title,
-                        detail: exception.Detail,
-                        statusCode: exception.StatusCode);
+                    return CreateGoogleApiProblem(exception);
                 }
             })
             .WithName("MarkGoogleGmailMessageUnread");
@@ -1126,10 +1159,7 @@ public static class GoogleIntegrationEndpoints
                 }
                 catch (GoogleApiRequestException exception)
                 {
-                    return Results.Problem(
-                        title: exception.Title,
-                        detail: exception.Detail,
-                        statusCode: exception.StatusCode);
+                    return CreateGoogleApiProblem(exception);
                 }
             })
             .WithName("ModifyGoogleGmailMessageLabels");
@@ -1191,10 +1221,7 @@ public static class GoogleIntegrationEndpoints
                 }
                 catch (GoogleApiRequestException exception)
                 {
-                    return Results.Problem(
-                        title: exception.Title,
-                        detail: exception.Detail,
-                        statusCode: exception.StatusCode);
+                    return CreateGoogleApiProblem(exception);
                 }
             })
             .WithName("SendGoogleGmailMessage");
@@ -1388,10 +1415,7 @@ public static class GoogleIntegrationEndpoints
                 }
                 catch (GoogleApiRequestException exception)
                 {
-                    return Results.Problem(
-                        title: exception.Title,
-                        detail: exception.Detail,
-                        statusCode: exception.StatusCode);
+                    return CreateGoogleApiProblem(exception);
                 }
             })
             .WithName("GetGoogleGmailAttachment");
@@ -1493,10 +1517,7 @@ public static class GoogleIntegrationEndpoints
                 }
                 catch (GoogleApiRequestException exception)
                 {
-                    return Results.Problem(
-                        title: exception.Title,
-                        detail: exception.Detail,
-                        statusCode: exception.StatusCode);
+                    return CreateGoogleApiProblem(exception);
                 }
             })
             .WithName("GetGoogleChatSpaces");
@@ -1537,10 +1558,7 @@ public static class GoogleIntegrationEndpoints
                 }
                 catch (GoogleApiRequestException exception)
                 {
-                    return Results.Problem(
-                        title: exception.Title,
-                        detail: exception.Detail,
-                        statusCode: exception.StatusCode);
+                    return CreateGoogleApiProblem(exception);
                 }
             })
             .WithName("GetGoogleChatAvatar");
@@ -1595,10 +1613,7 @@ public static class GoogleIntegrationEndpoints
                 }
                 catch (GoogleApiRequestException exception)
                 {
-                    return Results.Problem(
-                        title: exception.Title,
-                        detail: exception.Detail,
-                        statusCode: exception.StatusCode);
+                    return CreateGoogleApiProblem(exception);
                 }
             })
             .WithName("GetGoogleChatAttachmentPreview");
@@ -1643,10 +1658,7 @@ public static class GoogleIntegrationEndpoints
                 }
                 catch (GoogleApiRequestException exception)
                 {
-                    return Results.Problem(
-                        title: exception.Title,
-                        detail: exception.Detail,
-                        statusCode: exception.StatusCode);
+                    return CreateGoogleApiProblem(exception);
                 }
             })
             .WithName("GetGoogleChatAttachmentContent");
@@ -1828,7 +1840,10 @@ public static class GoogleIntegrationEndpoints
         user.PhotoUrl = string.IsNullOrWhiteSpace(photoUrl) ? user.PhotoUrl : photoUrl;
         user.HostedDomain = string.IsNullOrWhiteSpace(hostedDomain) ? user.HostedDomain : hostedDomain;
         user.LastLoginAt = now;
-        user.ApiAccessEnabled = string.Equals(user.Status, "active", StringComparison.OrdinalIgnoreCase);
+        if (!string.Equals(user.Status, "active", StringComparison.OrdinalIgnoreCase))
+        {
+            user.ApiAccessEnabled = false;
+        }
         user.UpdatedAt = now;
 
         await db.SaveChangesAsync(cancellationToken);
@@ -2113,7 +2128,7 @@ public static class GoogleIntegrationEndpoints
             .AnyAsync(cancellationToken);
     }
 
-    private static async Task EnsureDefaultAdminGroupAsync(
+    public static async Task EnsureDefaultAdminGroupAsync(
         IncosWorkspaceDbContext db,
         CancellationToken cancellationToken)
     {
@@ -2341,33 +2356,45 @@ public static class GoogleIntegrationEndpoints
         IConfiguration configuration,
         CancellationToken cancellationToken)
     {
-        var accessToken = await context.GetTokenAsync("access_token");
-        var expiresAt = await context.GetTokenAsync("expires_at");
-        var shouldRefresh = ShouldRefreshAccessToken(accessToken, expiresAt);
-
-        if (!shouldRefresh)
-        {
-            return accessToken;
-        }
-
         var db = context.RequestServices.GetService<IncosWorkspaceDbContext>();
         var storedToken = db is null
             ? null
             : await GetStoredGoogleOAuthTokenAsync(db, context.User, cancellationToken);
+        var canUseStoredWorkspaceToken = CanUseStoredGoogleWorkspaceToken(storedToken);
+        var cookieScopes = await context.GetTokenAsync("scope");
+        var canUseCookieWorkspaceToken = HasAnyGoogleWorkspaceScope(cookieScopes);
 
-        if (storedToken is not null &&
+        if (storedToken is not null && !canUseStoredWorkspaceToken && db is not null)
+        {
+            await DeleteStoredGoogleOAuthTokenAsync(db, context.User, cancellationToken);
+        }
+
+        if (canUseStoredWorkspaceToken &&
             !ShouldRefreshAccessToken(
-                storedToken.AccessToken,
+                storedToken!.AccessToken,
                 storedToken.AccessTokenExpiresAt?.ToString("o", CultureInfo.InvariantCulture)))
         {
             await StoreGoogleTokenInCookieAsync(context, storedToken);
             return storedToken.AccessToken;
         }
 
-        var refreshToken = await context.GetTokenAsync("refresh_token");
-        refreshToken = string.IsNullOrWhiteSpace(refreshToken)
+        var accessToken = await context.GetTokenAsync("access_token");
+        var expiresAt = await context.GetTokenAsync("expires_at");
+        var shouldRefresh = ShouldRefreshAccessToken(accessToken, expiresAt);
+
+        if (!shouldRefresh && !canUseStoredWorkspaceToken && canUseCookieWorkspaceToken)
+        {
+            return accessToken;
+        }
+
+        if (!canUseStoredWorkspaceToken && !canUseCookieWorkspaceToken)
+        {
+            return null;
+        }
+
+        var refreshToken = canUseStoredWorkspaceToken
             ? storedToken?.RefreshToken
-            : refreshToken;
+            : await context.GetTokenAsync("refresh_token");
 
         if (string.IsNullOrWhiteSpace(refreshToken))
         {
@@ -2398,6 +2425,17 @@ public static class GoogleIntegrationEndpoints
             return null;
         }
 
+        var refreshedScope = GetRefreshedGoogleWorkspaceScope(
+            refreshedToken.Scope,
+            canUseStoredWorkspaceToken ? storedToken?.Scope : cookieScopes);
+
+        if (!HasAnyGoogleWorkspaceScope(refreshedScope))
+        {
+            return null;
+        }
+
+        refreshedToken = refreshedToken with { Scope = refreshedScope };
+
         await StoreRefreshedGoogleTokenAsync(context, refreshedToken, refreshToken);
         if (db is not null)
         {
@@ -2410,6 +2448,36 @@ public static class GoogleIntegrationEndpoints
         }
 
         return refreshedToken.AccessToken;
+    }
+
+    private static bool CanUseStoredGoogleWorkspaceToken(GoogleOAuthToken? storedToken)
+    {
+        if (storedToken is null || string.IsNullOrWhiteSpace(storedToken.AccessToken))
+        {
+            return false;
+        }
+
+        return HasAnyGoogleWorkspaceScope(storedToken.Scope);
+    }
+
+    private static bool HasAnyGoogleWorkspaceScope(string? scopes) =>
+        !string.IsNullOrWhiteSpace(scopes) &&
+        scopes
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(scope => GoogleWorkspaceScopes.All.Contains(scope, StringComparer.OrdinalIgnoreCase));
+
+    private static string? GetRefreshedGoogleWorkspaceScope(
+        string? refreshedScope,
+        string? previousScope)
+    {
+        if (HasAnyGoogleWorkspaceScope(refreshedScope))
+        {
+            return refreshedScope;
+        }
+
+        return HasAnyGoogleWorkspaceScope(previousScope)
+            ? previousScope
+            : null;
     }
 
     private static async Task<HashSet<string>> GetGoogleAccessTokenScopesAsync(
@@ -2526,21 +2594,7 @@ public static class GoogleIntegrationEndpoints
         }
 
         var properties = authenticateResult.Properties ?? new AuthenticationProperties();
-        var tokens = properties.GetTokens().ToList();
-        var expiresAt = DateTimeOffset.UtcNow
-            .AddSeconds(Math.Max(60, refreshedToken.ExpiresIn - 60))
-            .ToString("o", CultureInfo.InvariantCulture);
-
-        StoreToken(tokens, "access_token", refreshedToken.AccessToken);
-        StoreToken(tokens, "expires_at", expiresAt);
-        StoreToken(tokens, "refresh_token", refreshedToken.RefreshToken ?? previousRefreshToken);
-
-        if (!string.IsNullOrWhiteSpace(refreshedToken.Scope))
-        {
-            StoreToken(tokens, "scope", refreshedToken.Scope);
-        }
-
-        properties.StoreTokens(tokens);
+        RemoveGoogleOAuthTokens(properties);
         await context.SignInAsync(
             CookieAuthenticationDefaults.AuthenticationScheme,
             authenticateResult.Principal,
@@ -2562,6 +2616,21 @@ public static class GoogleIntegrationEndpoints
                 token => token.UserKey.ToLower() == userKey ||
                          (token.Email != null && token.Email.ToLower() == email),
                 cancellationToken);
+    }
+
+    private static async Task DeleteStoredGoogleOAuthTokenAsync(
+        IncosWorkspaceDbContext db,
+        ClaimsPrincipal user,
+        CancellationToken cancellationToken)
+    {
+        await EnsureGoogleOAuthTokensTableAsync(db, cancellationToken);
+        var userKey = GetCurrentUserKey(user);
+        var email = user.FindFirstValue(ClaimTypes.Email)?.Trim().ToLowerInvariant();
+
+        await db.GoogleOAuthTokens
+            .Where(token => token.UserKey.ToLower() == userKey ||
+                            (token.Email != null && token.Email.ToLower() == email))
+            .ExecuteDeleteAsync(cancellationToken);
     }
 
     private static async Task StoreRefreshedGoogleTokenAsync(
@@ -2616,52 +2685,30 @@ public static class GoogleIntegrationEndpoints
         }
 
         var properties = authenticateResult.Properties ?? new AuthenticationProperties();
-        var tokens = properties.GetTokens().ToList();
-
-        StoreToken(tokens, "access_token", storedToken.AccessToken);
-
-        if (storedToken.AccessTokenExpiresAt.HasValue)
-        {
-            StoreToken(
-                tokens,
-                "expires_at",
-                storedToken.AccessTokenExpiresAt.Value.ToString("o", CultureInfo.InvariantCulture));
-        }
-
-        if (!string.IsNullOrWhiteSpace(storedToken.RefreshToken))
-        {
-            StoreToken(tokens, "refresh_token", storedToken.RefreshToken);
-        }
-
-        if (!string.IsNullOrWhiteSpace(storedToken.Scope))
-        {
-            StoreToken(tokens, "scope", storedToken.Scope);
-        }
-
+        var configuration = context.RequestServices.GetRequiredService<IConfiguration>();
         properties.IsPersistent = true;
-        properties.ExpiresUtc = DateTimeOffset.UtcNow.AddDays(14);
-        properties.StoreTokens(tokens);
+        properties.ExpiresUtc = DateTimeOffset.UtcNow.Add(GetWorkspaceSessionDuration(configuration));
+        RemoveGoogleOAuthTokens(properties);
         await context.SignInAsync(
             CookieAuthenticationDefaults.AuthenticationScheme,
             authenticateResult.Principal,
             properties);
     }
 
-    private static void StoreToken(List<AuthenticationToken> tokens, string name, string value)
+    private static void RemoveGoogleOAuthTokens(AuthenticationProperties properties)
     {
-        var token = tokens.FirstOrDefault(currentToken => currentToken.Name == name);
+        var tokens = properties.GetTokens()
+            .Where(token => token.Name is not "access_token" and not "refresh_token" and not "id_token" and not "expires_at" and not "token_type" and not "scope")
+            .ToArray();
 
-        if (token is null)
-        {
-            tokens.Add(new AuthenticationToken
-            {
-                Name = name,
-                Value = value,
-            });
-            return;
-        }
+        properties.StoreTokens(tokens);
+    }
 
-        token.Value = value;
+    private static TimeSpan GetWorkspaceSessionDuration(IConfiguration configuration)
+    {
+        var hours = configuration.GetValue<double?>("Authentication:Google:WorkspaceSessionHours") ?? 8;
+
+        return TimeSpan.FromHours(Math.Clamp(hours, 1, 24 * 14));
     }
 
     private static bool IsGoogleIntegrationStatusRequest(HttpContext context) =>
@@ -2683,6 +2730,35 @@ public static class GoogleIntegrationEndpoints
                 string.Equals(hostedDomain, workspaceDataDomain, StringComparison.OrdinalIgnoreCase)) ||
                (!string.IsNullOrWhiteSpace(email) &&
                 email.EndsWith($"@{workspaceDataDomain}", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static async Task<bool> CanUseGoogleApiDataAsync(
+        ClaimsPrincipal user,
+        IConfiguration configuration,
+        IncosWorkspaceDbContext db,
+        CancellationToken cancellationToken)
+    {
+        if (!CanUseGoogleWorkspaceData(user, configuration))
+        {
+            return false;
+        }
+
+        var email = user.FindFirstValue(ClaimTypes.Email)?.Trim().ToLowerInvariant();
+
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            return false;
+        }
+
+        await EnsureAdminUsersTableAsync(db, cancellationToken);
+        var adminUser = await db.AdminUsers
+            .AsNoTracking()
+            .FirstOrDefaultAsync(currentUser => currentUser.Email == email, cancellationToken);
+
+        return adminUser is not null &&
+            adminUser.ApiAccessEnabled &&
+            !adminUser.IsDirectorySuspended &&
+            string.Equals(adminUser.Status, "active", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string GetGoogleWorkspaceDataDomain(IConfiguration configuration)
@@ -2707,6 +2783,44 @@ public static class GoogleIntegrationEndpoints
             "disabled",
             string.Empty,
             []);
+
+    private static IResult CreateGoogleApiProblem(GoogleApiRequestException exception)
+    {
+        if (IsInsufficientGoogleScope(exception))
+        {
+            var label = exception.Title.Contains("Chat", StringComparison.OrdinalIgnoreCase)
+                ? "Google Chat"
+                : exception.Title.Contains("Drive", StringComparison.OrdinalIgnoreCase)
+                    ? "Google Drive"
+                    : exception.Title.Contains("Gmail", StringComparison.OrdinalIgnoreCase)
+                        ? "Gmail"
+                        : "Google";
+
+            return Results.Problem(
+                title: $"{label} is not connected.",
+                detail: $"Reconnect {label} to grant the required Google scopes.",
+                statusCode: StatusCodes.Status409Conflict);
+        }
+
+        return Results.Problem(
+            title: exception.Title,
+            detail: exception.Detail,
+            statusCode: exception.StatusCode);
+    }
+
+    private static bool IsInsufficientGoogleScope(GoogleApiRequestException exception)
+    {
+        if (exception.StatusCode is not StatusCodes.Status401Unauthorized and not StatusCodes.Status403Forbidden)
+        {
+            return false;
+        }
+
+        return exception.Detail.Contains("insufficient authentication scopes", StringComparison.OrdinalIgnoreCase) ||
+            exception.Detail.Contains("ACCESS_TOKEN_SCOPE_INSUFFICIENT", StringComparison.OrdinalIgnoreCase) ||
+            exception.Detail.Contains("insufficientPermissions", StringComparison.OrdinalIgnoreCase) ||
+            (exception.Detail.Contains("scope", StringComparison.OrdinalIgnoreCase) &&
+             exception.Detail.Contains("insufficient", StringComparison.OrdinalIgnoreCase));
+    }
 
     private static GoogleIntegrationStatusDto CreateStatus(
         string provider,

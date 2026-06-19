@@ -59,6 +59,7 @@ export function TopBar({
   const fallbackBrandLogoSrc = '/brand/INCOS%20New%20Logo_Crop.png';
   const defaultAcademyLogoSrc = '/brand/SFU_block_colour_rgb.png';
   const brandLogoAlt = isAcademyMode ? 'SFU' : 'INCOS';
+  const isAcademyLogoHidden = isAcademyMode && academyLogoSrc === 'none';
   const brandLogoSrc = isAcademyMode ? (academyLogoSrc || defaultAcademyLogoSrc) : fallbackBrandLogoSrc;
   const brandTitle = isAcademyMode ? dictionary.academyManagerName : dictionary.workspaceName;
   const canCollapseTopBar = (isAcademyMode || isAdminConsoleMode) && Boolean(onToggleTopBarCollapsed);
@@ -139,21 +140,23 @@ export function TopBar({
       {showCollapsedTopBar ? (
         <div className="flex min-h-[42px] items-center gap-3 px-4 py-1 xl:px-5">
           <div className="flex min-w-0 items-center gap-2">
-            <img
-              alt={brandLogoAlt}
-              className="h-7 w-auto shrink-0 object-contain"
-              key={brandLogoSrc}
-              onError={(event) => {
-                if (event.currentTarget.dataset.fallbackApplied !== 'true') {
-                  event.currentTarget.dataset.fallbackApplied = 'true';
-                  event.currentTarget.src = isAcademyMode ? defaultAcademyLogoSrc : fallbackBrandLogoSrc;
-                  return;
-                }
+            {!isAcademyLogoHidden ? (
+              <img
+                alt={brandLogoAlt}
+                className="h-7 w-auto shrink-0 object-contain"
+                key={brandLogoSrc}
+                onError={(event) => {
+                  if (event.currentTarget.dataset.fallbackApplied !== 'true') {
+                    event.currentTarget.dataset.fallbackApplied = 'true';
+                    event.currentTarget.src = isAcademyMode ? defaultAcademyLogoSrc : fallbackBrandLogoSrc;
+                    return;
+                  }
 
-                event.currentTarget.style.visibility = 'hidden';
-              }}
-              src={brandLogoSrc}
-            />
+                  event.currentTarget.style.visibility = 'hidden';
+                }}
+                src={brandLogoSrc}
+              />
+            ) : null}
             <span className="truncate text-sm font-black">{brandTitle}</span>
           </div>
           <button
@@ -174,23 +177,25 @@ export function TopBar({
       ) : (
         <div className="relative flex min-h-[74px] flex-wrap items-center justify-between gap-4 px-4 py-2 lg:flex-nowrap xl:h-[74px] xl:px-5">
           <div className="flex min-w-0 items-center gap-3 max-[520px]:w-full max-[520px]:gap-2 lg:min-w-[282px]">
-            <img
-              alt={brandLogoAlt}
-              className={isAcademyMode
-                ? 'h-[52px] w-auto shrink-0 object-contain max-[520px]:h-7'
-                : 'h-[38px] w-auto max-w-[220px] shrink-0 object-contain max-[520px]:h-7 max-[520px]:max-w-[128px] sm:max-w-[280px]'}
-              key={brandLogoSrc}
-              onError={(event) => {
-                if (event.currentTarget.dataset.fallbackApplied !== 'true') {
-                  event.currentTarget.dataset.fallbackApplied = 'true';
-                  event.currentTarget.src = isAcademyMode ? defaultAcademyLogoSrc : fallbackBrandLogoSrc;
-                  return;
-                }
+            {!isAcademyLogoHidden ? (
+              <img
+                alt={brandLogoAlt}
+                className={isAcademyMode
+                  ? 'h-[52px] w-auto shrink-0 object-contain max-[520px]:h-7'
+                  : 'h-[38px] w-auto max-w-[220px] shrink-0 object-contain max-[520px]:h-7 max-[520px]:max-w-[128px] sm:max-w-[280px]'}
+                key={brandLogoSrc}
+                onError={(event) => {
+                  if (event.currentTarget.dataset.fallbackApplied !== 'true') {
+                    event.currentTarget.dataset.fallbackApplied = 'true';
+                    event.currentTarget.src = isAcademyMode ? defaultAcademyLogoSrc : fallbackBrandLogoSrc;
+                    return;
+                  }
 
-                event.currentTarget.style.visibility = 'hidden';
-              }}
-              src={brandLogoSrc}
-            />
+                  event.currentTarget.style.visibility = 'hidden';
+                }}
+                src={brandLogoSrc}
+              />
+            ) : null}
             <div className="min-w-0">
               <h1 className="truncate text-base font-black leading-none max-[520px]:text-sm">{brandTitle}</h1>
               <p className="mt-1 hidden max-w-[280px] truncate text-xs text-muted-foreground sm:block">

@@ -246,6 +246,10 @@ const academyCalendarSettingsProtectionMs = 15_000;
 const defaultAcademySemester = getDateBasedAcademySemester();
 const defaultCourseChipColor: ColorToken = 'blue';
 const lectureChipColors: ColorToken[] = [
+  'butter',
+  'sage',
+  'powder',
+  'blush',
   'red',
   'orange',
   'gold',
@@ -258,6 +262,8 @@ const lectureChipColors: ColorToken[] = [
   'slate',
 ];
 const lectureChipColorVariantPages: ColorToken[][] = [
+  ['butter', 'vanilla', 'cream', 'honeydew', 'pistachio', 'sage', 'seafoam', 'powder', 'babyblue', 'periwinkle', 'wisteria', 'blush', 'cottoncandy'],
+  ['peachfuzz', 'softcoral', 'flamingo', 'watermelon', 'tangerine', 'marigold', 'citron', 'neomint', 'jade', 'lagoon', 'serenity', 'veryperi', 'orchid', 'amethyst'],
   ['red', 'crimson', 'rose', 'coral', 'peach', 'apricot', 'amber', 'orange', 'yellow', 'gold', 'lemon', 'lime', 'olive', 'moss', 'forest', 'emerald'],
   ['green', 'mint', 'turquoise', 'teal', 'aqua', 'cyan', 'ice', 'sky', 'ocean', 'cobalt', 'blue', 'navy', 'midnight', 'indigo', 'violet', 'lavender'],
   ['purple', 'lilac', 'plum', 'mauve', 'fuchsia', 'magenta', 'pink', 'slate', 'zinc', 'neutral', 'stone', 'graphite', 'cocoa', 'sand', 'gray'],
@@ -1685,6 +1691,33 @@ function DashboardRows({
     gold: dictionary.manualLectureChipColorGold,
     slate: dictionary.manualLectureChipColorSlate,
     gray: dictionary.manualLectureChipColorGray,
+    butter: dictionary.manualLectureChipColorButter,
+    vanilla: dictionary.manualLectureChipColorVanilla,
+    cream: dictionary.manualLectureChipColorCream,
+    honeydew: dictionary.manualLectureChipColorHoneydew,
+    pistachio: dictionary.manualLectureChipColorPistachio,
+    sage: dictionary.manualLectureChipColorSage,
+    seafoam: dictionary.manualLectureChipColorSeafoam,
+    powder: dictionary.manualLectureChipColorPowder,
+    babyblue: dictionary.manualLectureChipColorBabyBlue,
+    periwinkle: dictionary.manualLectureChipColorPeriwinkle,
+    wisteria: dictionary.manualLectureChipColorWisteria,
+    blush: dictionary.manualLectureChipColorBlush,
+    cottoncandy: dictionary.manualLectureChipColorCottonCandy,
+    peachfuzz: dictionary.manualLectureChipColorPeachFuzz,
+    softcoral: dictionary.manualLectureChipColorSoftCoral,
+    flamingo: dictionary.manualLectureChipColorFlamingo,
+    watermelon: dictionary.manualLectureChipColorWatermelon,
+    tangerine: dictionary.manualLectureChipColorTangerine,
+    marigold: dictionary.manualLectureChipColorMarigold,
+    citron: dictionary.manualLectureChipColorCitron,
+    neomint: dictionary.manualLectureChipColorNeoMint,
+    jade: dictionary.manualLectureChipColorJade,
+    lagoon: dictionary.manualLectureChipColorLagoon,
+    serenity: dictionary.manualLectureChipColorSerenity,
+    veryperi: dictionary.manualLectureChipColorVeryPeri,
+    orchid: dictionary.manualLectureChipColorOrchid,
+    amethyst: dictionary.manualLectureChipColorAmethyst,
   };
   const touchMenuButtonClassName =
     'size-8 shrink-0 rounded-md border-border bg-background/80 text-muted-foreground hover:bg-muted hover:text-foreground';

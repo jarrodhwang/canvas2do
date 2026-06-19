@@ -410,6 +410,10 @@ const defaultAcademySemester = getDateBasedAcademySemester();
 const topTrackExternalUrl = 'https://toptrack.topsolid.com/';
 const academyAccentColors: ColorToken[] = [
   'gold',
+  'butter',
+  'sage',
+  'powder',
+  'blush',
   'red',
   'orange',
   'emerald',
@@ -423,6 +427,8 @@ const academyAccentColors: ColorToken[] = [
   'gray',
 ];
 const academyAccentColorVariantPages: ColorToken[][] = [
+  ['butter', 'vanilla', 'cream', 'honeydew', 'pistachio', 'sage', 'seafoam', 'powder', 'babyblue', 'periwinkle', 'wisteria', 'blush', 'cottoncandy'],
+  ['peachfuzz', 'softcoral', 'flamingo', 'watermelon', 'tangerine', 'marigold', 'citron', 'neomint', 'jade', 'lagoon', 'serenity', 'veryperi', 'orchid', 'amethyst'],
   ['crimson', 'rose', 'coral', 'peach', 'apricot', 'amber', 'yellow', 'lemon', 'lime', 'olive', 'moss', 'forest'],
   ['green', 'emerald', 'mint', 'teal', 'turquoise', 'aqua', 'cyan', 'ice', 'sky', 'ocean', 'blue', 'cobalt'],
   ['navy', 'indigo', 'violet', 'purple', 'lavender', 'lilac', 'plum', 'fuchsia', 'magenta', 'pink', 'mauve', 'red'],
@@ -482,6 +488,33 @@ const academyAccentThemeVariables: Record<ColorToken, {
   sand: { primary: 'oklch(0.72 0.095 80)', primaryForeground: 'oklch(0.2 0.025 70)' },
   midnight: { primary: 'oklch(0.32 0.055 260)', primaryForeground: 'oklch(0.985 0 0)' },
   ice: { primary: 'oklch(0.86 0.08 210)', primaryForeground: 'oklch(0.2 0.04 230)' },
+  butter: { primary: 'oklch(0.86 0.18 88)', primaryForeground: 'oklch(0.24 0.055 72)' },
+  vanilla: { primary: 'oklch(0.9 0.105 92)', primaryForeground: 'oklch(0.28 0.05 76)' },
+  cream: { primary: 'oklch(0.92 0.065 88)', primaryForeground: 'oklch(0.3 0.035 70)' },
+  honeydew: { primary: 'oklch(0.88 0.13 128)', primaryForeground: 'oklch(0.25 0.06 130)' },
+  pistachio: { primary: 'oklch(0.82 0.105 128)', primaryForeground: 'oklch(0.25 0.055 130)' },
+  sage: { primary: 'oklch(0.75 0.055 130)', primaryForeground: 'oklch(0.23 0.035 130)' },
+  seafoam: { primary: 'oklch(0.84 0.105 160)', primaryForeground: 'oklch(0.22 0.055 160)' },
+  powder: { primary: 'oklch(0.83 0.085 235)', primaryForeground: 'oklch(0.22 0.055 235)' },
+  babyblue: { primary: 'oklch(0.82 0.08 255)', primaryForeground: 'oklch(0.23 0.06 255)' },
+  periwinkle: { primary: 'oklch(0.79 0.095 280)', primaryForeground: 'oklch(0.23 0.07 280)' },
+  wisteria: { primary: 'oklch(0.82 0.085 300)', primaryForeground: 'oklch(0.24 0.065 300)' },
+  blush: { primary: 'oklch(0.84 0.085 350)', primaryForeground: 'oklch(0.26 0.065 350)' },
+  cottoncandy: { primary: 'oklch(0.8 0.105 345)', primaryForeground: 'oklch(0.25 0.07 345)' },
+  peachfuzz: { primary: 'oklch(0.79 0.12 48)', primaryForeground: 'oklch(0.24 0.045 45)' },
+  softcoral: { primary: 'oklch(0.73 0.16 28)', primaryForeground: 'oklch(0.985 0 0)' },
+  flamingo: { primary: 'oklch(0.69 0.18 10)', primaryForeground: 'oklch(0.985 0 0)' },
+  watermelon: { primary: 'oklch(0.66 0.21 6)', primaryForeground: 'oklch(0.985 0 0)' },
+  tangerine: { primary: 'oklch(0.75 0.17 55)', primaryForeground: 'oklch(0.22 0.04 52)' },
+  marigold: { primary: 'oklch(0.76 0.16 78)', primaryForeground: 'oklch(0.22 0.04 70)' },
+  citron: { primary: 'oklch(0.82 0.16 122)', primaryForeground: 'oklch(0.2 0.05 125)' },
+  neomint: { primary: 'oklch(0.82 0.12 165)', primaryForeground: 'oklch(0.2 0.055 165)' },
+  jade: { primary: 'oklch(0.72 0.13 168)', primaryForeground: 'oklch(0.985 0 0)' },
+  lagoon: { primary: 'oklch(0.72 0.13 205)', primaryForeground: 'oklch(0.18 0.045 205)' },
+  serenity: { primary: 'oklch(0.72 0.09 260)', primaryForeground: 'oklch(0.22 0.06 260)' },
+  veryperi: { primary: 'oklch(0.55 0.16 285)', primaryForeground: 'oklch(0.985 0 0)' },
+  orchid: { primary: 'oklch(0.65 0.16 315)', primaryForeground: 'oklch(0.985 0 0)' },
+  amethyst: { primary: 'oklch(0.59 0.16 300)', primaryForeground: 'oklch(0.985 0 0)' },
   gray: { primary: 'oklch(0.556 0 0)', primaryForeground: 'oklch(0.985 0 0)' },
 };
 
@@ -1540,52 +1573,12 @@ function getCalendarTimelineItems(
     });
 }
 
-type CalendarDueState = 'done' | 'overdue' | 'dueToday' | 'tomorrow' | 'soon' | 'normal';
 type DayTodoProgress = {
   completedCount: number;
   label: string;
   percent: number;
   totalCount: number;
 };
-
-function getCalendarDueState(value?: string, isCompleted = false): CalendarDueState {
-  if (isCompleted) {
-    return 'done';
-  }
-
-  if (!value) {
-    return 'normal';
-  }
-
-  const dueDate = new Date(value);
-
-  if (Number.isNaN(dueDate.getTime())) {
-    return 'normal';
-  }
-
-  const now = new Date();
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const startOfDueDate = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate()).getTime();
-  const daysUntilDue = Math.round((startOfDueDate - startOfToday) / 86_400_000);
-
-  if (dueDate.getTime() < now.getTime()) {
-    return 'overdue';
-  }
-
-  if (daysUntilDue === 0) {
-    return 'dueToday';
-  }
-
-  if (daysUntilDue === 1) {
-    return 'tomorrow';
-  }
-
-  if (daysUntilDue <= 3) {
-    return 'soon';
-  }
-
-  return 'normal';
-}
 
 function getCalendarMoveDueDateTarget(item: CalendarSourceItem) {
   if (item.isLocked || item.isCompleted) {
@@ -1623,36 +1616,8 @@ function getCalendarMoveDueDateTarget(item: CalendarSourceItem) {
   return null;
 }
 
-function getCalendarDueChipClass(state: CalendarDueState) {
-  if (state === 'overdue') {
-    return 'border-red-600 bg-red-600 text-white dark:border-red-500 dark:bg-red-500 dark:text-white';
-  }
-
-  if (state === 'dueToday') {
-    return 'border-red-500/45 bg-red-500/15 text-red-700 dark:border-red-400/50 dark:bg-red-400/15 dark:text-red-200';
-  }
-
-  if (state === 'tomorrow') {
-    return 'border-orange-500/45 bg-orange-500/15 text-orange-800 dark:border-orange-300/55 dark:bg-orange-400/15 dark:text-orange-200';
-  }
-
-  if (state === 'soon') {
-    return 'border-yellow-500/45 bg-yellow-500/15 text-yellow-800 dark:border-yellow-300/55 dark:bg-yellow-300/15 dark:text-yellow-100';
-  }
-
-  if (state === 'done') {
-    return 'border-neutral-200 bg-neutral-100 text-neutral-600 dark:border-white/10 dark:bg-white/10 dark:text-muted-foreground';
-  }
-
+function getCalendarTimeChipClass() {
   return 'border-neutral-200 bg-neutral-100 text-neutral-600 dark:border-white/10 dark:bg-white/10 dark:text-muted-foreground';
-}
-
-function getCalendarTimeChipClass(item: CalendarSourceItem, state: CalendarDueState) {
-  if (item.source === 'class-session') {
-    return 'border-emerald-500/35 bg-emerald-500/12 text-emerald-700 dark:border-emerald-300/35 dark:bg-emerald-400/15 dark:text-emerald-200';
-  }
-
-  return getCalendarDueChipClass(state);
 }
 
 function getCourseDoneCheckClass(color: ColorToken) {
@@ -1705,6 +1670,33 @@ function getCourseDoneCheckClass(color: ColorToken) {
     teal: 'border-teal-400/45 bg-teal-500 text-white',
     turquoise: 'border-[#2DD4BF]/45 bg-[#2DD4BF] text-[#0F766E]',
     violet: 'border-purple-400/45 bg-purple-500 text-white',
+    butter: 'border-[#FFD23F]/60 bg-[#FFD23F] text-[#6F4A00]',
+    vanilla: 'border-[#F9E79F]/60 bg-[#FFF2B8] text-[#745400]',
+    cream: 'border-[#F7E7B7]/60 bg-[#FFF7D6] text-[#7C5E1E]',
+    honeydew: 'border-[#D9F99D]/60 bg-[#D9F99D] text-[#3F6212]',
+    pistachio: 'border-[#BEE6A5]/60 bg-[#BEE6A5] text-[#3F6212]',
+    sage: 'border-[#B7C9A8]/60 bg-[#B7C9A8] text-[#40513B]',
+    seafoam: 'border-[#A7F3D0]/60 bg-[#A7F3D0] text-[#047857]',
+    powder: 'border-[#BAE6FD]/60 bg-[#BAE6FD] text-[#0369A1]',
+    babyblue: 'border-[#BFDBFE]/60 bg-[#BFDBFE] text-[#1D4ED8]',
+    periwinkle: 'border-[#C7D2FE]/60 bg-[#C7D2FE] text-[#4338CA]',
+    wisteria: 'border-[#DDD6FE]/60 bg-[#DDD6FE] text-[#6D28D9]',
+    blush: 'border-[#FBCFE8]/60 bg-[#FBCFE8] text-[#BE185D]',
+    cottoncandy: 'border-[#F9A8D4]/60 bg-[#F9A8D4] text-[#BE185D]',
+    peachfuzz: 'border-[#FFBE98]/60 bg-[#FFBE98] text-[#9A3412]',
+    softcoral: 'border-[#FF8F7A]/60 bg-[#FF8F7A] text-white',
+    flamingo: 'border-[#F9738A]/60 bg-[#F9738A] text-white',
+    watermelon: 'border-[#FF4F7B]/60 bg-[#FF4F7B] text-white',
+    tangerine: 'border-[#FF9F45]/60 bg-[#FF9F45] text-[#7C2D12]',
+    marigold: 'border-[#F7B731]/60 bg-[#F7B731] text-[#713F12]',
+    citron: 'border-[#CDE64F]/60 bg-[#CDE64F] text-[#365314]',
+    neomint: 'border-[#7FE7C4]/60 bg-[#7FE7C4] text-[#047857]',
+    jade: 'border-[#4AC6A3]/60 bg-[#4AC6A3] text-white',
+    lagoon: 'border-[#35C2D1]/60 bg-[#35C2D1] text-[#083344]',
+    serenity: 'border-[#92A8D1]/60 bg-[#92A8D1] text-[#1E3A8A]',
+    veryperi: 'border-[#6667AB]/60 bg-[#6667AB] text-white',
+    orchid: 'border-[#B76ECA]/60 bg-[#B76ECA] text-white',
+    amethyst: 'border-[#9966CC]/60 bg-[#9966CC] text-white',
     yellow: 'border-yellow-400/45 bg-yellow-500 text-yellow-950',
     zinc: 'border-zinc-400/45 bg-zinc-500 text-white',
   }[color];
@@ -2591,7 +2583,10 @@ function AcademySettingsView({
   const [logoUploadError, setLogoUploadError] = useState('');
   const dateLocale = language === 'ko' ? 'ko-KR' : 'en-CA';
   const defaultAcademyLogoSrc = '/brand/SFU_block_colour_rgb.png';
-  const academyLogoPreviewSrc = settings.academyLogoSrc || defaultAcademyLogoSrc;
+  const isAcademyLogoHidden = settings.academyLogoSrc === 'none';
+  const academyLogoPreviewSrc = isAcademyLogoHidden
+    ? ''
+    : settings.academyLogoSrc || defaultAcademyLogoSrc;
   const updateSettings = (partialSettings: Partial<AcademyCalendarSettings>) => {
     onSettingsChange(normalizeAcademyCalendarSettings({
       ...settings,
@@ -2665,6 +2660,33 @@ function AcademySettingsView({
     red: dictionary.manualLectureChipColorRed,
     slate: dictionary.manualLectureChipColorSlate,
     teal: dictionary.manualLectureChipColorTeal,
+    butter: dictionary.manualLectureChipColorButter,
+    vanilla: dictionary.manualLectureChipColorVanilla,
+    cream: dictionary.manualLectureChipColorCream,
+    honeydew: dictionary.manualLectureChipColorHoneydew,
+    pistachio: dictionary.manualLectureChipColorPistachio,
+    sage: dictionary.manualLectureChipColorSage,
+    seafoam: dictionary.manualLectureChipColorSeafoam,
+    powder: dictionary.manualLectureChipColorPowder,
+    babyblue: dictionary.manualLectureChipColorBabyBlue,
+    periwinkle: dictionary.manualLectureChipColorPeriwinkle,
+    wisteria: dictionary.manualLectureChipColorWisteria,
+    blush: dictionary.manualLectureChipColorBlush,
+    cottoncandy: dictionary.manualLectureChipColorCottonCandy,
+    peachfuzz: dictionary.manualLectureChipColorPeachFuzz,
+    softcoral: dictionary.manualLectureChipColorSoftCoral,
+    flamingo: dictionary.manualLectureChipColorFlamingo,
+    watermelon: dictionary.manualLectureChipColorWatermelon,
+    tangerine: dictionary.manualLectureChipColorTangerine,
+    marigold: dictionary.manualLectureChipColorMarigold,
+    citron: dictionary.manualLectureChipColorCitron,
+    neomint: dictionary.manualLectureChipColorNeoMint,
+    jade: dictionary.manualLectureChipColorJade,
+    lagoon: dictionary.manualLectureChipColorLagoon,
+    serenity: dictionary.manualLectureChipColorSerenity,
+    veryperi: dictionary.manualLectureChipColorVeryPeri,
+    orchid: dictionary.manualLectureChipColorOrchid,
+    amethyst: dictionary.manualLectureChipColorAmethyst,
   };
   const accentVariantColors =
     academyAccentColorVariantPages[accentVariantPage] ?? academyAccentColorVariantPages[0];
@@ -3109,21 +3131,27 @@ function AcademySettingsView({
             <div className="mt-3 grid gap-3">
               <div className="grid gap-3 rounded-lg border bg-card p-3 sm:grid-cols-[96px_minmax(0,1fr)]">
                 <div className="flex items-center justify-center rounded-lg border bg-muted/30 p-3">
-                  <img
-                    alt={dictionary.academyTopBarLogoPreview}
-                    className="max-h-14 max-w-full object-contain"
-                    key={academyLogoPreviewSrc}
-                    onError={(event) => {
-                      if (event.currentTarget.dataset.fallbackApplied !== 'true') {
-                        event.currentTarget.dataset.fallbackApplied = 'true';
-                        event.currentTarget.src = defaultAcademyLogoSrc;
-                        return;
-                      }
+                  {isAcademyLogoHidden ? (
+                    <span className="text-[10px] font-black uppercase text-muted-foreground">
+                      {dictionary.academyTopBarLogoNone}
+                    </span>
+                  ) : (
+                    <img
+                      alt={dictionary.academyTopBarLogoPreview}
+                      className="max-h-14 max-w-full object-contain"
+                      key={academyLogoPreviewSrc}
+                      onError={(event) => {
+                        if (event.currentTarget.dataset.fallbackApplied !== 'true') {
+                          event.currentTarget.dataset.fallbackApplied = 'true';
+                          event.currentTarget.src = defaultAcademyLogoSrc;
+                          return;
+                        }
 
-                      event.currentTarget.style.visibility = 'hidden';
-                    }}
-                    src={academyLogoPreviewSrc}
-                  />
+                        event.currentTarget.style.visibility = 'hidden';
+                      }}
+                      src={academyLogoPreviewSrc}
+                    />
+                  )}
                 </div>
                 <div className="grid min-w-0 gap-2">
                   <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
@@ -3144,6 +3172,16 @@ function AcademySettingsView({
                     </div>
                   ) : null}
                   <div className="flex flex-wrap justify-end gap-2">
+                    <Button
+                      className="h-8 rounded-md px-2.5 text-xs font-black"
+                      disabled={isAcademyLogoHidden}
+                      onClick={() => updateSettings({ academyLogoSrc: 'none' })}
+                      type="button"
+                      variant="outline"
+                    >
+                      <EyeOff className="mr-1.5 size-3.5" />
+                      {dictionary.academyTopBarLogoNone}
+                    </Button>
                     <Button
                       className="h-8 rounded-md px-2.5 text-xs font-black"
                       disabled={!settings.academyLogoSrc}
@@ -5123,7 +5161,6 @@ function App() {
                     </div>
                   ) : group.items.map((item) => {
                     const dueLabel = formatCalendarSourceItemSelectedDayTime(item) ?? dictionary.allDay;
-                    const dueState = getCalendarDueState(getCalendarSourceItemDate(item), Boolean(item.isCompleted));
                     const moveTarget = getCalendarMoveDueDateTarget(item);
                     const courseDisplay = getCourseDisplay(item, dictionary.selectedDayTodoNoCourse);
                     const isClassSession = item.source === 'class-session';
@@ -5131,8 +5168,14 @@ function App() {
                     const itemRow = (
                       <div
                         className={cn(
-                          'grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-2 rounded-lg border bg-muted/25 p-2 text-sm font-bold transition-colors',
-                          variant === 'mobile' && 'border-0 bg-transparent px-1 py-1.5',
+                          'grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-2 rounded-lg border p-2 text-sm font-bold transition-colors',
+                          isClassSession
+                            ? 'border-dashed border-border/70 bg-transparent py-1.5 text-xs'
+                            : 'bg-muted/25',
+                          !isClassSession && item.isCompleted && 'border-foreground/25 bg-muted/45',
+                          variant === 'mobile' && (isClassSession
+                            ? 'border-0 bg-transparent px-1 py-1'
+                            : 'border-0 bg-transparent px-1 py-1.5'),
                           item.isLocked ? 'cursor-default' : 'cursor-pointer hover:bg-muted/45',
                         )}
                         onKeyDown={(event) => {
@@ -5156,8 +5199,8 @@ function App() {
                           <span
                             aria-hidden="true"
                             className={cn(
-                              'mt-1.5 size-3 shrink-0 rounded-full',
-                              variant === 'mobile' && 'mt-2 size-3.5',
+                              'mt-1 size-2.5 shrink-0 rounded-full',
+                              variant === 'mobile' && 'mt-1.5 size-3',
                               dotColorClasses[courseDisplay.color],
                             )}
                           />
@@ -5165,11 +5208,11 @@ function App() {
                           <button
                             aria-label={item.isLocked ? dictionary.selectedDayTodoLocked : item.title}
                             className={cn(
-                              'mt-0.5 grid size-5 shrink-0 place-items-center rounded-[7px] border text-[11px] font-black leading-none transition-colors',
-                              variant === 'mobile' && 'size-6 rounded-[8px]',
+                              'mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border text-[11px] font-black leading-none transition-colors',
+                              variant === 'mobile' && 'size-6',
                               item.isCompleted
                                 ? getCourseDoneCheckClass(courseDisplay.color)
-                                : 'border-muted-foreground/30 bg-muted/70 text-muted-foreground hover:bg-muted',
+                                : 'border-dashed border-muted-foreground/35 bg-background/70 text-muted-foreground hover:bg-muted',
                               item.isLocked && 'cursor-default opacity-90',
                             )}
                             disabled={item.isLocked}
@@ -5209,6 +5252,8 @@ function App() {
                               className={cn(
                                 'block truncate text-[15px] font-black leading-snug text-foreground',
                                 variant === 'mobile' && 'text-sm',
+                                isClassSession && 'text-[13px] font-semibold text-muted-foreground',
+                                !isClassSession && item.isCompleted && 'text-muted-foreground line-through decoration-2',
                               )}
                             >
                               {item.title || dictionary.boardAddTodoItem}
@@ -5221,19 +5266,27 @@ function App() {
                             <span
                               className={cn(
                                 'inline-flex h-5 w-20 shrink-0 items-center justify-center rounded-md border px-1.5 text-[10px] font-black',
-                                getCalendarTimeChipClass(item, dueState),
+                                isClassSession && 'h-4 w-auto min-w-14 px-1.5 text-[9px]',
+                                getCalendarTimeChipClass(),
                               )}
                             >
                               <span className="truncate">{dueLabel}</span>
                             </span>
-                            <span
-                              className={cn(
-                                'max-w-28 truncate rounded-md border px-1.5 py-0.5',
-                                badgeColorClasses[courseDisplay.color],
-                              )}
-                            >
-                              {formatCalendarTodoType(item.type)}
-                            </span>
+                            {isClassSession && item.location ? (
+                              <span className="max-w-32 truncate text-[10px] font-semibold text-muted-foreground">
+                                {item.location}
+                              </span>
+                            ) : null}
+                            {!isClassSession ? (
+                              <span
+                                className={cn(
+                                  'max-w-28 truncate rounded-md border px-1.5 py-0.5',
+                                  badgeColorClasses[courseDisplay.color],
+                                )}
+                              >
+                                {formatCalendarTodoType(item.type)}
+                              </span>
+                            ) : null}
                             {!isClassSession ? (
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>

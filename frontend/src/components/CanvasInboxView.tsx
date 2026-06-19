@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState, type MouseEvent } from 'react';
 
 import { workspaceApi, type AcademyPreferences, type CanvasInboxItem } from '../api/workspaceApi';
 import { useLanguage } from '../context/LanguageContext';
+import { isColorToken } from '../lib/colorStyles';
 import { cn } from '../lib/utils';
 import type { ColorToken } from '../modes/types';
 import { EventPill } from './EventPill';
@@ -11,58 +12,11 @@ import { Card } from './ui/card';
 
 type LoadStatus = 'idle' | 'loading' | 'loaded' | 'failed';
 const academyPreferencesUpdatedEvent = 'incos-academy-preferences-updated';
-const colorTokens = new Set<ColorToken>([
-  'blue',
-  'sky',
-  'cyan',
-  'green',
-  'emerald',
-  'indigo',
-  'amber',
-  'yellow',
-  'lime',
-  'orange',
-  'red',
-  'rose',
-  'crimson',
-  'coral',
-  'peach',
-  'apricot',
-  'purple',
-  'violet',
-  'fuchsia',
-  'pink',
-  'magenta',
-  'lavender',
-  'lilac',
-  'plum',
-  'mauve',
-  'teal',
-  'mint',
-  'aqua',
-  'turquoise',
-  'ocean',
-  'cobalt',
-  'navy',
-  'gold',
-  'lemon',
-  'olive',
-  'moss',
-  'forest',
-  'slate',
-  'zinc',
-  'neutral',
-  'stone',
-  'graphite',
-  'cocoa',
-  'sand',
-  'midnight',
-  'ice',
-  'gray',
-]);
 
 interface CanvasLecturePreference {
   chipColor?: ColorToken;
+  courseId?: string;
+  courseCode?: string;
   courseName?: string;
   friendlyCourseCode?: string;
   friendlyName?: string;
@@ -246,19 +200,27 @@ function normalizeCourseMatchValue(value?: string) {
   return value?.replace(/\s+/g, '').trim().toLowerCase() || '';
 }
 
+function getCanvasCourseIdFromUrl(value?: string) {
+  return value?.match(/\/courses\/([^/?#]+)/i)?.[1]?.trim() || '';
+}
+
 function getInboxCoursePreference(item: CanvasInboxItem, preferences: CanvasLecturePreferences) {
-  const courseId = item.courseId?.trim();
+  const courseId = item.courseId?.trim() || getCanvasCourseIdFromUrl(item.htmlUrl);
   const directPreference = courseId ? preferences[courseId] : undefined;
 
   if (directPreference) {
     return directPreference;
   }
 
+  const normalizedCourseId = normalizeCourseMatchValue(courseId);
   const normalizedCourseCode = normalizeCourseMatchValue(item.courseCode);
   const normalizedCourseName = normalizeCourseMatchValue(item.courseName);
 
-  return Object.values(preferences).find((preference) => {
+  return Object.entries(preferences).find(([preferenceKey, preference]) => {
     const preferenceValues = [
+      preferenceKey.replace(/^canvas:/i, ''),
+      preference.courseId,
+      preference.courseCode,
       preference.originalCourseCode,
       preference.friendlyCourseCode,
       preference.courseName,
@@ -266,10 +228,11 @@ function getInboxCoursePreference(item: CanvasInboxItem, preferences: CanvasLect
     ].map(normalizeCourseMatchValue);
 
     return Boolean(
+      normalizedCourseId && preferenceValues.includes(normalizedCourseId) ||
       normalizedCourseCode && preferenceValues.includes(normalizedCourseCode) ||
       normalizedCourseName && preferenceValues.includes(normalizedCourseName),
     );
-  });
+  })?.[1];
 }
 
 function getInboxCourseLabel(item: CanvasInboxItem, fallback: string, preferences: CanvasLecturePreferences) {
@@ -289,8 +252,8 @@ function getInboxCourseKey(item: CanvasInboxItem, fallback: string, preferences:
 function getInboxCourseColor(item: CanvasInboxItem, preferences: CanvasLecturePreferences): ColorToken {
   const storedColor = getInboxCoursePreference(item, preferences)?.chipColor;
 
-  return typeof storedColor === 'string' && colorTokens.has(storedColor as ColorToken)
-    ? storedColor as ColorToken
+  return isColorToken(storedColor)
+    ? storedColor
     : 'blue';
 }
 

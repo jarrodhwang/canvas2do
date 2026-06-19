@@ -87,6 +87,10 @@ export const badgeColorClasses: Record<ColorToken, string> = {
   gray: 'border-neutral-200 bg-neutral-100 text-neutral-600 dark:border-white/10 dark:bg-white/10 dark:text-muted-foreground',
 };
 
+export function isColorToken(value: unknown): value is ColorToken {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(badgeColorClasses, value);
+}
+
 export const dotColorClasses: Record<ColorToken, string> = {
   blue: 'bg-blue-500',
   sky: 'bg-sky-500',

@@ -378,6 +378,10 @@ interface CalendarCourseFilterOption {
   label: string;
 }
 
+function isLiveCanvasCalendarItem(item?: CalendarSourceItem | null) {
+  return item?.source === 'canvas' && !item.isArchivedCanvasItem;
+}
+
 interface SelectedDayCourseGroup {
   canAdd?: boolean;
   color: ColorToken;
@@ -1516,7 +1520,7 @@ function getCalendarBoardItems(
         isCompleted: Boolean(item.isCompleted),
         isClassSession: item.source === 'class-session',
         isLocked: item.source === 'class-session' || Boolean(item.isLocked),
-        isTitleEditable: item.source !== 'class-session' && !item.isLocked,
+        isTitleEditable: item.source !== 'class-session' && !item.isLocked && !isLiveCanvasCalendarItem(item),
         canOpenDetails: item.source !== 'class-session',
         isCanvasSource: item.source === 'canvas',
         isArchivedCanvasItem: Boolean(item.isArchivedCanvasItem),
@@ -2439,6 +2443,7 @@ function CalendarTodoDetailsDialog({
 }) {
   const { dictionary } = useLanguage();
   const [draft, setDraft] = useState<CalendarTodoDetailsDraft>(() => createCalendarTodoDetailsDraft(item));
+  const isCanvasManaged = isLiveCanvasCalendarItem(item);
 
   useEffect(() => {
     setDraft(createCalendarTodoDetailsDraft(item));
@@ -2455,17 +2460,23 @@ function CalendarTodoDetailsDialog({
           onSubmit={(event) => {
             event.preventDefault();
 
-            if (item) {
+            if (item && !isCanvasManaged) {
               onSave(item, draft);
             }
           }}
         >
           <div className="grid gap-4 sm:grid-cols-2">
+            {isCanvasManaged ? (
+              <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm font-bold text-muted-foreground sm:col-span-2">
+                {dictionary.courseworkCanvasManagedLocked}
+              </div>
+            ) : null}
             <div className="space-y-2 sm:col-span-2">
               <Label className="text-xs font-black uppercase text-muted-foreground" htmlFor="calendar-todo-title">
                 {dictionary.courseworkName}
               </Label>
               <Input
+                disabled={isCanvasManaged}
                 id="calendar-todo-title"
                 onChange={(event) => setDraft((currentDraft) => ({ ...currentDraft, title: event.target.value }))}
                 value={draft.title}
@@ -2476,6 +2487,7 @@ function CalendarTodoDetailsDialog({
                 {dictionary.courseworkType}
               </Label>
               <Select
+                disabled={isCanvasManaged}
                 onValueChange={(value) => setDraft((currentDraft) => ({ ...currentDraft, type: value }))}
                 value={draft.type || 'assignment'}
               >
@@ -2497,6 +2509,7 @@ function CalendarTodoDetailsDialog({
               </Label>
               <DateTimeField
                 defaultTime="09:00"
+                disabled={isCanvasManaged}
                 id="calendar-todo-start"
                 onChange={(value) => setDraft((currentDraft) => ({ ...currentDraft, startAt: value }))}
                 value={draft.startAt}
@@ -2508,6 +2521,7 @@ function CalendarTodoDetailsDialog({
               </Label>
               <DateTimeField
                 defaultTime="23:59"
+                disabled={isCanvasManaged}
                 id="calendar-todo-due"
                 onChange={(value) => setDraft((currentDraft) => ({ ...currentDraft, dueAt: value }))}
                 value={draft.dueAt}
@@ -2523,6 +2537,7 @@ function CalendarTodoDetailsDialog({
                 </Label>
                 <DateTimeField
                   defaultTime="23:59"
+                  disabled={isCanvasManaged}
                   id="calendar-todo-end"
                   onChange={(value) => setDraft((currentDraft) => ({ ...currentDraft, endAt: value }))}
                   value={draft.endAt}
@@ -2540,7 +2555,7 @@ function CalendarTodoDetailsDialog({
             <Button onClick={() => onOpenChange(false)} type="button" variant="outline">
               {dictionary.cancel}
             </Button>
-            <Button type="submit">{dictionary.courseworkUpdate}</Button>
+            <Button disabled={isCanvasManaged} type="submit">{dictionary.courseworkUpdate}</Button>
           </DialogFooter>
         </form>
       </DialogContent>
@@ -4200,7 +4215,7 @@ function App() {
   };
 
   const handleUpdateCalendarSourceItemTitle = (item: CalendarSourceItem, title: string) => {
-    if (item.isLocked) {
+    if (item.isLocked || isLiveCanvasCalendarItem(item)) {
       return;
     }
 
@@ -5034,7 +5049,7 @@ function App() {
   };
 
   const startCalendarTodoRename = (item: CalendarSourceItem) => {
-    if (item.isLocked) {
+    if (item.isLocked || isLiveCanvasCalendarItem(item)) {
       return;
     }
 
@@ -5046,7 +5061,7 @@ function App() {
     item: CalendarSourceItem,
     isEditingTitle: boolean,
   ) => {
-    if (isCalendarTodoInteractiveTarget(event.target) || item.isLocked || isEditingTitle) {
+    if (isCalendarTodoInteractiveTarget(event.target) || item.isLocked || isLiveCanvasCalendarItem(item) || isEditingTitle) {
       return;
     }
 
@@ -5164,7 +5179,7 @@ function App() {
                     const moveTarget = getCalendarMoveDueDateTarget(item);
                     const courseDisplay = getCourseDisplay(item, dictionary.selectedDayTodoNoCourse);
                     const isClassSession = item.source === 'class-session';
-                    const isEditingTitle = focusedCalendarTodoId === item.id && !item.isLocked;
+                    const isEditingTitle = focusedCalendarTodoId === item.id && !item.isLocked && !isLiveCanvasCalendarItem(item);
                     const itemRow = (
                       <div
                         className={cn(

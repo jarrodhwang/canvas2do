@@ -124,6 +124,11 @@ type RenderableDashboardRow = DashboardRow & {
 type RenderableDashboardCard = Omit<DashboardCardConfig, 'rows'> & {
   rows: RenderableDashboardRow[];
 };
+
+function isLiveCanvasDashboardRow(row: RenderableDashboardRow) {
+  return (row.courseworkSource === 'canvas' || row.assessmentSource === 'canvas') && !row.isArchivedCanvasItem;
+}
+
 type CanvasCourseLoadStatus = 'idle' | 'loading' | 'loaded' | 'failed';
 type DashboardSnackbar = {
   message: string;
@@ -1737,10 +1742,7 @@ function DashboardRows({
       return null;
     }
 
-    if (
-      (row.courseworkSource === 'canvas' || row.assessmentSource === 'canvas') &&
-      !row.isArchivedCanvasItem
-    ) {
+    if (isLiveCanvasDashboardRow(row)) {
       return null;
     }
 
@@ -2358,7 +2360,12 @@ function DashboardRows({
     const renderedRows = rows.map((row) => {
       const isCheckableRow = Boolean(row.courseworkKey || row.assessmentKey);
       const renameKey = row.courseworkKey ?? row.assessmentKey;
-      const isRenamingRow = Boolean(renameKey && focusedCourseworkKey === renameKey && !row.isCanvasSubmitted);
+      const isRenamingRow = Boolean(
+        renameKey &&
+        focusedCourseworkKey === renameKey &&
+        !row.isCanvasSubmitted &&
+        !isLiveCanvasDashboardRow(row),
+      );
       const touchActionMenu = row.assessmentKey && !row.courseworkKey
         ? renderAssessmentTouchMenu(row)
         : renderCourseworkTouchMenu(row);
@@ -2828,12 +2835,18 @@ function CourseworkDialog({
           }}
         >
           <div className="grid gap-4 sm:grid-cols-2">
+            {isCanvasCoursework ? (
+              <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm font-bold text-muted-foreground sm:col-span-2">
+                {dictionary.courseworkCanvasManagedLocked}
+              </div>
+            ) : null}
             <div className="space-y-2 sm:col-span-2">
               <Label className="text-xs font-black uppercase text-muted-foreground" htmlFor="coursework-title">
                 {dictionary.courseworkName}
               </Label>
               <Input
-                autoFocus
+                autoFocus={!isCanvasCoursework}
+                disabled={isCanvasCoursework}
                 id="coursework-title"
                 onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
                 placeholder="Assignment 1"
@@ -2885,6 +2898,7 @@ function CourseworkDialog({
                 {dictionary.courseworkType}
               </Label>
               <Select
+                disabled={isCanvasCoursework}
                 onValueChange={(value) => setDraft((current) => ({ ...current, courseworkType: value }))}
                 value={draft.courseworkType || 'study'}
               >
@@ -2905,6 +2919,7 @@ function CourseworkDialog({
                 {dictionary.courseworkSubmissionType}
               </Label>
               <Select
+                disabled={isCanvasCoursework}
                 onValueChange={(value) => setDraft((current) => ({ ...current, submissionType: value }))}
                 value={draft.submissionType || undefined}
               >
@@ -2966,7 +2981,7 @@ function CourseworkDialog({
             <Button onClick={() => onOpenChange(false)} type="button" variant="outline">
               {dictionary.cancel}
             </Button>
-            <Button type="submit">{submitLabel ?? dictionary.courseworkSave}</Button>
+            <Button disabled={isCanvasCoursework} type="submit">{submitLabel ?? dictionary.courseworkSave}</Button>
           </DialogFooter>
         </form>
       </DialogContent>
@@ -3077,12 +3092,18 @@ function AssessmentDialog({
           }}
         >
           <div className="grid gap-4 sm:grid-cols-2">
+            {isCanvasAssessment ? (
+              <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm font-bold text-muted-foreground sm:col-span-2">
+                {dictionary.courseworkCanvasManagedLocked}
+              </div>
+            ) : null}
             <div className="space-y-2 sm:col-span-2">
               <Label className="text-xs font-black uppercase text-muted-foreground" htmlFor="assessment-title">
                 {dictionary.assessmentName}
               </Label>
               <Input
-                autoFocus
+                autoFocus={!isCanvasAssessment}
+                disabled={isCanvasAssessment}
                 id="assessment-title"
                 onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
                 placeholder="Quiz 1"
@@ -3134,6 +3155,7 @@ function AssessmentDialog({
                 {dictionary.assessmentType}
               </Label>
               <Select
+                disabled={isCanvasAssessment}
                 onValueChange={(value) => setDraft((current) => ({ ...current, assessmentType: value }))}
                 value={draft.assessmentType || 'quiz'}
               >
@@ -3195,7 +3217,7 @@ function AssessmentDialog({
             <Button onClick={() => onOpenChange(false)} type="button" variant="outline">
               {dictionary.cancel}
             </Button>
-            <Button type="submit">{submitLabel ?? dictionary.assessmentSave}</Button>
+            <Button disabled={isCanvasAssessment} type="submit">{submitLabel ?? dictionary.assessmentSave}</Button>
           </DialogFooter>
         </form>
       </DialogContent>
@@ -4955,7 +4977,7 @@ export function DashboardCards({
   const handleStartCourseworkRename = (row: RenderableDashboardRow) => {
     const renameKey = row.courseworkKey ?? row.assessmentKey;
 
-    if (!renameKey || row.isCanvasSubmitted) {
+    if (!renameKey || row.isCanvasSubmitted || isLiveCanvasDashboardRow(row)) {
       return;
     }
 
@@ -4963,6 +4985,10 @@ export function DashboardCards({
   };
 
   const handleRenameCoursework = (row: RenderableDashboardRow, title: string) => {
+    if (isLiveCanvasDashboardRow(row)) {
+      return;
+    }
+
     if (row.courseworkSource === 'canvas' && row.canvasCourseworkId) {
       updateStoredCanvasCourseworkPreferences((currentPreferences) => ({
         ...currentPreferences,
@@ -5676,7 +5702,7 @@ export function DashboardCards({
       <CourseworkDialog
         courseOptions={courseworkCourseOptions}
         initialCoursework={selectedCanvasCourseworkEditable}
-        isCanvasCoursework
+        isCanvasCoursework={Boolean(selectedCanvasCoursework)}
         onOpenChange={(isOpen) => {
           if (!isOpen) {
             setSelectedCanvasCourseworkId(null);
@@ -5712,7 +5738,7 @@ export function DashboardCards({
       <AssessmentDialog
         courseOptions={courseworkCourseOptions}
         initialAssessment={selectedCanvasAssessmentEditable}
-        isCanvasAssessment
+        isCanvasAssessment={Boolean(selectedCanvasAssessment)}
         onOpenChange={(isOpen) => {
           if (!isOpen) {
             setSelectedCanvasAssessmentId(null);

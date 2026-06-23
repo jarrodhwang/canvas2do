@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 
 
 import type { BoardItem } from '../data/mockWorkspaceData';
 import { useLanguage } from '../context/LanguageContext';
-import type { BoardColumnConfig, ColorToken } from '../modes/types';
+import type { BoardColumnConfig } from '../modes/types';
 import { dotColorClasses } from '../lib/colorStyles';
 import { cn } from '../lib/utils';
 import { EventPill } from './EventPill';
@@ -24,7 +24,9 @@ import {
 } from './ui/dropdown-menu';
 
 interface BoardViewProps {
+  calendarTodoStyle?: 'comfortable' | 'compact';
   columns: BoardColumnConfig[];
+  fillHeight?: boolean;
   items: BoardItem[];
   focusedItemId?: string | null;
   onAddItem?: (column: BoardColumnConfig) => void;
@@ -40,81 +42,7 @@ interface BoardViewProps {
   showCurrentTime?: boolean;
 }
 
-interface StoredCoursePreference {
-  chipColor?: ColorToken;
-  code?: string;
-  friendlyCourseCode?: string;
-  originalCourseCode?: string;
-}
-
-const manualLecturesStorageKey = 'incos-academy-manual-lectures';
-const canvasLecturePreferencesStorageKey = 'incos-academy-canvas-lecture-preferences';
 const academyPreferencesUpdatedEvent = 'incos-academy-preferences-updated';
-
-function normalizeCourseCode(value: string) {
-  return value.replace(/\s+/g, '').toLowerCase();
-}
-
-function getCourseCodeRoot(value: string) {
-  const match = value.match(/[a-z]{2,}\s*\d{2,4}[a-z]?/i);
-
-  return match ? normalizeCourseCode(match[0]) : undefined;
-}
-
-function getCourseCodeCandidates(value?: string) {
-  if (!value) {
-    return [];
-  }
-
-  return [normalizeCourseCode(value), getCourseCodeRoot(value)].filter(Boolean) as string[];
-}
-
-function codesMatch(firstCode?: string, secondCode?: string) {
-  const firstCandidates = getCourseCodeCandidates(firstCode);
-  const secondCandidates = getCourseCodeCandidates(secondCode);
-
-  return firstCandidates.some((candidate) => secondCandidates.includes(candidate));
-}
-
-function readStoredJson<T>(key: string, fallback: T): T {
-  if (typeof window === 'undefined') {
-    return fallback;
-  }
-
-  try {
-    const storedValue = window.localStorage.getItem(key);
-
-    return storedValue ? JSON.parse(storedValue) as T : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function getStoredCourseChipColor(courseCode: string): ColorToken | undefined {
-  const storedManualLectures = readStoredJson<unknown>(manualLecturesStorageKey, []);
-  const manualLectures = Array.isArray(storedManualLectures)
-    ? storedManualLectures as StoredCoursePreference[]
-    : [];
-  const manualLecture = manualLectures.find((lecture) => (
-    codesMatch(courseCode, lecture.friendlyCourseCode) || codesMatch(courseCode, lecture.code)
-  ));
-
-  if (manualLecture?.chipColor) {
-    return manualLecture.chipColor;
-  }
-
-  const storedCanvasPreferences = readStoredJson<unknown>(canvasLecturePreferencesStorageKey, {});
-  const canvasPreferences = storedCanvasPreferences &&
-    typeof storedCanvasPreferences === 'object' &&
-    !Array.isArray(storedCanvasPreferences)
-    ? storedCanvasPreferences as Record<string, StoredCoursePreference>
-    : {};
-  const canvasLecture = Object.values(canvasPreferences).find((preference) => (
-    codesMatch(courseCode, preference.friendlyCourseCode) || codesMatch(courseCode, preference.originalCourseCode)
-  ));
-
-  return canvasLecture?.chipColor;
-}
 
 function isComplete(item: BoardItem) {
   if (typeof item.isCompleted === 'boolean') {
@@ -196,7 +124,9 @@ function CurrentTimeLine() {
 }
 
 export function BoardView({
+  calendarTodoStyle = 'compact',
   columns,
+  fillHeight = false,
   items,
   focusedItemId,
   onAddItem,
@@ -215,6 +145,7 @@ export function BoardView({
   const [, setPreferenceVersion] = useState(0);
   const tapTimeoutRef = useRef<{ itemId: string; timeoutId: number } | null>(null);
   const nowMinutes = getNowMinutes();
+  const isDenseBoard = calendarTodoStyle === 'compact';
 
   const clearTap = () => {
     if (tapTimeoutRef.current) {
@@ -266,7 +197,7 @@ export function BoardView({
   useEffect(() => () => {
     clearTap();
   }, []);
-  const renderItemTouchMenu = (item: BoardItem, complete: boolean) => {
+  const renderItemTouchMenu = (item: BoardItem, complete: boolean, compact = false) => {
     if (!item.canOpenDetails || !onOpenItemDetails) {
       return null;
     }
@@ -278,7 +209,10 @@ export function BoardView({
         <DropdownMenuTrigger asChild>
           <Button
             aria-label={dictionary.gmailMoreActions}
-            className="size-8 shrink-0 rounded-md border-border bg-background/80 text-muted-foreground hover:bg-muted hover:text-foreground"
+            className={cn(
+              'shrink-0 rounded-md border-border bg-background/80 text-muted-foreground hover:bg-muted hover:text-foreground',
+              compact ? 'size-6' : 'size-8',
+            )}
             onClick={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
             size="icon-sm"
@@ -286,7 +220,7 @@ export function BoardView({
             type="button"
             variant="outline"
           >
-            <MoreHorizontal className="size-4" />
+            <MoreHorizontal className={compact ? 'size-3' : 'size-4'} />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-56">
@@ -340,9 +274,17 @@ export function BoardView({
   };
 
   return (
-    <Card className="overflow-hidden rounded-xl bg-card shadow-none lg:h-full lg:min-h-0">
+    <Card
+      className={cn(
+        'overflow-hidden rounded-xl bg-card shadow-none lg:h-full lg:min-h-0',
+        fillHeight && 'h-full min-h-0',
+      )}
+    >
       <div
-        className="grid min-h-[440px] overflow-x-auto lg:h-full lg:min-h-0"
+        className={cn(
+          'grid min-h-[440px] overflow-x-auto lg:h-full lg:min-h-0',
+          fillHeight && 'h-full min-h-0',
+        )}
         style={{ gridTemplateColumns: `repeat(${Math.max(columns.length, 1)}, minmax(0, 1fr))` }}
       >
         {columns.map((column) => {
@@ -350,8 +292,7 @@ export function BoardView({
             .filter((item) => item.columnId === column.id)
             .sort((firstItem, secondItem) => getItemMinutes(firstItem) - getItemMinutes(secondItem));
           const columnLabel = translateBoardColumn(column.id, column.label);
-          const columnChipColor =
-            getStoredCourseChipColor(column.label) ?? getStoredCourseChipColor(columnLabel) ?? column.color;
+          const columnChipColor = column.color;
           let hasRenderedCurrentTime = false;
           const renderCurrentTimeIfNeeded = (item: BoardItem) => {
             if (!showCurrentTime || hasRenderedCurrentTime || getItemMinutes(item) < nowMinutes) {
@@ -364,8 +305,15 @@ export function BoardView({
           };
 
           return (
-            <section className="flex min-w-0 flex-col border-r bg-muted/25 p-3 last:border-r-0 lg:min-h-0" key={column.id}>
-              <div className="mb-3 flex items-center justify-between gap-2">
+            <section
+              className={cn(
+                'flex min-w-0 flex-col border-r bg-muted/25 last:border-r-0 lg:min-h-0',
+                isDenseBoard ? 'p-2' : 'p-3',
+                fillHeight && 'min-h-0',
+              )}
+              key={column.id}
+            >
+              <div className={cn('flex items-center justify-between gap-2', isDenseBoard ? 'mb-2' : 'mb-3')}>
                 <h3 className="flex min-w-0 items-center gap-1.5 text-sm font-black">
                   <EventPill className="h-6 px-2 text-xs" color={columnChipColor} compact label={columnLabel} />
                   <EventPill color="gray" label={`${columnItems.length}`} compact />
@@ -383,35 +331,43 @@ export function BoardView({
                   <Plus className="size-3.5" />
                 </Button>
               </div>
-              <div className="flex flex-col gap-2 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1">
+              <div
+                className={cn(
+                  'flex flex-col gap-2 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1',
+                  fillHeight && 'min-h-0 flex-1 overflow-y-auto pr-1',
+                )}
+              >
                 {columnItems.map((item) => {
                   const complete = isComplete(item);
                   const isEditingTitle = Boolean(item.isTitleEditable && (focusedItemId === item.id || item.title.trim() === ''));
+                  const itemTouchMenu = renderItemTouchMenu(item, complete, isDenseBoard);
                   const rowElement = (
                     <div key={item.id}>
                       {renderCurrentTimeIfNeeded(item)}
                       <div
-                        className={cn(
-                          'group flex w-full min-w-0 items-start gap-2 rounded-lg border bg-card p-2.5 text-left shadow-none transition hover:bg-muted/45',
-                          !item.isLocked && 'cursor-pointer',
-                        )}
+	                        className={cn(
+	                          'group flex w-full min-w-0 rounded-lg border bg-card text-left shadow-none transition hover:bg-muted/45',
+	                          isDenseBoard
+	                            ? 'relative min-h-12 items-end gap-1.5 px-2 pb-2 pt-5'
+	                            : 'min-h-12 items-center gap-2 p-2',
+	                          !item.isClassSession && complete && 'border-foreground/25 bg-muted/45',
+	                          !item.isLocked && 'cursor-pointer',
+	                        )}
                         onClick={(event) => {
                           handleRowTap(event, item, isEditingTitle);
                         }}
                       >
-                        <div className="w-11 shrink-0 pt-1 text-right text-[11px] font-black tabular-nums text-muted-foreground">
-                          {item.time || '—'}
-                        </div>
                         {item.isClassSession ? (
                           <span
                             aria-hidden="true"
-                            className={cn('mt-2 size-3 shrink-0 rounded-full', dotColorClasses[item.color])}
+                            className={cn(isDenseBoard ? 'size-3' : 'size-3', 'shrink-0 rounded-full', dotColorClasses[item.color])}
                           />
                         ) : (
                           <button
                             aria-label={item.isLocked ? item.title : dictionary.boardAddTodoItem}
                             className={cn(
-                              'mt-0.5 grid size-6 shrink-0 place-items-center rounded-[10px] transition-colors',
+                              'grid shrink-0 place-items-center transition-colors',
+                              isDenseBoard ? 'size-5 rounded-[8px]' : 'size-6 rounded-[10px]',
                               complete
                                 ? dotColorClasses[item.color]
                                 : 'bg-muted-foreground/20 group-hover:bg-muted-foreground/30',
@@ -427,9 +383,19 @@ export function BoardView({
                             title={item.title}
                             type="button"
                           >
-                            {complete ? <Check className="size-4 stroke-[3] text-white" /> : null}
+                            {complete ? <Check className={cn(isDenseBoard ? 'size-3.5' : 'size-4', 'stroke-[3] text-white')} /> : null}
                           </button>
                         )}
+                        <span
+                          className={cn(
+                            'shrink-0 rounded-md bg-muted/65 font-black tabular-nums text-muted-foreground',
+                            isDenseBoard
+                              ? 'absolute left-2 top-1.5 px-1 py-0 text-[10px]'
+                              : 'px-1.5 py-0.5 text-[11px]',
+                          )}
+                        >
+                          {item.time || '—'}
+                        </span>
                         <div
                           className="min-w-0 flex-1 text-left"
                           onKeyDown={(event) => {
@@ -447,38 +413,49 @@ export function BoardView({
                           role="button"
                           tabIndex={0}
                         >
-                          <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                            {isEditingTitle ? (
-                              <input
-                                aria-label={dictionary.boardAddTodoItem}
-                                autoFocus
-                                className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1 text-sm font-semibold leading-snug text-foreground outline-none transition focus-visible:ring-2 focus-visible:ring-ring/45"
-                                onBlur={onFinishItemTitleEdit}
-                                onChange={(event) => onUpdateItemTitle?.(item, event.target.value)}
-                                onClick={(event) => event.stopPropagation()}
-                                onFocus={(event) => event.currentTarget.select()}
-                                onKeyDown={(event) => {
-                                  event.stopPropagation();
-                                  if (event.key === 'Enter' || event.key === 'Escape') {
-                                    event.currentTarget.blur();
-                                  }
-                                }}
-                                placeholder={dictionary.boardAddTodoItem}
-                                value={item.title}
-                              />
-                            ) : (
-                              <span
-                                className="min-w-0 flex-1 whitespace-normal text-sm font-semibold leading-snug text-foreground"
-                              >
-                                {item.title || dictionary.boardAddTodoItem}
-                              </span>
-                            )}
-                            <span className="flex shrink-0 flex-wrap gap-1">
-                              <EventPill color={item.color} label={item.type} compact />
-                              {renderItemTouchMenu(item, complete)}
-                            </span>
-                          </span>
+                          {isEditingTitle ? (
+                            <input
+                              aria-label={dictionary.boardAddTodoItem}
+                              autoFocus
+                              className="block w-full min-w-0 rounded-md border bg-background px-2 py-1 text-sm font-semibold leading-snug text-foreground outline-none transition focus-visible:ring-2 focus-visible:ring-ring/45"
+                              onBlur={onFinishItemTitleEdit}
+                              onChange={(event) => onUpdateItemTitle?.(item, event.target.value)}
+                              onClick={(event) => event.stopPropagation()}
+                              onFocus={(event) => event.currentTarget.select()}
+                              onKeyDown={(event) => {
+                                event.stopPropagation();
+                                if (event.key === 'Enter' || event.key === 'Escape') {
+                                  event.currentTarget.blur();
+                                }
+                              }}
+                              placeholder={dictionary.boardAddTodoItem}
+                              value={item.title}
+                            />
+                          ) : (
+	                            <span
+	                              className={cn(
+	                                'block min-w-0 truncate font-semibold leading-snug text-foreground',
+	                                isDenseBoard ? 'text-sm' : 'text-sm',
+	                                !item.isClassSession &&
+	                                  complete &&
+	                                  'text-muted-foreground line-through decoration-2',
+	                              )}
+	                            >
+	                              {item.title || dictionary.boardAddTodoItem}
+	                            </span>
+                          )}
                         </div>
+                        {isDenseBoard ? (
+                          <EventPill
+                            className="absolute -top-2 -right-1 z-10 max-w-20 shrink-0 px-1.5 text-[10px] shadow-sm"
+                            color={item.color}
+                            label={item.type}
+                            compact
+                          />
+                        ) : (
+                          <EventPill className="max-w-20 shrink-0" color={item.color} label={item.type} compact />
+                        )}
+                        {itemTouchMenu}
                       </div>
                     </div>
                   );

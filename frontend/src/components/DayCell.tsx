@@ -13,6 +13,7 @@ import {
 
 interface DayCellProps {
   day: CalendarDay;
+  isCompact?: boolean;
   isExpanded?: boolean;
   isSelected?: boolean;
   onSelect: () => void;
@@ -69,6 +70,7 @@ function getDesktopVisibleEventCount(height: number, isExpanded: boolean, hasTim
 
 export const DayCell = forwardRef<HTMLButtonElement, DayCellProps>(function DayCell({
   day,
+  isCompact = false,
   isExpanded = false,
   isSelected = false,
   onSelect,
@@ -117,7 +119,9 @@ export const DayCell = forwardRef<HTMLButtonElement, DayCellProps>(function DayC
   const workloadLabel = language === 'ko' ? '업무량' : 'Workload';
   const mobileEvents = day.events.slice(0, 4);
   const hiddenMobileEventCount = Math.max(day.events.length - mobileEvents.length, 0);
-  const desktopVisibleEventCount = getDesktopVisibleEventCount(cellHeight, isExpanded, Boolean(day.timelineBar));
+  const desktopVisibleEventCount = isCompact
+    ? Math.max(1, Math.min(4, Math.floor((cellHeight - 24) / 16)))
+    : getDesktopVisibleEventCount(cellHeight, isExpanded, Boolean(day.timelineBar));
   const desktopEvents = day.events.slice(0, desktopVisibleEventCount);
   const hiddenDesktopEventCount = Math.max(day.events.length - desktopEvents.length, 0);
   const mobileClusterPositions = [
@@ -195,7 +199,7 @@ export const DayCell = forwardRef<HTMLButtonElement, DayCellProps>(function DayC
       </div>
 
       <div className="absolute inset-x-1 top-1 bottom-1 flex min-h-0 flex-col max-[520px]:hidden">
-        <div className="mb-0.5 flex min-w-0 shrink-0 items-center gap-1">
+        <div className={cn('mb-0.5 flex min-w-0 shrink-0 items-center gap-1', isCompact && 'mb-0')}>
           <span
             className={cn(
               'inline-flex h-5 min-w-5 items-center justify-center justify-self-start rounded-full px-1 text-[11px] font-black',
@@ -206,30 +210,35 @@ export const DayCell = forwardRef<HTMLButtonElement, DayCellProps>(function DayC
           >
             {day.dateNumber}
           </span>
-          {isToday ? (
-            <span className="truncate rounded-md bg-primary/10 px-1 py-0.5 text-[9px] font-black uppercase text-primary">
-              {todayLabel}
-            </span>
-          ) : null}
-          <span className="min-w-0 flex-1" />
-          <CalendarProgressIndicator
-            className={progressDisplay === 'linear' ? 'max-w-[112px] flex-1' : undefined}
-            display={progressDisplay}
-            label={workloadLabel}
-            size="compact"
-            thresholds={progressThresholds}
-            value={day.progress}
-            valueLabel={day.progressLabel}
-          />
+            {isToday ? (
+              <span className="truncate rounded-md bg-primary/10 px-1 py-0.5 text-[9px] font-black uppercase text-primary">
+                {todayLabel}
+              </span>
+            ) : null}
+            {isCompact ? null : (
+              <CalendarProgressIndicator
+                className={progressDisplay === 'linear' ? 'min-w-0 flex-1' : 'ml-auto'}
+                display={progressDisplay}
+                label={workloadLabel}
+                showValueLabel={false}
+                size="compact"
+                thresholds={progressThresholds}
+                value={day.progress}
+                valueLabel={day.progressLabel}
+              />
+            )}
         </div>
-        <div className="min-h-0 flex-1 space-y-0.5 overflow-hidden pr-0.5">
+        <div className={cn('min-h-0 flex-1 space-y-0.5 overflow-hidden pr-0.5', isCompact && 'space-y-px pr-0')}>
           {desktopEvents.map((event) => {
             const isStudyEvent = event.type.toLowerCase() === 'study';
             const isDotEvent = event.displayStyle === 'dot' || isStudyEvent;
 
             return isDotEvent ? (
               <span
-                className="flex min-h-[18px] min-w-0 items-center gap-1.5 px-0.5 py-0.5 text-[10px] font-extrabold leading-none text-foreground"
+                className={cn(
+                  'flex min-h-[18px] min-w-0 items-center gap-1.5 px-0.5 py-0.5 text-[10px] font-extrabold leading-none text-foreground',
+                  isCompact && 'min-h-[15px] gap-1 py-0 text-[9px]',
+                )}
                 key={event.id}
               >
                 <span
@@ -242,11 +251,12 @@ export const DayCell = forwardRef<HTMLButtonElement, DayCellProps>(function DayC
               <span
                 className={cn(
                   'flex min-h-[18px] min-w-0 items-center gap-1 rounded-md border px-1 py-0.5 text-[10px] font-extrabold leading-none',
+                  isCompact && 'min-h-[15px] rounded px-1 py-0 text-[9px]',
                   badgeColorClasses[event.color],
                 )}
                 key={event.id}
               >
-                {event.courseLabel ? (
+                {event.courseLabel && !isCompact ? (
                   <span className="max-w-[58px] shrink-0 truncate rounded bg-background/40 px-1 text-[9px] font-black">
                     {event.courseLabel}
                   </span>

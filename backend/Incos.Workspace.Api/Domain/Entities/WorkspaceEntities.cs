@@ -40,6 +40,7 @@ public sealed class AdminUser : AuditableEntity
     public DateTimeOffset? LastLoginAt { get; set; }
     public DateTimeOffset? GoogleLastLoginAt { get; set; }
     public DateTimeOffset? DirectorySyncedAt { get; set; }
+    public DateTimeOffset? SessionRevokedAt { get; set; }
 }
 
 public sealed class AdminGroup : AuditableEntity
@@ -60,6 +61,14 @@ public sealed class AdminGroupMember : AuditableEntity
     public AdminGroup? AdminGroup { get; set; }
     public Guid AdminUserId { get; set; }
     public AdminUser? AdminUser { get; set; }
+}
+
+public sealed class AcademyCredentialAccount : AuditableEntity
+{
+    public Guid AdminUserId { get; set; }
+    public AdminUser? AdminUser { get; set; }
+    public string LoginId { get; set; } = string.Empty;
+    public string PasswordHash { get; set; } = string.Empty;
 }
 
 public sealed class WorkspaceMode : AuditableEntity

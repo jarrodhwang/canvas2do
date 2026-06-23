@@ -33,12 +33,15 @@ public static class GoogleIntegrationEndpoints
     private const string ScheduledGmailStatusSent = "sent";
     private const string ScheduledGmailStatusFailed = "failed";
     private const string ScheduledGmailStatusCancelled = "cancelled";
+    private const string AcademyAccountDomain = "academy.local";
     private const int ChatSpaceLoadConcurrency = 6;
     private const int ChatMemberProfileLookupLimit = 10;
     private const int ChatDirectoryProfileQueryLimit = 8;
     private const int ChatDirectoryProfileFallbackLimit = 4;
     private const int ChatAttachmentMetadataLimit = 10;
     private const int ChatAttachmentPreviewMaxBytes = 25 * 1024 * 1024;
+    private const string LegacyAcademyUsersGroupName = "Academy Users";
+    private const string LegacyAcademyUsersGroupDescription = "Academy-only users created from the ID/password signup flow.";
     private const string MainAdminGroupName = "Main Admin";
     private const string MainAdminEmail = "sj@incos.co.kr";
     private static readonly HashSet<string> AdminGroupPermissionKeys = new(StringComparer.OrdinalIgnoreCase)
@@ -324,6 +327,21 @@ public static class GoogleIntegrationEndpoints
             })
             .WithName("GetAdminUsers");
 
+        admin.MapGet("/users/{userId:guid}", async (
+                Guid userId,
+                IncosWorkspaceDbContext db,
+                CancellationToken cancellationToken) =>
+            {
+                await EnsureAdminUsersTableAsync(db, cancellationToken);
+                await EnsureAdminGroupsTableAsync(db, cancellationToken);
+                await AuthEndpoints.EnsureAcademyCredentialAccountsTableAsync(db, cancellationToken);
+
+                var detail = await GetAdminUserDetailDtoAsync(db, userId, cancellationToken);
+
+                return detail is null ? Results.NotFound() : Results.Ok(detail);
+            })
+            .WithName("GetAdminUserDetail");
+
         admin.MapPatch("/users/{userId:guid}", async (
                 Guid userId,
                 UpdateAdminUserRequest request,
@@ -331,6 +349,7 @@ public static class GoogleIntegrationEndpoints
                 CancellationToken cancellationToken) =>
             {
                 await EnsureAdminUsersTableAsync(db, cancellationToken);
+                await AuthEndpoints.EnsureAcademyCredentialAccountsTableAsync(db, cancellationToken);
 
                 var user = await db.AdminUsers
                     .FirstOrDefaultAsync(adminUser => adminUser.Id == userId, cancellationToken);
@@ -341,7 +360,105 @@ public static class GoogleIntegrationEndpoints
                 }
 
                 var now = DateTimeOffset.UtcNow;
+                var oldEmail = user.Email;
                 var nextStatus = NormalizeAdminUserStatus(request.Status);
+                var academyAccount = await db.AcademyCredentialAccounts
+                    .FirstOrDefaultAsync(account => account.AdminUserId == user.Id, cancellationToken);
+
+                if (request.DisplayName is not null)
+                {
+                    var nextDisplayName = request.DisplayName.Trim();
+
+                    if (string.IsNullOrWhiteSpace(nextDisplayName) || nextDisplayName.Length > 160)
+                    {
+                        return Results.ValidationProblem(new Dictionary<string, string[]>
+                        {
+                            ["displayName"] = ["Display name is required and must be 160 characters or less."],
+                        });
+                    }
+
+                    user.DisplayName = nextDisplayName;
+                }
+
+                if (request.PhotoUrl is not null)
+                {
+                    user.PhotoUrl = NormalizeOptionalText(request.PhotoUrl);
+                }
+
+                if (request.Role is not null)
+                {
+                    user.Role = NormalizeAdminUserRole(request.Role, academyAccount is not null);
+                }
+
+                if (request.LoginId is not null)
+                {
+                    if (academyAccount is null)
+                    {
+                        return Results.Problem(
+                            title: "ID cannot be changed.",
+                            detail: "Only Academy credential users have a local login ID.",
+                            statusCode: StatusCodes.Status409Conflict);
+                    }
+
+                    var nextLoginId = AuthEndpoints.NormalizeAcademyLoginId(request.LoginId);
+
+                    if (!AuthEndpoints.IsValidAcademyLoginId(nextLoginId))
+                    {
+                        return Results.ValidationProblem(new Dictionary<string, string[]>
+                        {
+                            ["loginId"] = ["Use 3-64 lowercase letters, numbers, dot, hyphen, or underscore. Start with a letter or number."],
+                        });
+                    }
+
+                    if (!string.Equals(nextLoginId, academyAccount.LoginId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        var duplicateExists = await db.AcademyCredentialAccounts
+                                .AnyAsync(
+                                    account => account.Id != academyAccount.Id && account.LoginId == nextLoginId,
+                                    cancellationToken) ||
+                            await db.AdminUsers
+                                .AnyAsync(
+                                    adminUser => adminUser.Id != user.Id &&
+                                        adminUser.Email == AuthEndpoints.GetAcademyAccountKey(nextLoginId),
+                                    cancellationToken);
+
+                        if (duplicateExists)
+                        {
+                            return Results.Problem(
+                                title: "ID is already used.",
+                                detail: "Choose a different Academy ID.",
+                                statusCode: StatusCodes.Status409Conflict);
+                        }
+
+                        academyAccount.LoginId = nextLoginId;
+                        academyAccount.UpdatedAt = now;
+                        user.Email = AuthEndpoints.GetAcademyAccountKey(nextLoginId);
+                        user.HostedDomain = "academy.local";
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(request.Password))
+                {
+                    if (academyAccount is null)
+                    {
+                        return Results.Problem(
+                            title: "Password cannot be changed.",
+                            detail: "Google Workspace passwords are managed by Google.",
+                            statusCode: StatusCodes.Status409Conflict);
+                    }
+
+                    if (request.Password.Length < 8 || request.Password.Length > 256)
+                    {
+                        return Results.ValidationProblem(new Dictionary<string, string[]>
+                        {
+                            ["password"] = ["Use a password between 8 and 256 characters."],
+                        });
+                    }
+
+                    academyAccount.PasswordHash = AuthEndpoints.HashPassword(request.Password);
+                    academyAccount.UpdatedAt = now;
+                    user.SessionRevokedAt = now;
+                }
 
                 if (!string.IsNullOrWhiteSpace(nextStatus))
                 {
@@ -391,9 +508,43 @@ public static class GoogleIntegrationEndpoints
                 user.UpdatedAt = now;
                 await db.SaveChangesAsync(cancellationToken);
 
+                if (!string.Equals(oldEmail, user.Email, StringComparison.OrdinalIgnoreCase))
+                {
+                    await MoveAdminUserKeyAsync(db, oldEmail, user.Email, cancellationToken);
+                }
+
                 return Results.Ok(ToAdminUserDto(user));
             })
             .WithName("UpdateAdminUserAccess");
+
+        admin.MapPost("/users/{userId:guid}/sign-out", async (
+                Guid userId,
+                IncosWorkspaceDbContext db,
+                CancellationToken cancellationToken) =>
+            {
+                await EnsureAdminUsersTableAsync(db, cancellationToken);
+
+                var user = await db.AdminUsers
+                    .FirstOrDefaultAsync(adminUser => adminUser.Id == userId, cancellationToken);
+
+                if (user is null)
+                {
+                    return Results.NotFound();
+                }
+
+                var now = DateTimeOffset.UtcNow;
+                user.SessionRevokedAt = now;
+                user.UpdatedAt = now;
+
+                await EnsureGoogleOAuthTokensTableAsync(db, cancellationToken);
+                await db.GoogleOAuthTokens
+                    .Where(token => token.UserKey == user.Email || token.Email == user.Email)
+                    .ExecuteDeleteAsync(cancellationToken);
+                await db.SaveChangesAsync(cancellationToken);
+
+                return Results.Ok(ToAdminUserDto(user));
+            })
+            .WithName("SignOutAdminUserNow");
 
         admin.MapGet("/groups", async (
                 HttpContext context,
@@ -402,6 +553,7 @@ public static class GoogleIntegrationEndpoints
             {
                 await EnsureAdminGroupsTableAsync(db, cancellationToken);
                 await EnsureDefaultAdminGroupAsync(db, cancellationToken);
+                await RemoveLegacyAcademyUsersGroupAsync(db, cancellationToken);
 
                 var canViewProtectedGroups = await CanViewMainAdminGroupAsync(db, context.User, cancellationToken);
                 var groups = await GetAdminGroupDtosAsync(db, canViewProtectedGroups, cancellationToken);
@@ -438,6 +590,26 @@ public static class GoogleIntegrationEndpoints
                         statusCode: StatusCodes.Status409Conflict);
                 }
 
+                var nextPermissions = NormalizeAdminGroupValues(request.Permissions, AdminGroupPermissionKeys);
+                var nextSettings = NormalizeAdminGroupValues(request.Settings, AdminGroupSettingKeys);
+                var nextAccess = NormalizeAdminGroupValues(request.Access, AdminGroupAccessKeys);
+                var memberIds = (request.MemberIds ?? []).Distinct().ToArray();
+                var academyCompatibilityError = await ValidateAcademyGroupGrantCompatibilityAsync(
+                    db,
+                    memberIds,
+                    nextPermissions,
+                    nextSettings,
+                    nextAccess,
+                    cancellationToken);
+
+                if (academyCompatibilityError is not null)
+                {
+                    return Results.Problem(
+                        title: "Academy group assignment is invalid.",
+                        detail: academyCompatibilityError,
+                        statusCode: StatusCodes.Status400BadRequest);
+                }
+
                 var now = DateTimeOffset.UtcNow;
                 var group = new AdminGroup
                 {
@@ -448,13 +620,13 @@ public static class GoogleIntegrationEndpoints
                     Description = NormalizeOptionalText(request.Description),
                     PhotoUrl = NormalizeOptionalText(request.PhotoUrl),
                     Status = NormalizeAdminGroupStatus(request.Status),
-                    PermissionJson = SerializeAdminGroupValues(request.Permissions, AdminGroupPermissionKeys),
-                    SettingJson = SerializeAdminGroupValues(request.Settings, AdminGroupSettingKeys),
-                    AccessJson = SerializeAdminGroupValues(request.Access, AdminGroupAccessKeys),
+                    PermissionJson = JsonSerializer.Serialize(nextPermissions),
+                    SettingJson = JsonSerializer.Serialize(nextSettings),
+                    AccessJson = JsonSerializer.Serialize(nextAccess),
                 };
 
                 db.AdminGroups.Add(group);
-                await ApplyAdminGroupMembersAsync(db, group, request.MemberIds, false, cancellationToken);
+                await ApplyAdminGroupMembersAsync(db, group, memberIds, false, cancellationToken);
                 await db.SaveChangesAsync(cancellationToken);
 
                 var createdGroup = await GetAdminGroupDtoAsync(db, group.Id, cancellationToken);
@@ -534,34 +706,82 @@ public static class GoogleIntegrationEndpoints
                         : NormalizeAdminGroupStatus(request.Status);
                 }
 
+                var nextPermissions = isProtectedGroup
+                    ? NormalizeAdminGroupValues(AdminGroupPermissionKeys, AdminGroupPermissionKeys)
+                    : request.Permissions is not null
+                        ? NormalizeAdminGroupValues(request.Permissions, AdminGroupPermissionKeys)
+                        : ParseAdminGroupValues(group.PermissionJson, AdminGroupPermissionKeys);
+                var nextSettings = isProtectedGroup
+                    ? NormalizeAdminGroupValues(AdminGroupSettingKeys, AdminGroupSettingKeys)
+                    : request.Settings is not null
+                        ? NormalizeAdminGroupValues(request.Settings, AdminGroupSettingKeys)
+                        : ParseAdminGroupValues(group.SettingJson, AdminGroupSettingKeys);
+                var nextAccess = isProtectedGroup
+                    ? NormalizeAdminGroupValues(AdminGroupAccessKeys, AdminGroupAccessKeys)
+                    : request.Access is not null
+                        ? NormalizeAdminGroupValues(request.Access, AdminGroupAccessKeys)
+                        : ParseAdminGroupValues(group.AccessJson, AdminGroupAccessKeys);
+                var memberIds = isProtectedGroup || request.MemberIds is not null
+                    ? (request.MemberIds ?? []).Distinct().ToArray()
+                    : await db.AdminGroupMembers
+                        .Where(member => member.AdminGroupId == group.Id)
+                        .Select(member => member.AdminUserId)
+                        .ToArrayAsync(cancellationToken);
+
+                if (isProtectedGroup)
+                {
+                    var mainAdminId = await db.AdminUsers
+                        .Where(user => user.Email == MainAdminEmail)
+                        .Select(user => user.Id)
+                        .FirstOrDefaultAsync(cancellationToken);
+
+                    if (mainAdminId != Guid.Empty)
+                    {
+                        memberIds = memberIds.Append(mainAdminId).Distinct().ToArray();
+                    }
+                }
+
+                if (!isProtectedGroup)
+                {
+                    var academyCompatibilityError = await ValidateAcademyGroupGrantCompatibilityAsync(
+                        db,
+                        memberIds,
+                        nextPermissions,
+                        nextSettings,
+                        nextAccess,
+                        cancellationToken);
+
+                    if (academyCompatibilityError is not null)
+                    {
+                        return Results.Problem(
+                            title: "Academy group assignment is invalid.",
+                            detail: academyCompatibilityError,
+                            statusCode: StatusCodes.Status400BadRequest);
+                    }
+                }
+
                 if (request.Permissions is not null)
                 {
-                    group.PermissionJson = isProtectedGroup
-                        ? SerializeAdminGroupValues(AdminGroupPermissionKeys, AdminGroupPermissionKeys)
-                        : SerializeAdminGroupValues(request.Permissions, AdminGroupPermissionKeys);
+                    group.PermissionJson = JsonSerializer.Serialize(nextPermissions);
                 }
 
                 if (request.Settings is not null)
                 {
-                    group.SettingJson = isProtectedGroup
-                        ? SerializeAdminGroupValues(AdminGroupSettingKeys, AdminGroupSettingKeys)
-                        : SerializeAdminGroupValues(request.Settings, AdminGroupSettingKeys);
+                    group.SettingJson = JsonSerializer.Serialize(nextSettings);
                 }
 
                 if (request.Access is not null)
                 {
-                    group.AccessJson = isProtectedGroup
-                        ? SerializeAdminGroupValues(AdminGroupAccessKeys, AdminGroupAccessKeys)
-                        : SerializeAdminGroupValues(request.Access, AdminGroupAccessKeys);
+                    group.AccessJson = JsonSerializer.Serialize(nextAccess);
                 }
 
                 if (isProtectedGroup)
                 {
                     group.Name = MainAdminGroupName;
                     group.Status = "active";
-                    group.PermissionJson = SerializeAdminGroupValues(AdminGroupPermissionKeys, AdminGroupPermissionKeys);
-                    group.SettingJson = SerializeAdminGroupValues(AdminGroupSettingKeys, AdminGroupSettingKeys);
-                    group.AccessJson = SerializeAdminGroupValues(AdminGroupAccessKeys, AdminGroupAccessKeys);
+                    group.PermissionJson = JsonSerializer.Serialize(nextPermissions);
+                    group.SettingJson = JsonSerializer.Serialize(nextSettings);
+                    group.AccessJson = JsonSerializer.Serialize(nextAccess);
                 }
 
                 if (request.MemberIds is not null || isProtectedGroup)
@@ -569,7 +789,7 @@ public static class GoogleIntegrationEndpoints
                     await ApplyAdminGroupMembersAsync(
                         db,
                         group,
-                        request.MemberIds,
+                        memberIds,
                         isProtectedGroup,
                         cancellationToken);
                 }
@@ -2040,13 +2260,89 @@ public static class GoogleIntegrationEndpoints
                 ? CreateDisplayNameFromEmail(user.Email)
                 : user.DisplayName,
             user.PhotoUrl,
+            user.Role,
             status,
+            IsAcademyAccountEmail(user.Email),
             user.ApiAccessEnabled && status != "inactive",
             user.LastLoginAt.HasValue,
             user.IsDirectorySuspended,
             user.LastLoginAt,
             user.GoogleLastLoginAt,
-            user.DirectorySyncedAt);
+            user.DirectorySyncedAt,
+            user.SessionRevokedAt);
+    }
+
+    private static async Task<AdminUserDetailDto?> GetAdminUserDetailDtoAsync(
+        IncosWorkspaceDbContext db,
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        var user = await db.AdminUsers
+            .AsNoTracking()
+            .FirstOrDefaultAsync(adminUser => adminUser.Id == userId, cancellationToken);
+
+        if (user is null)
+        {
+            return null;
+        }
+
+        var academyLoginId = await db.AcademyCredentialAccounts
+            .AsNoTracking()
+            .Where(account => account.AdminUserId == user.Id)
+            .Select(account => account.LoginId)
+            .FirstOrDefaultAsync(cancellationToken);
+        var groups = await (
+            from member in db.AdminGroupMembers.AsNoTracking()
+            join adminGroup in db.AdminGroups.AsNoTracking() on member.AdminGroupId equals adminGroup.Id
+            where member.AdminUserId == user.Id
+            orderby adminGroup.Name
+            select adminGroup.Name)
+            .ToArrayAsync(cancellationToken);
+
+        return new AdminUserDetailDto(
+            ToAdminUserDto(user),
+            academyLoginId,
+            groups,
+            CreateAdminUserLogs(user, groups));
+    }
+
+    private static AdminUserLogDto[] CreateAdminUserLogs(AdminUser user, IReadOnlyCollection<string> groups)
+    {
+        var logs = new List<AdminUserLogDto>
+        {
+            new("Account created", user.CreatedAt, user.Email),
+        };
+
+        if (user.LastLoginAt.HasValue)
+        {
+            logs.Add(new("Last app login", user.LastLoginAt.Value, null));
+        }
+
+        if (user.GoogleLastLoginAt.HasValue)
+        {
+            logs.Add(new("Google last login", user.GoogleLastLoginAt.Value, null));
+        }
+
+        if (user.DirectorySyncedAt.HasValue)
+        {
+            logs.Add(new("Directory synced", user.DirectorySyncedAt.Value, null));
+        }
+
+        if (user.SessionRevokedAt.HasValue)
+        {
+            logs.Add(new("Sessions revoked", user.SessionRevokedAt.Value, null));
+        }
+
+        if (groups.Count > 0)
+        {
+            logs.Add(new("Group assignment", user.UpdatedAt, string.Join(", ", groups)));
+        }
+
+        logs.Add(new("Profile updated", user.UpdatedAt, user.Status));
+
+        return logs
+            .OrderByDescending(log => log.At)
+            .ToArray();
     }
 
     private static async Task<AdminGroupDto[]> GetAdminGroupDtosAsync(
@@ -2106,6 +2402,10 @@ public static class GoogleIntegrationEndpoints
 
     private static bool IsProtectedAdminGroup(AdminGroup group) =>
         string.Equals(group.Name, MainAdminGroupName, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsAcademyAccountEmail(string? email) =>
+        !string.IsNullOrWhiteSpace(email) &&
+        email.Trim().EndsWith($"@{AcademyAccountDomain}", StringComparison.OrdinalIgnoreCase);
 
     private static async Task<bool> CanViewMainAdminGroupAsync(
         IncosWorkspaceDbContext db,
@@ -2201,6 +2501,48 @@ public static class GoogleIntegrationEndpoints
         await db.SaveChangesAsync(cancellationToken);
     }
 
+    public static async Task RemoveLegacyAcademyUsersGroupAsync(
+        IncosWorkspaceDbContext db,
+        CancellationToken cancellationToken)
+    {
+        await EnsureAdminGroupsTableAsync(db, cancellationToken);
+
+        var group = await db.AdminGroups
+            .FirstOrDefaultAsync(
+                adminGroup => adminGroup.Name.ToLower() == LegacyAcademyUsersGroupName.ToLower(),
+                cancellationToken);
+
+        if (group is null ||
+            !string.Equals(group.Description, LegacyAcademyUsersGroupDescription, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var permissions = ParseAdminGroupValues(group.PermissionJson, AdminGroupPermissionKeys);
+        var settings = ParseAdminGroupValues(group.SettingJson, AdminGroupSettingKeys);
+        var access = ParseAdminGroupValues(group.AccessJson, AdminGroupAccessKeys);
+        var isUnmodifiedLegacyGroup =
+            permissions.Length > 0 &&
+            settings.Length > 0 &&
+            access.Length > 0 &&
+            permissions.All(IsAcademyPermissionValue) &&
+            settings.All(IsAcademySettingValue) &&
+            access.All(IsAcademyAccessValue);
+
+        if (!isUnmodifiedLegacyGroup)
+        {
+            return;
+        }
+
+        var members = await db.AdminGroupMembers
+            .Where(member => member.AdminGroupId == group.Id)
+            .ToArrayAsync(cancellationToken);
+
+        db.AdminGroupMembers.RemoveRange(members);
+        db.AdminGroups.Remove(group);
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
     private static async Task ApplyAdminGroupMembersAsync(
         IncosWorkspaceDbContext db,
         AdminGroup group,
@@ -2264,6 +2606,51 @@ public static class GoogleIntegrationEndpoints
         }
     }
 
+    private static async Task<string?> ValidateAcademyGroupGrantCompatibilityAsync(
+        IncosWorkspaceDbContext db,
+        IReadOnlyCollection<Guid> memberIds,
+        IReadOnlyCollection<string> permissions,
+        IReadOnlyCollection<string> settings,
+        IReadOnlyCollection<string> access,
+        CancellationToken cancellationToken)
+    {
+        if (memberIds.Count == 0)
+        {
+            return null;
+        }
+
+        var selectedMemberEmails = await db.AdminUsers
+            .AsNoTracking()
+            .Where(user => memberIds.Contains(user.Id))
+            .Select(user => user.Email)
+            .ToArrayAsync(cancellationToken);
+        var hasAcademyMember = selectedMemberEmails.Any(IsAcademyAccountEmail);
+
+        if (!hasAcademyMember)
+        {
+            return null;
+        }
+
+        var hasWorkspaceOrAdminGrant =
+            permissions.Any(value => !IsAcademyPermissionValue(value)) ||
+            settings.Any(value => !IsAcademySettingValue(value)) ||
+            access.Any(value => !IsAcademyAccessValue(value));
+
+        return hasWorkspaceOrAdminGrant
+            ? "Academy credential users can only be assigned Academy access, permissions, and settings. Remove Workspace/Admin grants or remove Academy users from this group."
+            : null;
+    }
+
+    private static bool IsAcademyAccessValue(string value) =>
+        string.Equals(value, "academy", StringComparison.OrdinalIgnoreCase) ||
+        value.StartsWith("academy-", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsAcademyPermissionValue(string value) =>
+        value.StartsWith("academy-", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsAcademySettingValue(string value) =>
+        string.Equals(value, "academy-settings", StringComparison.OrdinalIgnoreCase);
+
     private static string? NormalizeAdminUserStatus(string? status)
     {
         if (string.IsNullOrWhiteSpace(status))
@@ -2296,11 +2683,68 @@ public static class GoogleIntegrationEndpoints
             _ => "active",
         };
 
+    private static string? NormalizeAdminUserRole(string? role, bool isAcademyUser)
+    {
+        var normalizedRole = role?.Trim().ToLowerInvariant();
+
+        if (string.IsNullOrWhiteSpace(normalizedRole))
+        {
+            return isAcademyUser ? "academy" : null;
+        }
+
+        return normalizedRole switch
+        {
+            "academy" => "academy",
+            "workspace" => "workspace",
+            "admin" => "admin",
+            "viewer" => "viewer",
+            _ => isAcademyUser ? "academy" : null,
+        };
+    }
+
     private static string? NormalizeOptionalText(string? value)
     {
         var trimmedValue = value?.Trim();
 
         return string.IsNullOrWhiteSpace(trimmedValue) ? null : trimmedValue;
+    }
+
+    private static async Task MoveAdminUserKeyAsync(
+        IncosWorkspaceDbContext db,
+        string oldUserKey,
+        string newUserKey,
+        CancellationToken cancellationToken)
+    {
+        var oldNormalizedKey = oldUserKey.Trim().ToLowerInvariant();
+        var newNormalizedKey = newUserKey.Trim().ToLowerInvariant();
+
+        if (string.Equals(oldNormalizedKey, newNormalizedKey, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        await WorkspaceEndpoints.EnsureUserSettingsTableAsync(db, cancellationToken);
+        await db.UserSettings
+            .Where(setting => setting.UserKey == oldNormalizedKey)
+            .ExecuteUpdateAsync(
+                setters => setters.SetProperty(setting => setting.UserKey, newNormalizedKey),
+                cancellationToken);
+
+        await EnsureGoogleOAuthTokensTableAsync(db, cancellationToken);
+        await db.GoogleOAuthTokens
+            .Where(token => token.UserKey == oldNormalizedKey || token.Email == oldNormalizedKey)
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(token => token.UserKey, newNormalizedKey)
+                    .SetProperty(token => token.Email, newNormalizedKey),
+                cancellationToken);
+
+        await EnsureScheduledGmailMessagesTableAsync(db, cancellationToken);
+        await db.ScheduledGmailMessages
+            .Where(message => message.UserKey == oldNormalizedKey)
+            .ExecuteUpdateAsync(
+                setters => setters.SetProperty(message => message.UserKey, newNormalizedKey),
+                cancellationToken);
     }
 
     private static string SerializeAdminGroupValues(
@@ -2706,9 +3150,7 @@ public static class GoogleIntegrationEndpoints
 
     private static TimeSpan GetWorkspaceSessionDuration(IConfiguration configuration)
     {
-        var hours = configuration.GetValue<double?>("Authentication:Google:WorkspaceSessionHours") ?? 8;
-
-        return TimeSpan.FromHours(Math.Clamp(hours, 1, 24 * 14));
+        return AuthEndpoints.GetWorkspaceSessionDuration(configuration);
     }
 
     private static bool IsGoogleIntegrationStatusRequest(HttpContext context) =>
@@ -3344,8 +3786,10 @@ public static class GoogleIntegrationEndpoints
                 "IsDirectorySuspended" boolean NOT NULL,
                 "LastLoginAt" timestamp with time zone NULL,
                 "GoogleLastLoginAt" timestamp with time zone NULL,
-                "DirectorySyncedAt" timestamp with time zone NULL
+                "DirectorySyncedAt" timestamp with time zone NULL,
+                "SessionRevokedAt" timestamp with time zone NULL
             );
+            ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS "SessionRevokedAt" timestamp with time zone NULL;
             CREATE UNIQUE INDEX IF NOT EXISTS "IX_admin_users_Email"
                 ON admin_users ("Email");
             CREATE INDEX IF NOT EXISTS "IX_admin_users_GoogleUserId"

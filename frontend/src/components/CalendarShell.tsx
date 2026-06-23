@@ -42,9 +42,12 @@ interface CalendarShellProps {
   data: WorkspaceModeMockData;
   agendaDateLabel?: string;
   boardColumns?: WorkspaceModeConfig['board']['columns'];
+  calendarTodoStyle?: 'comfortable' | 'compact';
   courseFilterOptions?: CourseFilterOption[];
   emptyMessage?: string;
+  fillHeight?: boolean;
   focusedBoardItemId?: string | null;
+  isCompactMonth?: boolean;
   isExpanded?: boolean;
   isSelectedDateToday?: boolean;
   isLoading?: boolean;
@@ -79,9 +82,12 @@ export function CalendarShell({
   data,
   agendaDateLabel,
   boardColumns,
+  calendarTodoStyle = 'compact',
   courseFilterOptions,
   emptyMessage,
+  fillHeight = false,
   focusedBoardItemId,
+  isCompactMonth = false,
   isExpanded = false,
   isSelectedDateToday = false,
   isLoading = false,
@@ -197,8 +203,18 @@ export function CalendarShell({
   };
 
   return (
-    <div className="group/calendar relative transition-all duration-300 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
-    <Card className="gap-0 rounded-xl bg-card py-2 shadow-none transition-all duration-300 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col max-[520px]:rounded-none max-[520px]:border-0 max-[520px]:bg-transparent max-[520px]:py-0">
+    <div
+      className={cn(
+        'group/calendar relative transition-all duration-300 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col',
+        fillHeight && 'flex min-h-0 flex-1 flex-col',
+      )}
+    >
+    <Card
+      className={cn(
+        'gap-0 rounded-xl bg-card py-2 shadow-none transition-all duration-300 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col max-[520px]:rounded-none max-[520px]:border-0 max-[520px]:bg-transparent max-[520px]:py-0',
+        fillHeight && 'flex min-h-0 flex-1 flex-col',
+      )}
+    >
       {onToggleExpanded ? (
         <button
           aria-label={isExpanded ? dictionary.calendarCollapse : dictionary.calendarExpand}
@@ -348,8 +364,18 @@ export function CalendarShell({
         </div>
       </CardHeader>
 
-      <CardContent className="px-3 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col max-[520px]:px-0">
-        <div className="relative min-w-0 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
+      <CardContent
+        className={cn(
+          'px-3 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col max-[520px]:px-0',
+          fillHeight && 'flex min-h-0 flex-1 flex-col',
+        )}
+      >
+        <div
+          className={cn(
+            'relative min-w-0 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col',
+            fillHeight && 'flex min-h-0 flex-1 flex-col',
+          )}
+        >
           <div
             className={cn(
               'min-w-0 overscroll-contain',
@@ -359,10 +385,17 @@ export function CalendarShell({
                     isExpanded
                       ? 'max-h-[calc(100dvh-146px)] lg:h-full lg:max-h-none'
                       : 'max-h-[clamp(320px,calc(100dvh-220px),780px)] lg:h-full lg:max-h-none max-md:max-h-[clamp(300px,calc(100dvh-190px),680px)] max-[520px]:max-h-none',
+                    fillHeight && 'h-full min-h-0 flex-1 max-h-none',
                   )
                 : view === 'agenda'
-                  ? 'overflow-auto rounded-xl pr-1 lg:min-h-0 lg:flex-1 lg:max-h-none'
-                : 'overflow-x-auto lg:min-h-0 lg:flex-1',
+                  ? cn(
+                      'overflow-auto rounded-xl pr-1 lg:min-h-0 lg:flex-1 lg:max-h-none',
+                      fillHeight && 'min-h-0 flex-1 max-h-none',
+                    )
+                : cn(
+                    'overflow-x-auto lg:min-h-0 lg:flex-1',
+                    fillHeight && 'min-h-0 flex-1',
+                  ),
               showCalendarLoading && 'opacity-35 blur-[1px]',
             )}
             onWheel={handleMonthWheel}
@@ -379,6 +412,7 @@ export function CalendarShell({
               >
                 <MonthCalendar
                   days={data.days}
+                  isCompact={isCompactMonth}
                   isExpanded={isExpanded}
                   mobileScope={mobileCalendarScope}
                   onAddCourseworkForDay={onAddCourseworkForDay}
@@ -391,6 +425,7 @@ export function CalendarShell({
             {view === 'agenda' ? (
               <AgendaView
                 emptyLabel={dictionary.selectedDayTodoEmpty}
+                fillHeight={fillHeight}
                 items={data.agenda}
                 onOpenItem={onOpenTodo}
                 onOpenItemDetails={onOpenTodoDetails}
@@ -403,7 +438,9 @@ export function CalendarShell({
             ) : null}
             {view === 'board' ? (
               <BoardView
+                calendarTodoStyle={calendarTodoStyle}
                 columns={boardColumns ?? mode.board.columns}
+                fillHeight={fillHeight}
                 focusedItemId={focusedBoardItemId}
                 items={data.boardItems}
                 onAddItem={onOpenAddItem}

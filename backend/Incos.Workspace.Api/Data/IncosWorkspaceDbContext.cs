@@ -11,6 +11,7 @@ public sealed class IncosWorkspaceDbContext(DbContextOptions<IncosWorkspaceDbCon
     public DbSet<AdminUser> AdminUsers => Set<AdminUser>();
     public DbSet<AdminGroup> AdminGroups => Set<AdminGroup>();
     public DbSet<AdminGroupMember> AdminGroupMembers => Set<AdminGroupMember>();
+    public DbSet<AcademyCredentialAccount> AcademyCredentialAccounts => Set<AcademyCredentialAccount>();
     public DbSet<WorkspaceMode> WorkspaceModes => Set<WorkspaceMode>();
     public DbSet<ModeSetting> ModeSettings => Set<ModeSetting>();
     public DbSet<CalendarItem> CalendarItems => Set<CalendarItem>();
@@ -66,6 +67,7 @@ public sealed class IncosWorkspaceDbContext(DbContextOptions<IncosWorkspaceDbCon
             entity.Property(user => user.HostedDomain).HasMaxLength(160);
             entity.Property(user => user.Role).HasMaxLength(120);
             entity.Property(user => user.Status).HasMaxLength(40);
+            entity.Property(user => user.SessionRevokedAt);
         });
 
         modelBuilder.Entity<AdminGroup>(entity =>
@@ -92,6 +94,19 @@ public sealed class IncosWorkspaceDbContext(DbContextOptions<IncosWorkspaceDbCon
             entity.HasOne(member => member.AdminUser)
                 .WithMany()
                 .HasForeignKey(member => member.AdminUserId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<AcademyCredentialAccount>(entity =>
+        {
+            entity.ToTable("academy_credential_accounts");
+            entity.HasIndex(account => account.LoginId).IsUnique();
+            entity.HasIndex(account => account.AdminUserId).IsUnique();
+            entity.Property(account => account.LoginId).HasMaxLength(80);
+            entity.Property(account => account.PasswordHash).HasColumnType("text");
+            entity.HasOne(account => account.AdminUser)
+                .WithMany()
+                .HasForeignKey(account => account.AdminUserId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 

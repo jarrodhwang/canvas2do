@@ -1,5 +1,8 @@
+using Incos.Workspace.Api.Contracts;
 using Incos.Workspace.Api.Data;
+using Incos.Workspace.Api.Domain.Entities;
 using Incos.Workspace.Api.Infrastructure;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.Google;
@@ -8,7 +11,9 @@ using Microsoft.EntityFrameworkCore;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Security.Claims;
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace Incos.Workspace.Api.Endpoints;
 
@@ -16,8 +21,46 @@ public static class AuthEndpoints
 {
     public const string GoogleForceLoginProperty = "incos:google:force_login";
     public const string GoogleRequestedWorkspaceScopesProperty = "incos:google:requested_workspace_scopes";
+    public const string AcademyCredentialProvider = "academy";
+    private const string PreviewModeClaim = "incos:preview";
+    private const string PreviewAdminEmailClaim = "incos:preview_admin_email";
+    private const string PreviewAdminNameClaim = "incos:preview_admin_name";
+    private const string PreviewOriginalSessionProperty = "incos:preview:original_session";
     private const string MicrosoftOAuthStateCookie = "incos_microsoft_oauth_state";
     private const string MicrosoftOAuthReturnUrlCookie = "incos_microsoft_oauth_return_url";
+    private const string AcademyAccountDomain = "academy.local";
+    private const int PasswordHashIterations = 210_000;
+    private const int PasswordSaltSizeBytes = 16;
+    private const int PasswordHashSizeBytes = 32;
+    private const double DefaultWorkspaceSessionHours = 24 * 14;
+    private const double MinimumWorkspaceSessionHours = 1;
+    private const double MaximumWorkspaceSessionHours = 24 * 14;
+    private static readonly Regex AcademyLoginIdRegex = new("^[a-z0-9][a-z0-9._-]{2,63}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly string[] AcademyOnlyAccessKeys =
+    [
+        "academy",
+        "academy-dashboard",
+        "academy-courses",
+        "academy-grades",
+        "academy-inbox",
+        "academy-people",
+        "academy-outlook",
+        "academy-settings-page",
+    ];
+    private static readonly string[] AcademyOnlyPermissionKeys =
+    [
+        "academy-view-courses",
+        "academy-manage-courses",
+        "academy-view-people",
+        "academy-message-people",
+        "academy-manage-inbox",
+        "academy-manage-settings",
+    ];
+    private static readonly string[] AcademyOnlySettingKeys =
+    [
+        "academy-settings",
+    ];
+
     public sealed record AdminAccessGrantSet(string[] Access, string[] Permissions, string[] Settings)
     {
         public static readonly AdminAccessGrantSet Empty = new([], [], []);
@@ -36,33 +79,76 @@ public static class AuthEndpoints
                 var user = context.User;
                 var isAuthenticated = user.Identity?.IsAuthenticated == true;
                 var email = isAuthenticated ? user.FindFirstValue(ClaimTypes.Email) : null;
+                var isSessionRevoked = isAuthenticated &&
+                    await IsCurrentSessionRevokedAsync(context, db, email, cancellationToken);
+
+                if (isSessionRevoked)
+                {
+                    await context.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+
+                    return Results.Ok(new
+                    {
+                        isAuthenticated = false,
+                        provider = (string?)null,
+                        displayName = (string?)null,
+                        email = (string?)null,
+                        loginId = (string?)null,
+                        pictureUrl = (string?)null,
+                        hostedDomain = (string?)null,
+                        accountStatus = (string?)null,
+                        requiresApproval = false,
+                        requiresAssignment = false,
+                        canAccessWorkspace = false,
+                        access = Array.Empty<string>(),
+                        permissions = Array.Empty<string>(),
+                        settings = Array.Empty<string>(),
+                        isPreview = false,
+                        previewAdminEmail = (string?)null,
+                        previewAdminDisplayName = (string?)null,
+                    });
+                }
+
                 var hostedDomain = isAuthenticated ? user.FindFirstValue("hd") : null;
+                var authProvider = isAuthenticated
+                    ? user.FindFirstValue("incos:auth_provider")
+                    : null;
+                var isPreview = isAuthenticated && IsPreviewPrincipal(user);
+                var isAcademyCredentialAccount = IsAcademyCredentialProvider(authProvider);
                 var workspaceDataDomain = GetGoogleWorkspaceDataDomain(configuration);
                 var isWorkspaceAccount = isAuthenticated &&
                     IsWorkspaceGoogleAccount(email, hostedDomain, workspaceDataDomain);
                 var accountStatus = isAuthenticated
                     ? await GetAdminAccountStatusAsync(db, email, cancellationToken)
                     : null;
-                var canAccessWorkspace = isWorkspaceAccount && accountStatus == "active";
+                var canAccessWorkspace = (isWorkspaceAccount || isAcademyCredentialAccount) && accountStatus == "active";
                 var grants = canAccessWorkspace
                     ? await GetAdminAccessGrantsAsync(db, email, cancellationToken)
                     : AdminAccessGrantSet.Empty;
+                grants = isAcademyCredentialAccount
+                    ? FilterAcademyOnlyGrants(grants)
+                    : grants;
 
                 return Results.Ok(new
                 {
                     isAuthenticated,
-                    provider = isAuthenticated ? "google" : null,
+                    provider = isAuthenticated
+                        ? isAcademyCredentialAccount ? AcademyCredentialProvider : "google"
+                        : null,
                     displayName = isAuthenticated ? user.FindFirstValue(ClaimTypes.Name) : null,
                     email,
+                    loginId = isAuthenticated ? user.FindFirstValue("incos:login_id") : null,
                     pictureUrl = isAuthenticated ? user.FindFirstValue("urn:google:picture") : null,
                     hostedDomain,
                     accountStatus,
-                    requiresApproval = isWorkspaceAccount && accountStatus == "pending",
+                    requiresApproval = (isWorkspaceAccount || isAcademyCredentialAccount) && accountStatus == "pending",
                     requiresAssignment = canAccessWorkspace && grants.Access.Length == 0,
                     canAccessWorkspace,
                     access = grants.Access,
                     permissions = grants.Permissions,
                     settings = grants.Settings,
+                    isPreview,
+                    previewAdminEmail = isPreview ? user.FindFirstValue(PreviewAdminEmailClaim) : null,
+                    previewAdminDisplayName = isPreview ? user.FindFirstValue(PreviewAdminNameClaim) : null,
                 });
             })
             .WithName("GetAuthSession");
@@ -82,6 +168,7 @@ public static class AuthEndpoints
                     microsoftConfigured =
                         !string.IsNullOrWhiteSpace(microsoftClientId) &&
                         !string.IsNullOrWhiteSpace(microsoftClientSecret),
+                    academyCredentialsConfigured = true,
                     hostedDomain = configuration["Authentication:Google:HostedDomain"],
                     workspaceDataDomain =
                         configuration["Authentication:Google:WorkspaceDataDomain"] ??
@@ -90,6 +177,35 @@ public static class AuthEndpoints
                 });
             })
             .WithName("GetAuthConfig");
+
+        auth.MapGet("/academy/id-available", async (
+                string? id,
+                IncosWorkspaceDbContext db,
+                CancellationToken cancellationToken) =>
+            {
+                var normalizedLoginId = NormalizeAcademyLoginId(id);
+
+                if (!IsValidAcademyLoginId(normalizedLoginId))
+                {
+                    return Results.Ok(new AcademyCredentialIdAvailabilityDto(normalizedLoginId, false));
+                }
+
+                await EnsureAcademyCredentialAccountsTableAsync(db, cancellationToken);
+                var exists = await db.AcademyCredentialAccounts
+                    .AsNoTracking()
+                    .AnyAsync(account => account.LoginId == normalizedLoginId, cancellationToken);
+
+                return Results.Ok(new AcademyCredentialIdAvailabilityDto(normalizedLoginId, !exists));
+            })
+            .WithName("CheckAcademyLoginIdAvailability");
+
+        auth.MapPost("/academy/signup", SignUpAcademyAccountAsync)
+            .AllowAnonymous()
+            .WithName("SignUpAcademyAccount");
+
+        auth.MapPost("/academy/login", LoginAcademyAccountAsync)
+            .AllowAnonymous()
+            .WithName("LoginAcademyAccount");
 
         auth.MapGet("/google/login", RedirectLegacyGoogleLogin)
             .WithName("RedirectLegacyGoogleLogin");
@@ -264,6 +380,12 @@ public static class AuthEndpoints
                     statusCode: StatusCodes.Status403Forbidden))
             .WithName("GoogleWorkspaceAccessDenied");
 
+        auth.MapPost("/preview/users/{userId:guid}", StartUserPreviewAsync)
+            .WithName("StartAdminUserPreview");
+
+        auth.MapPost("/preview/exit", (Func<HttpContext, Task<IResult>>)ExitUserPreviewAsync)
+            .WithName("ExitAdminUserPreview");
+
         auth.MapPost("/logout", async (HttpContext context) =>
             {
                 await context.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
@@ -272,6 +394,331 @@ public static class AuthEndpoints
             .WithName("Logout");
 
         return app;
+    }
+
+    private static async Task<IResult> SignUpAcademyAccountAsync(
+        HttpContext context,
+        IHttpClientFactory httpClientFactory,
+        IncosWorkspaceDbContext db,
+        IDataProtectionProvider dataProtectionProvider,
+        AcademyCredentialSignupRequest request,
+        CancellationToken cancellationToken)
+    {
+        var displayName = request.Name?.Trim();
+        var loginId = NormalizeAcademyLoginId(request.LoginId);
+        var password = request.Password ?? string.Empty;
+        var confirmPassword = request.ConfirmPassword ?? string.Empty;
+        var profileImageDataUrl = NormalizeProfileImageDataUrl(request.ProfileImageDataUrl);
+
+        if (string.IsNullOrWhiteSpace(displayName) || displayName.Length > 160)
+        {
+            return Results.BadRequest(new
+            {
+                title = "Name is invalid.",
+                detail = "Enter a display name up to 160 characters.",
+            });
+        }
+
+        if (!IsValidAcademyLoginId(loginId))
+        {
+            return Results.BadRequest(new
+            {
+                title = "ID is invalid.",
+                detail = "Use 3-64 lowercase letters, numbers, dot, hyphen, or underscore. Start with a letter or number.",
+            });
+        }
+
+        if (password.Length < 8 || password.Length > 256)
+        {
+            return Results.BadRequest(new
+            {
+                title = "Password is invalid.",
+                detail = "Use a password between 8 and 256 characters.",
+            });
+        }
+
+        if (!string.Equals(password, confirmPassword, StringComparison.Ordinal))
+        {
+            return Results.BadRequest(new
+            {
+                title = "Passwords do not match.",
+                detail = "Enter the same password twice.",
+            });
+        }
+
+        if (profileImageDataUrl is null && !string.IsNullOrWhiteSpace(request.ProfileImageDataUrl))
+        {
+            return Results.BadRequest(new
+            {
+                title = "Profile image is invalid.",
+                detail = "Upload a PNG, JPEG, GIF, or WebP image under 750 KB.",
+            });
+        }
+
+        await EnsureAcademyCredentialAccountsTableAsync(db, cancellationToken);
+
+        var accountKey = GetAcademyAccountKey(loginId);
+        var duplicateExists = await db.AcademyCredentialAccounts
+                .AsNoTracking()
+                .AnyAsync(account => account.LoginId == loginId, cancellationToken) ||
+            await db.AdminUsers
+                .AsNoTracking()
+                .AnyAsync(user => user.Email == accountKey, cancellationToken);
+
+        if (duplicateExists)
+        {
+            return Results.Conflict(new
+            {
+                title = "ID is already used.",
+                detail = "Choose a different Academy ID.",
+            });
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var adminUser = new AdminUser
+        {
+            Id = Guid.NewGuid(),
+            CreatedAt = now,
+            UpdatedAt = now,
+            Email = accountKey,
+            DisplayName = displayName,
+            PhotoUrl = profileImageDataUrl,
+            HostedDomain = AcademyAccountDomain,
+            Role = "academy",
+            Status = "pending",
+            ApiAccessEnabled = false,
+            IsDirectorySuspended = false,
+        };
+        var account = new AcademyCredentialAccount
+        {
+            Id = Guid.NewGuid(),
+            CreatedAt = now,
+            UpdatedAt = now,
+            AdminUserId = adminUser.Id,
+            LoginId = loginId,
+            PasswordHash = HashPassword(password),
+        };
+
+        try
+        {
+            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+            db.AdminUsers.Add(adminUser);
+            db.AcademyCredentialAccounts.Add(account);
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            return Results.Conflict(new
+            {
+                title = "ID is already used.",
+                detail = "Choose a different Academy ID.",
+            });
+        }
+
+        var canvasTokenConfigured = false;
+        if (!string.IsNullOrWhiteSpace(request.CanvasAccessToken))
+        {
+            var tokenResult = await CanvasIntegrationEndpoints.UpdateCanvasTokenForUserKeyAsync(
+                accountKey,
+                httpClientFactory,
+                db,
+                dataProtectionProvider,
+                new UpdateCanvasTokenRequest(
+                    string.IsNullOrWhiteSpace(request.CanvasInstanceUrl) ? "https://canvas.sfu.ca" : request.CanvasInstanceUrl,
+                    request.CanvasAccessToken,
+                    request.CanvasTokenStartsAt,
+                    request.CanvasTokenExpiresAt),
+                cancellationToken);
+
+            canvasTokenConfigured = tokenResult is not IStatusCodeHttpResult statusResult ||
+                statusResult.StatusCode is null or (>= 200 and < 300);
+        }
+
+        return Results.Created(
+            "/api/auth/academy/signup",
+            new AcademyCredentialSignupDto(loginId, adminUser.Status, canvasTokenConfigured));
+    }
+
+    private static async Task<IResult> LoginAcademyAccountAsync(
+        HttpContext context,
+        IConfiguration configuration,
+        IncosWorkspaceDbContext db,
+        AcademyCredentialLoginRequest request,
+        CancellationToken cancellationToken)
+    {
+        var loginId = NormalizeAcademyLoginId(request.LoginId);
+
+        if (!IsValidAcademyLoginId(loginId) || string.IsNullOrEmpty(request.Password))
+        {
+            return Results.Unauthorized();
+        }
+
+        await EnsureAcademyCredentialAccountsTableAsync(db, cancellationToken);
+
+        var account = await db.AcademyCredentialAccounts
+            .Include(credentialAccount => credentialAccount.AdminUser)
+            .FirstOrDefaultAsync(credentialAccount => credentialAccount.LoginId == loginId, cancellationToken);
+
+        if (account?.AdminUser is null || !VerifyPassword(request.Password, account.PasswordHash))
+        {
+            return Results.Unauthorized();
+        }
+
+        var status = account.AdminUser.Status.Trim().ToLowerInvariant();
+
+        if (status == "inactive")
+        {
+            return Results.Problem(
+                title: "Account inactive.",
+                detail: "This Academy account is inactive in Admin Console.",
+                statusCode: StatusCodes.Status403Forbidden);
+        }
+
+        account.AdminUser.LastLoginAt = DateTimeOffset.UtcNow;
+        account.AdminUser.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+
+        var principal = CreateAcademyCredentialPrincipal(account.AdminUser, loginId);
+        var sessionDuration = await GetUserSessionDurationAsync(
+            configuration,
+            db,
+            GetAcademyAccountKey(loginId),
+            cancellationToken);
+        var properties = new AuthenticationProperties
+        {
+            IsPersistent = true,
+            ExpiresUtc = DateTimeOffset.UtcNow.Add(sessionDuration),
+        };
+
+        await context.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, principal, properties);
+
+        return Results.Ok(new
+        {
+            loginId,
+            accountStatus = status,
+            requiresApproval = status == "pending",
+            canAccessWorkspace = status == "active",
+        });
+    }
+
+    private static async Task<IResult> StartUserPreviewAsync(
+        HttpContext context,
+        IConfiguration configuration,
+        IncosWorkspaceDbContext db,
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        var authResult = await context.AuthenticateAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+
+        if (!authResult.Succeeded || authResult.Principal is null)
+        {
+            return Results.Unauthorized();
+        }
+
+        if (IsPreviewPrincipal(authResult.Principal))
+        {
+            return Results.Problem(
+                title: "Already previewing a user.",
+                detail: "Exit the current preview before starting another one.",
+                statusCode: StatusCodes.Status409Conflict);
+        }
+
+        var adminEmail = authResult.Principal.FindFirstValue(ClaimTypes.Email);
+        var adminStatus = await GetAdminAccountStatusAsync(db, adminEmail, cancellationToken);
+
+        if (!string.Equals(adminStatus, "active", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Forbid();
+        }
+
+        var adminGrants = await GetAdminAccessGrantsAsync(db, adminEmail, cancellationToken);
+        var adminAuthProvider = authResult.Principal.FindFirstValue("incos:auth_provider");
+        adminGrants = IsAcademyCredentialProvider(adminAuthProvider)
+            ? FilterAcademyOnlyGrants(adminGrants)
+            : adminGrants;
+
+        if (!adminGrants.Access.Contains("admin-users", StringComparer.OrdinalIgnoreCase))
+        {
+            return Results.Forbid();
+        }
+
+        await GoogleIntegrationEndpoints.EnsureAdminUsersTableAsync(db, cancellationToken);
+        await EnsureAcademyCredentialAccountsTableAsync(db, cancellationToken);
+
+        var targetUser = await db.AdminUsers
+            .AsNoTracking()
+            .FirstOrDefaultAsync(user => user.Id == userId, cancellationToken);
+
+        if (targetUser is null)
+        {
+            return Results.NotFound();
+        }
+
+        var credentialAccount = await db.AcademyCredentialAccounts
+            .AsNoTracking()
+            .FirstOrDefaultAsync(account => account.AdminUserId == targetUser.Id, cancellationToken);
+        var previewPrincipal = CreatePreviewPrincipal(targetUser, credentialAccount?.LoginId, authResult.Principal);
+        var targetUserKey = !string.IsNullOrWhiteSpace(credentialAccount?.LoginId)
+            ? GetAcademyAccountKey(credentialAccount.LoginId)
+            : targetUser.Email;
+        var now = DateTimeOffset.UtcNow;
+        var sessionDuration = await GetUserSessionDurationAsync(
+            configuration,
+            db,
+            targetUserKey,
+            cancellationToken);
+        var properties = new AuthenticationProperties
+        {
+            IsPersistent = true,
+            IssuedUtc = now,
+            ExpiresUtc = now.Add(sessionDuration),
+        };
+        properties.Items[PreviewOriginalSessionProperty] = SerializeOriginalSession(authResult);
+
+        await context.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, previewPrincipal, properties);
+
+        return Results.Ok(new
+        {
+            isPreview = true,
+        });
+    }
+
+    private static async Task<IResult> ExitUserPreviewAsync(HttpContext context)
+    {
+        var authResult = await context.AuthenticateAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+
+        if (!authResult.Succeeded ||
+            authResult.Principal is null ||
+            !IsPreviewPrincipal(authResult.Principal))
+        {
+            return Results.NoContent();
+        }
+
+        var serializedSession = authResult.Properties?.Items.TryGetValue(PreviewOriginalSessionProperty, out var value) == true
+            ? value
+            : null;
+
+        if (!TryRestoreOriginalSession(
+                serializedSession,
+                out var originalPrincipal,
+                out var originalProperties))
+        {
+            await context.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+
+            return Results.Problem(
+                title: "Unable to exit preview.",
+                detail: "The original admin session could not be restored. Sign in again.",
+                statusCode: StatusCodes.Status409Conflict);
+        }
+
+        await context.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, originalPrincipal, originalProperties);
+
+        return Results.Ok(new
+        {
+            isPreview = false,
+        });
     }
 
     private static string NormalizeReturnUrl(string? returnUrl)
@@ -353,12 +800,121 @@ public static class AuthEndpoints
         return Results.Challenge(properties, [GoogleDefaults.AuthenticationScheme]);
     }
 
-    private static TimeSpan GetWorkspaceSessionDuration(IConfiguration configuration)
+    public static TimeSpan GetWorkspaceSessionDuration(IConfiguration configuration)
     {
-        var hours = configuration.GetValue<double?>("Authentication:Google:WorkspaceSessionHours") ?? 8;
+        var hours = configuration.GetValue<double?>("Authentication:Google:WorkspaceSessionHours") ??
+                    DefaultWorkspaceSessionHours;
 
-        return TimeSpan.FromHours(Math.Clamp(hours, 1, 24 * 14));
+        return TimeSpan.FromHours(Math.Clamp(hours, MinimumWorkspaceSessionHours, MaximumWorkspaceSessionHours));
     }
+
+    public static async Task<TimeSpan> GetUserSessionDurationAsync(
+        IConfiguration configuration,
+        IncosWorkspaceDbContext db,
+        string? userKey,
+        CancellationToken cancellationToken = default)
+    {
+        var fallback = GetWorkspaceSessionDuration(configuration);
+
+        if (string.IsNullOrWhiteSpace(userKey))
+        {
+            return fallback;
+        }
+
+        await WorkspaceEndpoints.EnsureUserSettingsTableAsync(db, cancellationToken);
+
+        var normalizedUserKey = userKey.Trim().ToLowerInvariant();
+        var setting = await db.UserSettings
+            .AsNoTracking()
+            .FirstOrDefaultAsync(
+                userSetting =>
+                    userSetting.UserKey.ToLower() == normalizedUserKey &&
+                    userSetting.SettingKey == WorkspaceEndpoints.AcademyPreferencesSettingKey,
+                cancellationToken);
+
+        return GetSessionDurationFromAcademyPreferencesJson(setting?.SettingJson, fallback);
+    }
+
+    public static TimeSpan GetSessionDurationFromAcademyPreferencesJson(string? settingJson, TimeSpan fallback)
+    {
+        if (string.IsNullOrWhiteSpace(settingJson))
+        {
+            return fallback;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(settingJson);
+
+            if (!document.RootElement.TryGetProperty("calendarSettings", out var calendarSettings) ||
+                calendarSettings.ValueKind != JsonValueKind.Object)
+            {
+                return fallback;
+            }
+
+            var configuredHours = TryGetJsonDouble(calendarSettings, "sessionDurationHours");
+
+            if (!configuredHours.HasValue && TryGetJsonDouble(calendarSettings, "sessionDurationDays") is { } days)
+            {
+                configuredHours = days * 24;
+            }
+
+            if (!configuredHours.HasValue)
+            {
+                return fallback;
+            }
+
+            return TimeSpan.FromHours(Math.Clamp(
+                configuredHours.Value,
+                MinimumWorkspaceSessionHours,
+                MaximumWorkspaceSessionHours));
+        }
+        catch (JsonException)
+        {
+            return fallback;
+        }
+    }
+
+    private static double? TryGetJsonDouble(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property))
+        {
+            return null;
+        }
+
+        if (property.ValueKind == JsonValueKind.Number && property.TryGetDouble(out var number))
+        {
+            return number;
+        }
+
+        if (property.ValueKind == JsonValueKind.String &&
+            double.TryParse(property.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
+        {
+            return parsed;
+        }
+
+        return null;
+    }
+
+    public static Task EnsureAcademyCredentialAccountsTableAsync(
+        IncosWorkspaceDbContext db,
+        CancellationToken cancellationToken = default) =>
+        db.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE IF NOT EXISTS academy_credential_accounts (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                "AdminUserId" uuid NOT NULL,
+                "LoginId" character varying(80) NOT NULL,
+                "PasswordHash" text NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_academy_credential_accounts_LoginId"
+                ON academy_credential_accounts ("LoginId");
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_academy_credential_accounts_AdminUserId"
+                ON academy_credential_accounts ("AdminUserId");
+            """,
+            cancellationToken);
 
     private static async Task<string> GetAdminAccountStatusAsync(
         IncosWorkspaceDbContext db,
@@ -382,6 +938,37 @@ public static class AuthEndpoints
             : "pending";
     }
 
+    private static async Task<bool> IsCurrentSessionRevokedAsync(
+        HttpContext context,
+        IncosWorkspaceDbContext db,
+        string? email,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            return false;
+        }
+
+        await GoogleIntegrationEndpoints.EnsureAdminUsersTableAsync(db, cancellationToken);
+
+        var normalizedEmail = email.Trim().ToLowerInvariant();
+        var sessionRevokedAt = await db.AdminUsers
+            .AsNoTracking()
+            .Where(user => user.Email == normalizedEmail)
+            .Select(user => user.SessionRevokedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (!sessionRevokedAt.HasValue)
+        {
+            return false;
+        }
+
+        var authenticateResult = await context.AuthenticateAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+        var issuedAt = authenticateResult.Properties?.IssuedUtc;
+
+        return !issuedAt.HasValue || issuedAt.Value <= sessionRevokedAt.Value;
+    }
+
     public static async Task<AdminAccessGrantSet> GetAdminAccessGrantsAsync(
         IncosWorkspaceDbContext db,
         string? email,
@@ -393,6 +980,7 @@ public static class AuthEndpoints
         }
 
         await GoogleIntegrationEndpoints.EnsureDefaultAdminGroupAsync(db, cancellationToken);
+        await GoogleIntegrationEndpoints.RemoveLegacyAcademyUsersGroupAsync(db, cancellationToken);
 
         var normalizedEmail = email.Trim().ToLowerInvariant();
         var groups = await (
@@ -449,6 +1037,293 @@ public static class AuthEndpoints
         catch (JsonException)
         {
             return [];
+        }
+    }
+
+    public static AdminAccessGrantSet FilterAcademyOnlyGrants(AdminAccessGrantSet grants) =>
+        new(
+            grants.Access
+                .Where(value => IsAcademyAccessValue(value))
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                .ToArray(),
+            grants.Permissions
+                .Where(value => value.StartsWith("academy-", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                .ToArray(),
+            grants.Settings
+                .Where(value => string.Equals(value, "academy-settings", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                .ToArray());
+
+    private static bool IsAcademyAccessValue(string value) =>
+        string.Equals(value, "academy", StringComparison.OrdinalIgnoreCase) ||
+        value.StartsWith("academy-", StringComparison.OrdinalIgnoreCase);
+
+    private static ClaimsPrincipal CreatePreviewPrincipal(
+        AdminUser targetUser,
+        string? academyLoginId,
+        ClaimsPrincipal adminPrincipal)
+    {
+        var principal = !string.IsNullOrWhiteSpace(academyLoginId)
+            ? CreateAcademyCredentialPrincipal(targetUser, academyLoginId)
+            : CreateGoogleWorkspacePrincipal(targetUser);
+
+        if (principal.Identity is ClaimsIdentity identity)
+        {
+            identity.AddClaim(new Claim(PreviewModeClaim, "true"));
+
+            if (adminPrincipal.FindFirstValue(ClaimTypes.Email) is { Length: > 0 } adminEmail)
+            {
+                identity.AddClaim(new Claim(PreviewAdminEmailClaim, adminEmail));
+            }
+
+            if (adminPrincipal.FindFirstValue(ClaimTypes.Name) is { Length: > 0 } adminName)
+            {
+                identity.AddClaim(new Claim(PreviewAdminNameClaim, adminName));
+            }
+        }
+
+        return principal;
+    }
+
+    private static ClaimsPrincipal CreateGoogleWorkspacePrincipal(AdminUser user)
+    {
+        var claims = new List<Claim>
+        {
+            new(ClaimTypes.NameIdentifier, string.IsNullOrWhiteSpace(user.GoogleUserId) ? user.Email : user.GoogleUserId),
+            new(ClaimTypes.Email, user.Email),
+            new(ClaimTypes.Name, string.IsNullOrWhiteSpace(user.DisplayName) ? user.Email : user.DisplayName),
+        };
+
+        if (!string.IsNullOrWhiteSpace(user.HostedDomain))
+        {
+            claims.Add(new Claim("hd", user.HostedDomain));
+        }
+
+        if (!string.IsNullOrWhiteSpace(user.PhotoUrl))
+        {
+            claims.Add(new Claim("urn:google:picture", user.PhotoUrl));
+        }
+
+        return new ClaimsPrincipal(new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme));
+    }
+
+    private static bool IsPreviewPrincipal(ClaimsPrincipal principal) =>
+        principal.HasClaim(PreviewModeClaim, "true");
+
+    private static string SerializeOriginalSession(AuthenticateResult authResult)
+    {
+        var properties = authResult.Properties ?? new AuthenticationProperties();
+        var claims = (authResult.Principal?.Claims ?? [])
+            .Select(claim => new StoredPreviewClaim(
+                claim.Type,
+                claim.Value,
+                claim.ValueType,
+                claim.Issuer,
+                claim.OriginalIssuer))
+            .ToArray();
+        var tokens = properties.GetTokens()
+            .Where(token => !string.IsNullOrWhiteSpace(token.Name))
+            .Select(token => new StoredPreviewToken(token.Name, token.Value ?? string.Empty))
+            .ToArray();
+
+        return JsonSerializer.Serialize(new StoredPreviewSession(
+            claims,
+            tokens,
+            properties.IssuedUtc?.ToString("o", CultureInfo.InvariantCulture),
+            properties.ExpiresUtc?.ToString("o", CultureInfo.InvariantCulture),
+            properties.IsPersistent,
+            properties.AllowRefresh));
+    }
+
+    private static bool TryRestoreOriginalSession(
+        string? serializedSession,
+        out ClaimsPrincipal principal,
+        out AuthenticationProperties properties)
+    {
+        principal = new ClaimsPrincipal();
+        properties = new AuthenticationProperties();
+
+        if (string.IsNullOrWhiteSpace(serializedSession))
+        {
+            return false;
+        }
+
+        StoredPreviewSession? storedSession;
+
+        try
+        {
+            storedSession = JsonSerializer.Deserialize<StoredPreviewSession>(serializedSession);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        if (storedSession is null || storedSession.Claims.Length == 0)
+        {
+            return false;
+        }
+
+        var identity = new ClaimsIdentity(
+            storedSession.Claims.Select(claim => new Claim(
+                claim.Type,
+                claim.Value,
+                claim.ValueType,
+                claim.Issuer,
+                claim.OriginalIssuer)),
+            CookieAuthenticationDefaults.AuthenticationScheme);
+
+        principal = new ClaimsPrincipal(identity);
+        properties = new AuthenticationProperties
+        {
+            IsPersistent = storedSession.IsPersistent,
+            AllowRefresh = storedSession.AllowRefresh,
+        };
+
+        if (DateTimeOffset.TryParse(
+                storedSession.IssuedUtc,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind,
+                out var issuedUtc))
+        {
+            properties.IssuedUtc = issuedUtc;
+        }
+
+        if (DateTimeOffset.TryParse(
+                storedSession.ExpiresUtc,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind,
+                out var expiresUtc))
+        {
+            properties.ExpiresUtc = expiresUtc;
+        }
+
+        properties.StoreTokens(storedSession.Tokens.Select(token => new AuthenticationToken
+        {
+            Name = token.Name,
+            Value = token.Value,
+        }));
+
+        return true;
+    }
+
+    private static ClaimsPrincipal CreateAcademyCredentialPrincipal(AdminUser user, string loginId)
+    {
+        var accountKey = GetAcademyAccountKey(loginId);
+        var claims = new List<Claim>
+        {
+            new(ClaimTypes.NameIdentifier, accountKey),
+            new(ClaimTypes.Email, accountKey),
+            new(ClaimTypes.Name, user.DisplayName),
+            new("incos:auth_provider", AcademyCredentialProvider),
+            new("incos:login_id", loginId),
+        };
+
+        if (!string.IsNullOrWhiteSpace(user.PhotoUrl))
+        {
+            claims.Add(new Claim("urn:google:picture", user.PhotoUrl));
+        }
+
+        return new ClaimsPrincipal(new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme));
+    }
+
+    private sealed record StoredPreviewSession(
+        StoredPreviewClaim[] Claims,
+        StoredPreviewToken[] Tokens,
+        string? IssuedUtc,
+        string? ExpiresUtc,
+        bool IsPersistent,
+        bool? AllowRefresh);
+
+    private sealed record StoredPreviewClaim(
+        string Type,
+        string Value,
+        string ValueType,
+        string Issuer,
+        string OriginalIssuer);
+
+    private sealed record StoredPreviewToken(string Name, string Value);
+
+    public static bool IsAcademyCredentialProvider(string? authProvider) =>
+        string.Equals(authProvider, AcademyCredentialProvider, StringComparison.OrdinalIgnoreCase);
+
+    public static string NormalizeAcademyLoginId(string? loginId) =>
+        string.IsNullOrWhiteSpace(loginId)
+            ? string.Empty
+            : loginId.Trim().ToLowerInvariant();
+
+    public static bool IsValidAcademyLoginId(string loginId) =>
+        AcademyLoginIdRegex.IsMatch(loginId);
+
+    public static string GetAcademyAccountKey(string loginId) =>
+        $"{NormalizeAcademyLoginId(loginId)}@{AcademyAccountDomain}";
+
+    private static string? NormalizeProfileImageDataUrl(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var normalized = value.Trim();
+
+        if (normalized.Length > 1_100_000 ||
+            !normalized.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase) ||
+            normalized.IndexOf(";base64,", StringComparison.OrdinalIgnoreCase) < 0)
+        {
+            return null;
+        }
+
+        return normalized;
+    }
+
+    public static string HashPassword(string password)
+    {
+        var salt = RandomNumberGenerator.GetBytes(PasswordSaltSizeBytes);
+        var hash = Rfc2898DeriveBytes.Pbkdf2(
+            Encoding.UTF8.GetBytes(password),
+            salt,
+            PasswordHashIterations,
+            HashAlgorithmName.SHA256,
+            PasswordHashSizeBytes);
+
+        return string.Join(
+            ':',
+            "pbkdf2-sha256",
+            PasswordHashIterations.ToString(CultureInfo.InvariantCulture),
+            Convert.ToBase64String(salt),
+            Convert.ToBase64String(hash));
+    }
+
+    private static bool VerifyPassword(string password, string storedHash)
+    {
+        var parts = storedHash.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        if (parts.Length != 4 ||
+            !string.Equals(parts[0], "pbkdf2-sha256", StringComparison.Ordinal) ||
+            !int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var iterations) ||
+            iterations < 100_000)
+        {
+            return false;
+        }
+
+        try
+        {
+            var salt = Convert.FromBase64String(parts[2]);
+            var expectedHash = Convert.FromBase64String(parts[3]);
+            var actualHash = Rfc2898DeriveBytes.Pbkdf2(
+                Encoding.UTF8.GetBytes(password),
+                salt,
+                iterations,
+                HashAlgorithmName.SHA256,
+                expectedHash.Length);
+
+            return CryptographicOperations.FixedTimeEquals(actualHash, expectedHash);
+        }
+        catch (FormatException)
+        {
+            return false;
         }
     }
 

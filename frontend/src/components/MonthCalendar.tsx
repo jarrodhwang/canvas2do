@@ -17,6 +17,7 @@ import {
 
 interface MonthCalendarProps {
   days: CalendarDay[];
+  isCompact?: boolean;
   isExpanded?: boolean;
   mobileScope?: 'month' | 'week';
   onAddCourseworkForDay?: (day: CalendarDay) => void;
@@ -27,6 +28,7 @@ interface MonthCalendarProps {
 
 export function MonthCalendar({
   days,
+  isCompact = false,
   isExpanded = false,
   mobileScope = 'month',
   onAddCourseworkForDay,
@@ -50,6 +52,7 @@ export function MonthCalendar({
   const renderDayCell = (day: CalendarDay) => (
     <DayCell
       day={day}
+      isCompact={isCompact}
       isExpanded={isExpanded}
       isSelected={day.id === selectedDayId}
       key={day.id}
@@ -84,6 +87,7 @@ export function MonthCalendar({
       <div
         className={cn(
           'month-calendar-grid grid min-w-[660px] flex-1 grid-cols-7 transition-[grid-template-rows] duration-300 ease-out max-[520px]:min-w-0 max-[520px]:flex-none max-[520px]:gap-y-1',
+          isCompact && 'month-calendar-grid-compact',
           mobileScope === 'week' && 'month-calendar-grid-week',
           isExpanded
             ? 'month-calendar-grid-expanded'

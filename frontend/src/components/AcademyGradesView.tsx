@@ -37,15 +37,20 @@ type LoadStatus = 'idle' | 'loading' | 'loaded' | 'failed';
 
 interface CanvasLecturePreference {
   assessments?: ManualLecture['assessments'];
+  archivedAsManualLectureId?: string;
   chipColor?: ColorToken;
   courseName?: string;
   credits?: string;
+  currentGrade?: string;
+  currentScore?: number;
   friendlyCourseCode?: string;
   friendlyName?: string;
   hidden?: boolean;
+  htmlUrl?: string;
   originalCourseCode?: string;
   semester?: string;
   termName?: string;
+  workflowState?: string;
 }
 
 type CanvasLecturePreferences = Record<string, CanvasLecturePreference>;
@@ -218,6 +223,54 @@ function createCanvasRows(courses: CanvasCourse[], preferences: CanvasLecturePre
   });
 }
 
+function createStoredCanvasRows(
+  preferences: CanvasLecturePreferences,
+  liveCourses: CanvasCourse[],
+): GradeCourseRow[] {
+  const liveCourseIds = new Set(liveCourses.map((course) => String(course.id ?? '')));
+
+  return Object.entries(preferences).flatMap(([courseId, preference]) => {
+    if (
+      liveCourseIds.has(courseId) ||
+      preference.hidden ||
+      !(
+        preference.friendlyCourseCode?.trim() ||
+        preference.originalCourseCode?.trim() ||
+        preference.friendlyName?.trim() ||
+        preference.courseName?.trim()
+      )
+    ) {
+      return [];
+    }
+
+    const color = isColorToken(preference.chipColor) ? preference.chipColor : 'blue';
+
+    return [{
+      id: `stored-canvas:${courseId}`,
+      canvasCourseId: courseId,
+      source: 'canvas' as const,
+      name: preference.friendlyName?.trim() ||
+        preference.courseName?.trim() ||
+        preference.originalCourseCode?.trim() ||
+        courseId,
+      courseCode: preference.friendlyCourseCode?.trim() ||
+        preference.originalCourseCode?.trim() ||
+        courseId,
+      semester: normalizeSemesterName(preference.semester ?? preference.termName),
+      color,
+      score: typeof preference.currentScore === 'number' ? preference.currentScore : undefined,
+      grade: preference.currentGrade,
+      status: formatStatus(preference.workflowState),
+      credits: preference.credits,
+      assessments: preference.assessments ?? [],
+    }];
+  });
+}
+
+function isGeneratedArchivedCanvasLecture(lecture: ManualLecture, preferences: CanvasLecturePreferences) {
+  return Object.values(preferences).some((preference) => preference.archivedAsManualLectureId === lecture.id);
+}
+
 function createManualRows(lectures: ManualLecture[]): GradeCourseRow[] {
   return lectures
     .filter((lecture) => !lecture.hidden)
@@ -377,11 +430,16 @@ export function AcademyGradesView() {
     }
 
     const preferences = preferencesResult.value;
-    const selectedSemesterFromPreferences = getSelectedSemesterFromAcademyPreferences(preferences);
-    const canvasRows = coursesResult.status === 'fulfilled'
-      ? createCanvasRows(coursesResult.value.courses, getCanvasLecturePreferencesFromAcademyPreferences(preferences))
+    const canvasLecturePreferences = getCanvasLecturePreferencesFromAcademyPreferences(preferences);
+    const liveCanvasCourses = coursesResult.status === 'fulfilled'
+      ? coursesResult.value.courses
       : [];
-    const manualRows = createManualRows(getManualLecturesFromAcademyPreferences(preferences));
+    const selectedSemesterFromPreferences = getSelectedSemesterFromAcademyPreferences(preferences);
+    const canvasRows = createCanvasRows(liveCanvasCourses, canvasLecturePreferences);
+    const storedCanvasRows = createStoredCanvasRows(canvasLecturePreferences, liveCanvasCourses);
+    const manualRows = createManualRows(getManualLecturesFromAcademyPreferences(preferences).filter((lecture) => (
+      !isGeneratedArchivedCanvasLecture(lecture, canvasLecturePreferences)
+    )));
 
     if (coursesResult.status === 'rejected') {
       setCanvasWarning(coursesResult.reason instanceof Error
@@ -394,7 +452,7 @@ export function AcademyGradesView() {
     if (selectedSemesterFromPreferences) {
       setSelectedSemester(selectedSemesterFromPreferences);
     }
-    setRows([...canvasRows, ...manualRows].sort((a, b) => {
+    setRows([...canvasRows, ...storedCanvasRows, ...manualRows].sort((a, b) => {
       const gradeSort = Number(b.score ?? -1) - Number(a.score ?? -1);
 
       if (gradeSort !== 0) {
@@ -456,7 +514,7 @@ export function AcademyGradesView() {
         return;
       }
 
-      workspaceApi.getCanvasCourseContent(row.canvasCourseId)
+      workspaceApi.getCanvasCourseContent(row.canvasCourseId, 'grades')
         .then((content) => {
           setCourseDetails((currentDetails) => ({
             ...currentDetails,

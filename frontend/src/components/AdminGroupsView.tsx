@@ -341,9 +341,9 @@ const emptyForm: GroupFormState = {
   description: '',
   photoUrl: '',
   status: 'active',
-  permissions: ['admin-manage-users'],
-  settings: ['admin-general-settings'],
-  access: ['admin-console', 'admin-dashboard', 'admin-users'],
+  permissions: [],
+  settings: [],
+  access: [],
   memberIds: [],
 };
 
@@ -413,6 +413,63 @@ function getDomainItems(domain: PermissionDomain) {
   return domain.menus.flatMap((menu) => menu.items);
 }
 
+function isAcademyUser(user: AdminUser | undefined) {
+  return Boolean(user?.isAcademyUser || user?.email.toLowerCase().endsWith('@academy.local'));
+}
+
+function isAcademyGrant(item: PermissionItem) {
+  if (item.field === 'access') {
+    return item.id === 'academy' || item.id.startsWith('academy-');
+  }
+
+  if (item.field === 'permissions') {
+    return item.id.startsWith('academy-');
+  }
+
+  return item.id === 'academy-settings';
+}
+
+function hasWorkspaceOrAdminGrant(form: GroupFormState) {
+  return permissionItems.some((item) => hasItem(form, item) && !isAcademyGrant(item));
+}
+
+function hasAcademyMember(form: GroupFormState, userById: Map<string, AdminUser>) {
+  return form.memberIds.some((userId) => isAcademyUser(userById.get(userId)));
+}
+
+function stripWorkspaceAndAdminGrants(form: GroupFormState): GroupFormState {
+  return {
+    ...form,
+    access: form.access.filter((value) => value === 'academy' || value.startsWith('academy-')),
+    permissions: form.permissions.filter((value) => value.startsWith('academy-')),
+    settings: form.settings.filter((value) => value === 'academy-settings'),
+  };
+}
+
+function stripAcademyMembers(form: GroupFormState, userById: Map<string, AdminUser>): GroupFormState {
+  return {
+    ...form,
+    memberIds: form.memberIds.filter((userId) => !isAcademyUser(userById.get(userId))),
+  };
+}
+
+function hasSameValues(left: string[], right: string[]) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function isSameGroupForm(left: GroupFormState, right: GroupFormState) {
+  return (
+    left.name === right.name &&
+    left.description === right.description &&
+    left.photoUrl === right.photoUrl &&
+    left.status === right.status &&
+    hasSameValues(left.access, right.access) &&
+    hasSameValues(left.permissions, right.permissions) &&
+    hasSameValues(left.settings, right.settings) &&
+    hasSameValues(left.memberIds, right.memberIds)
+  );
+}
+
 function areItemsGranted(form: GroupFormState, items: PermissionItem[]) {
   return items.length > 0 && items.every((item) => hasItem(form, item));
 }
@@ -466,6 +523,30 @@ export function AdminGroupsView() {
     [editingGroupId, groups],
   );
   const isProtectedEdit = editingGroup?.isProtected ?? false;
+  const userById = useMemo(
+    () => new Map(users.map((user) => [user.id, user])),
+    [users],
+  );
+  const formHasAcademyMembers = useMemo(
+    () => hasAcademyMember(form, userById),
+    [form, userById],
+  );
+  const formHasWorkspaceOrAdminGrants = useMemo(
+    () => hasWorkspaceOrAdminGrant(form),
+    [form],
+  );
+  const visibleUsers = useMemo(
+    () => formHasWorkspaceOrAdminGrants
+      ? users.filter((user) => !isAcademyUser(user))
+      : users,
+    [formHasWorkspaceOrAdminGrants, users],
+  );
+  const visiblePermissionDomains = useMemo(
+    () => formHasAcademyMembers
+      ? permissionDomains.filter((domain) => domain.id === 'academy')
+      : permissionDomains,
+    [formHasAcademyMembers],
+  );
 
   const clearEditor = useCallback(() => {
     setIsEditorOpen(false);
@@ -542,6 +623,28 @@ export function AdminGroupsView() {
       window.clearTimeout(snackbarTimeoutRef.current);
     }
   }, []);
+
+  useEffect(() => {
+    if (isProtectedEdit || !formHasAcademyMembers) {
+      return;
+    }
+
+    setForm((currentForm) => {
+      const nextForm = stripWorkspaceAndAdminGrants(currentForm);
+      return isSameGroupForm(currentForm, nextForm) ? currentForm : nextForm;
+    });
+  }, [formHasAcademyMembers, isProtectedEdit]);
+
+  useEffect(() => {
+    if (isProtectedEdit || !formHasWorkspaceOrAdminGrants) {
+      return;
+    }
+
+    setForm((currentForm) => {
+      const nextForm = stripAcademyMembers(currentForm, userById);
+      return isSameGroupForm(currentForm, nextForm) ? currentForm : nextForm;
+    });
+  }, [formHasWorkspaceOrAdminGrants, isProtectedEdit, userById]);
 
   const filteredGroups = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -839,11 +942,17 @@ export function AdminGroupsView() {
                   <div className="text-[11px] font-black uppercase text-muted-foreground">Users</div>
                   <Badge className="rounded-md" variant="outline">{form.memberIds.length}</Badge>
                 </div>
+                {formHasWorkspaceOrAdminGrants ? (
+                  <div className="mb-2 rounded-md border border-amber-500/25 bg-amber-500/10 px-2 py-1.5 text-[11px] font-bold text-amber-800 dark:text-amber-100">
+                    Academy users are hidden while Workspace or Admin permissions are selected.
+                  </div>
+                ) : null}
                 <div className="grid max-h-[300px] gap-2 overflow-y-auto pr-1">
-                  {users.length === 0 ? (
+                  {visibleUsers.length === 0 ? (
                     <div className="text-sm font-bold text-muted-foreground">No users found.</div>
-                  ) : users.map((user) => {
+                  ) : visibleUsers.map((user) => {
                     const isMainAdmin = user.email.toLowerCase() === mainAdminEmail;
+                    const userIsAcademy = isAcademyUser(user);
 
                     return (
                       <label
@@ -872,6 +981,9 @@ export function AdminGroupsView() {
                           </div>
                         )}
                         <span className="min-w-0 flex-1 truncate">{user.displayName}</span>
+                        {userIsAcademy ? (
+                          <Badge className="rounded-md" variant="outline">Academy</Badge>
+                        ) : null}
                       </label>
                     );
                   })}
@@ -883,8 +995,13 @@ export function AdminGroupsView() {
                   <div className="text-[11px] font-black uppercase text-muted-foreground">Permissions</div>
                   <Badge className="rounded-md" variant="outline">{countSelections(form)}</Badge>
                 </div>
+                {formHasAcademyMembers ? (
+                  <div className="mb-2 rounded-md border border-sky-500/25 bg-sky-500/10 px-2 py-1.5 text-[11px] font-bold text-sky-800 dark:text-sky-100">
+                    Academy users can only receive Academy access, permissions, and settings.
+                  </div>
+                ) : null}
                 <div className="space-y-2">
-                  {permissionDomains.map((domain) => {
+                  {visiblePermissionDomains.map((domain) => {
                     const isDomainOpen = expandedDomainIds.includes(domain.id);
                     const domainItems = getDomainItems(domain);
                     const isDomainGranted = areItemsGranted(form, domainItems);

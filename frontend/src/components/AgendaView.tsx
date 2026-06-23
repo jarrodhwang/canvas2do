@@ -14,6 +14,7 @@ import { useLanguage } from '../context/LanguageContext';
 
 interface AgendaViewProps {
   emptyLabel?: string;
+  fillHeight?: boolean;
   items: AgendaItem[];
   onOpenItem?: (item: AgendaItem) => void;
   onOpenItemDetails?: (item: AgendaItem) => void;
@@ -53,6 +54,7 @@ function CurrentTimeLine() {
 
 export function AgendaView({
   emptyLabel,
+  fillHeight = false,
   items,
   onOpenItem,
   onOpenItemDetails,
@@ -136,7 +138,12 @@ export function AgendaView({
   };
 
   return (
-    <Card className="min-h-[440px] rounded-xl bg-card p-4 shadow-none lg:h-full lg:min-h-0 lg:overflow-y-auto">
+    <Card
+      className={cn(
+        'min-h-[440px] rounded-xl bg-card p-4 shadow-none lg:h-full lg:min-h-0 lg:overflow-y-auto',
+        fillHeight && 'h-full min-h-0 overflow-y-auto',
+      )}
+    >
       {items.length === 0 ? (
         <div className="rounded-lg border border-dashed bg-muted/35 p-4 text-sm font-black text-muted-foreground">
           {emptyLabel}

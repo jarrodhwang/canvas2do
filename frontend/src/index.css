@@ -50,6 +50,38 @@
   --sidebar-ring: oklch(0.795 0.184 86.047);
 }
 
+.academy-magnifier {
+  width: calc(100% / var(--academy-magnifier-scale, 1));
+  zoom: var(--academy-magnifier-scale, 1);
+}
+
+.academy-typography {
+  --font-sans: var(--academy-font-family, 'Inter Variable', sans-serif);
+  --font-heading: var(--academy-font-family, var(--font-sans));
+  --text-xs: calc(0.75rem * var(--academy-font-size-scale, 1));
+  --text-sm: calc(0.875rem * var(--academy-font-size-scale, 1));
+  --text-base: calc(1rem * var(--academy-font-size-scale, 1));
+  --text-lg: calc(1.125rem * var(--academy-font-size-scale, 1));
+  --text-xl: calc(1.25rem * var(--academy-font-size-scale, 1));
+  --text-2xl: calc(1.5rem * var(--academy-font-size-scale, 1));
+  --text-3xl: calc(1.875rem * var(--academy-font-size-scale, 1));
+  --text-4xl: calc(2.25rem * var(--academy-font-size-scale, 1));
+  --text-5xl: calc(3rem * var(--academy-font-size-scale, 1));
+  font-family: var(--academy-font-family, var(--font-sans));
+}
+
+.academy-typography :where(button, input, select, textarea) {
+  font-family: inherit;
+}
+
+@supports not (zoom: 1) {
+  .academy-magnifier {
+    transform: scale(var(--academy-magnifier-scale, 1));
+    transform-origin: top left;
+    width: calc(100% / var(--academy-magnifier-scale, 1));
+  }
+}
+
 @theme inline {
   --font-heading: var(--font-sans);
   --font-sans: 'Inter Variable', sans-serif;
@@ -191,6 +223,10 @@
     grid-template-rows: minmax(106px, 1fr);
   }
 
+  .month-calendar-grid-compact {
+    grid-template-rows: repeat(6, minmax(62px, 1fr));
+  }
+
   @media (max-width: 520px) {
     .month-calendar-grid-fill,
     .month-calendar-grid-expanded {
@@ -242,12 +278,12 @@
 }
 
 @media (max-height: 820px) and (min-width: 521px) {
-  .dashboard-summary-cards {
-    display: none;
+  .month-calendar-grid-fill {
+    grid-template-rows: repeat(6, minmax(74px, 1fr));
   }
 
-  .month-calendar-grid-fill {
-    grid-template-rows: repeat(6, minmax(88px, 1fr));
+  .month-calendar-grid-compact {
+    grid-template-rows: repeat(6, minmax(56px, 1fr));
   }
 
   .month-calendar-grid-expanded {

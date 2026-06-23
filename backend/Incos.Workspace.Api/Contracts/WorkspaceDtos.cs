@@ -93,18 +93,45 @@ public sealed record GoogleIntegrationStatusDto(
     string ConnectUrl,
     string[] Scopes);
 
+public sealed record AcademyCredentialLoginRequest(
+    string LoginId,
+    string Password);
+
+public sealed record AcademyCredentialSignupRequest(
+    string Name,
+    string LoginId,
+    string Password,
+    string ConfirmPassword,
+    string? ProfileImageDataUrl,
+    string? CanvasInstanceUrl,
+    string? CanvasAccessToken,
+    DateTimeOffset? CanvasTokenStartsAt,
+    DateTimeOffset? CanvasTokenExpiresAt);
+
+public sealed record AcademyCredentialIdAvailabilityDto(
+    string LoginId,
+    bool Available);
+
+public sealed record AcademyCredentialSignupDto(
+    string LoginId,
+    string AccountStatus,
+    bool CanvasTokenConfigured);
+
 public sealed record AdminUserDto(
     Guid Id,
     string Email,
     string DisplayName,
     string? PhotoUrl,
+    string? Role,
     string Status,
+    bool IsAcademyUser,
     bool ApiAccessEnabled,
     bool HasLoggedIn,
     bool IsDirectorySuspended,
     DateTimeOffset? LastLoginAt,
     DateTimeOffset? GoogleLastLoginAt,
-    DateTimeOffset? DirectorySyncedAt);
+    DateTimeOffset? DirectorySyncedAt,
+    DateTimeOffset? SessionRevokedAt);
 
 public sealed record AdminUsersResponseDto(
     AdminUserDto[] Users,
@@ -112,8 +139,24 @@ public sealed record AdminUsersResponseDto(
     string? SyncError);
 
 public sealed record UpdateAdminUserRequest(
+    string? DisplayName,
+    string? PhotoUrl,
+    string? Role,
+    string? LoginId,
+    string? Password,
     string? Status,
     bool? ApiAccessEnabled);
+
+public sealed record AdminUserDetailDto(
+    AdminUserDto User,
+    string? AcademyLoginId,
+    string[] Groups,
+    AdminUserLogDto[] Logs);
+
+public sealed record AdminUserLogDto(
+    string Action,
+    DateTimeOffset At,
+    string? Detail);
 
 public sealed record AdminGroupDto(
     Guid Id,

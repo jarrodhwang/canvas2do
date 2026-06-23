@@ -1,6 +1,8 @@
 using Incos.Workspace.Api.Contracts;
 using Incos.Workspace.Api.Data;
 using Incos.Workspace.Api.Domain.Entities;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 using System.Text.Json;
@@ -10,7 +12,7 @@ namespace Incos.Workspace.Api.Endpoints;
 
 public static class WorkspaceEndpoints
 {
-    private const string AcademyPreferencesSettingKey = "academy.preferences";
+    public const string AcademyPreferencesSettingKey = "academy.preferences";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public static IEndpointRouteBuilder MapWorkspaceEndpoints(this IEndpointRouteBuilder app)
@@ -252,6 +254,7 @@ public static class WorkspaceEndpoints
     private static async Task<IResult> SaveAcademyPreferencesAsync(
         HttpContext context,
         SaveAcademyPreferencesRequest request,
+        IConfiguration configuration,
         IncosWorkspaceDbContext db,
         CancellationToken cancellationToken)
     {
@@ -290,8 +293,35 @@ public static class WorkspaceEndpoints
         setting.UpdatedAt = now;
 
         await db.SaveChangesAsync(cancellationToken);
+        await RenewCurrentSessionAsync(context, configuration, setting.SettingJson);
 
         return Results.Ok(ToAcademyPreferencesDto(setting.SettingJson, true));
+    }
+
+    private static async Task RenewCurrentSessionAsync(
+        HttpContext context,
+        IConfiguration configuration,
+        string settingJson)
+    {
+        var authenticateResult = await context.AuthenticateAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+
+        if (!authenticateResult.Succeeded || authenticateResult.Principal is null)
+        {
+            return;
+        }
+
+        var properties = authenticateResult.Properties ?? new AuthenticationProperties();
+        var sessionDuration = AuthEndpoints.GetSessionDurationFromAcademyPreferencesJson(
+            settingJson,
+            AuthEndpoints.GetWorkspaceSessionDuration(configuration));
+
+        properties.IsPersistent = true;
+        properties.ExpiresUtc = DateTimeOffset.UtcNow.Add(sessionDuration);
+
+        await context.SignInAsync(
+            CookieAuthenticationDefaults.AuthenticationScheme,
+            authenticateResult.Principal,
+            properties);
     }
 
     private static string? GetUserKey(HttpContext context)
@@ -494,6 +524,39 @@ public static class WorkspaceEndpoints
 
         foreach (var property in requestedObject.EnumerateObject())
         {
+            if (mergedProperties.TryGetValue(property.Name, out var storedValue) &&
+                storedValue.ValueKind == JsonValueKind.Object &&
+                property.Value.ValueKind == JsonValueKind.Object)
+            {
+                mergedProperties[property.Name] = MergeJsonObjects(storedValue, property.Value);
+                continue;
+            }
+
+            mergedProperties[property.Name] = property.Value.Clone();
+        }
+
+        return JsonSerializer.SerializeToElement(mergedProperties, JsonOptions);
+    }
+
+    private static JsonElement MergeJsonObjects(JsonElement storedObject, JsonElement requestedObject)
+    {
+        var mergedProperties = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var property in storedObject.EnumerateObject())
+        {
+            mergedProperties[property.Name] = property.Value.Clone();
+        }
+
+        foreach (var property in requestedObject.EnumerateObject())
+        {
+            if (mergedProperties.TryGetValue(property.Name, out var storedValue) &&
+                storedValue.ValueKind == JsonValueKind.Object &&
+                property.Value.ValueKind == JsonValueKind.Object)
+            {
+                mergedProperties[property.Name] = MergeJsonObjects(storedValue, property.Value);
+                continue;
+            }
+
             mergedProperties[property.Name] = property.Value.Clone();
         }
 

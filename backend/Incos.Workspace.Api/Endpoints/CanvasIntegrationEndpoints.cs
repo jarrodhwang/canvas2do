@@ -17,6 +17,7 @@ public static class CanvasIntegrationEndpoints
 {
     private const string CanvasTokenSettingKey = "canvas.token";
     private const string CanvasTokenProtectorPurpose = "incos.workspace.canvas-token.v1";
+    private const string CanvasUserAgent = "INCOS-Workspace/1.0 (Canvas LMS integration)";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public static IEndpointRouteBuilder MapCanvasIntegrationEndpoints(this IEndpointRouteBuilder app)
@@ -255,6 +256,8 @@ public static class CanvasIntegrationEndpoints
         IncosWorkspaceDbContext db,
         IConfiguration configuration,
         IDataProtectionProvider dataProtectionProvider,
+        IMemoryCache memoryCache,
+        string? courseId,
         int? pageSize,
         CancellationToken cancellationToken)
     {
@@ -273,13 +276,18 @@ public static class CanvasIntegrationEndpoints
         var instanceUrl = connection.InstanceUrl!;
         var accessToken = connection.AccessToken!;
         var safePageSize = Math.Clamp(pageSize ?? 5, 1, 50);
+        var userCacheKey = GetUserKey(context) ??
+            context.User.FindFirstValue(ClaimTypes.NameIdentifier) ??
+            "unknown";
 
         try
         {
-            var courses = await GetActiveStudentCoursesAsync(
+            var courses = await GetCachedActiveStudentCoursesAsync(
+                memoryCache,
                 httpClientFactory,
                 instanceUrl,
                 accessToken,
+                userCacheKey,
                 safePageSize,
                 cancellationToken);
 
@@ -344,31 +352,14 @@ public static class CanvasIntegrationEndpoints
 
         try
         {
-            var courseCacheKey = string.Join(
-                ':',
-                "canvas-active-courses",
-                "v1",
+            var courses = await GetCachedActiveStudentCoursesAsync(
+                memoryCache,
+                httpClientFactory,
+                instanceUrl,
+                accessToken,
                 userCacheKey,
-                instanceUrl);
-
-            if (!memoryCache.TryGetValue(courseCacheKey, out CanvasCourseDto[]? courses) ||
-                courses is null)
-            {
-                courses = await GetActiveStudentCoursesAsync(
-                    httpClientFactory,
-                    instanceUrl,
-                    accessToken,
-                    50,
-                    cancellationToken);
-                memoryCache.Set(
-                    courseCacheKey,
-                    courses,
-                    new MemoryCacheEntryOptions
-                    {
-                        AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5),
-                        SlidingExpiration = TimeSpan.FromMinutes(1),
-                    });
-            }
+                50,
+                cancellationToken);
 
             var courseLookup = courses
                 .Where(course => !string.IsNullOrWhiteSpace(course.Id))
@@ -408,12 +399,21 @@ public static class CanvasIntegrationEndpoints
                 assignmentEvents,
                 cancellationToken);
             var submissionLookup = submissionLookupResult.Lookup;
+            var courseAssignmentItems = await GetCanvasCourseAssignmentCalendarItemsAsync(
+                httpClientFactory,
+                instanceUrl,
+                accessToken,
+                courses,
+                startAt,
+                endAt,
+                cancellationToken);
             var items = assignmentEvents
                 .Select(calendarEvent => ParseCanvasCalendarItem(calendarEvent, "assignment", courseLookup, submissionLookup))
+                .Concat(courseAssignmentItems)
                 .Concat(calendarEvents.Select(calendarEvent => ParseCanvasCalendarItem(calendarEvent, "event", courseLookup, submissionLookup)))
                 .Where(item => item is not null)
                 .Select(item => item!)
-                .GroupBy(item => item.Id, StringComparer.OrdinalIgnoreCase)
+                .GroupBy(GetCanvasCalendarItemDedupeKey, StringComparer.OrdinalIgnoreCase)
                 .Select(group => group.First())
                 .OrderBy(item => item.DueAt ?? item.StartAt ?? item.EndAt ?? DateTimeOffset.MaxValue)
                 .ToArray();
@@ -449,6 +449,7 @@ public static class CanvasIntegrationEndpoints
         IConfiguration configuration,
         IDataProtectionProvider dataProtectionProvider,
         string courseId,
+        string? section,
         CancellationToken cancellationToken)
     {
         var connection = await ResolveCanvasConnectionAsync(
@@ -473,6 +474,7 @@ public static class CanvasIntegrationEndpoints
             var instanceUrl = connection.InstanceUrl!;
             var accessToken = connection.AccessToken!;
             var encodedCourseId = Uri.EscapeDataString(courseId);
+            var requestedSection = NormalizeCanvasCourseContentSection(section);
             var courseQuery = new List<KeyValuePair<string, string?>>
             {
                 new("include[]", "term"),
@@ -493,7 +495,8 @@ public static class CanvasIntegrationEndpoints
                     ["per_page"] = "100",
                 }),
                 cancellationToken);
-            var modulesTask = GetCanvasArrayBestEffortAsync(
+            var modulesTask = ShouldLoadCanvasCourseContentSection(requestedSection, "modules")
+                ? GetCanvasArrayBestEffortAsync(
                 httpClientFactory,
                 accessToken,
                 QueryHelpers.AddQueryString($"{instanceUrl}/api/v1/courses/{encodedCourseId}/modules", new Dictionary<string, string?>
@@ -501,8 +504,11 @@ public static class CanvasIntegrationEndpoints
                     ["include[]"] = "items",
                     ["per_page"] = "100",
                 }),
-                cancellationToken);
-            var announcementsTask = GetCanvasArrayBestEffortAsync(
+                cancellationToken)
+                : Task.FromResult(Array.Empty<JsonElement>());
+            var announcementsTask = ShouldLoadCanvasCourseContentSection(requestedSection, "announcements") ||
+                ShouldLoadCanvasCourseContentSection(requestedSection, "home")
+                ? GetCanvasArrayBestEffortAsync(
                 httpClientFactory,
                 accessToken,
                 QueryHelpers.AddQueryString($"{instanceUrl}/api/v1/announcements", new List<KeyValuePair<string, string?>>
@@ -510,8 +516,11 @@ public static class CanvasIntegrationEndpoints
                     new("context_codes[]", $"course_{courseId}"),
                     new("per_page", "25"),
                 }),
-                cancellationToken);
-            var assignmentsTask = GetCanvasArrayBestEffortAsync(
+                cancellationToken)
+                : Task.FromResult(Array.Empty<JsonElement>());
+            var assignmentsTask = ShouldLoadCanvasCourseContentSection(requestedSection, "assignments") ||
+                ShouldLoadCanvasCourseContentSection(requestedSection, "grades")
+                ? GetCanvasArrayBestEffortAsync(
                 httpClientFactory,
                 accessToken,
                 QueryHelpers.AddQueryString($"{instanceUrl}/api/v1/courses/{encodedCourseId}/assignments", new List<KeyValuePair<string, string?>>
@@ -520,24 +529,31 @@ public static class CanvasIntegrationEndpoints
                     new("order_by", "due_at"),
                     new("per_page", "100"),
                 }),
-                cancellationToken);
-            var quizzesTask = GetCanvasArrayBestEffortAsync(
+                cancellationToken)
+                : Task.FromResult(Array.Empty<JsonElement>());
+            var quizzesTask = ShouldLoadCanvasCourseContentSection(requestedSection, "assignments") ||
+                ShouldLoadCanvasCourseContentSection(requestedSection, "grades")
+                ? GetCanvasArrayBestEffortAsync(
                 httpClientFactory,
                 accessToken,
                 QueryHelpers.AddQueryString($"{instanceUrl}/api/v1/courses/{encodedCourseId}/quizzes", new Dictionary<string, string?>
                 {
                     ["per_page"] = "100",
                 }),
-                cancellationToken);
-            var discussionsTask = GetCanvasArrayBestEffortAsync(
+                cancellationToken)
+                : Task.FromResult(Array.Empty<JsonElement>());
+            var discussionsTask = ShouldLoadCanvasCourseContentSection(requestedSection, "announcements")
+                ? GetCanvasArrayBestEffortAsync(
                 httpClientFactory,
                 accessToken,
                 QueryHelpers.AddQueryString($"{instanceUrl}/api/v1/courses/{encodedCourseId}/discussion_topics", new Dictionary<string, string?>
                 {
                     ["per_page"] = "100",
                 }),
-                cancellationToken);
-            var pagesTask = GetCanvasArrayBestEffortAsync(
+                cancellationToken)
+                : Task.FromResult(Array.Empty<JsonElement>());
+            var pagesTask = ShouldLoadCanvasCourseContentSection(requestedSection, "pages")
+                ? GetCanvasArrayBestEffortAsync(
                 httpClientFactory,
                 accessToken,
                 QueryHelpers.AddQueryString($"{instanceUrl}/api/v1/courses/{encodedCourseId}/pages", new Dictionary<string, string?>
@@ -546,8 +562,10 @@ public static class CanvasIntegrationEndpoints
                     ["order"] = "asc",
                     ["per_page"] = "100",
                 }),
-                cancellationToken);
-            var peopleTask = GetCanvasArrayBestEffortAsync(
+                cancellationToken)
+                : Task.FromResult(Array.Empty<JsonElement>());
+            var peopleTask = ShouldLoadCanvasCourseContentSection(requestedSection, "people")
+                ? GetCanvasArrayBestEffortAsync(
                 httpClientFactory,
                 accessToken,
                 QueryHelpers.AddQueryString($"{instanceUrl}/api/v1/courses/{encodedCourseId}/users", new List<KeyValuePair<string, string?>>
@@ -556,12 +574,15 @@ public static class CanvasIntegrationEndpoints
                     new("include[]", "enrollments"),
                     new("per_page", "100"),
                 }),
-                cancellationToken);
-            var frontPageTask = GetCanvasObjectBestEffortAsync(
+                cancellationToken)
+                : Task.FromResult(Array.Empty<JsonElement>());
+            var frontPageTask = ShouldLoadCanvasCourseContentSection(requestedSection, "home")
+                ? GetCanvasObjectBestEffortAsync(
                 httpClientFactory,
                 accessToken,
                 $"{instanceUrl}/api/v1/courses/{encodedCourseId}/front_page",
-                cancellationToken);
+                cancellationToken)
+                : Task.FromResult<JsonElement?>(null);
 
             await Task.WhenAll(tabsTask, modulesTask, announcementsTask, assignmentsTask, quizzesTask, discussionsTask, pagesTask, peopleTask, frontPageTask);
 
@@ -576,7 +597,7 @@ public static class CanvasIntegrationEndpoints
                 pagesTask.Result.Select(ParseCanvasCoursePage).Where(page => page is not null).Select(page => page!).ToArray(),
                 peopleTask.Result.Select(ParseCanvasCourseUser).Where(user => user is not null).Select(user => user!).ToArray(),
                 frontPageTask.Result.HasValue ? ParseCanvasCoursePage(frontPageTask.Result.Value) : null,
-                GetJsonString(course, "syllabus_body")));
+                ShouldLoadCanvasCourseContentSection(requestedSection, "syllabus") ? GetJsonString(course, "syllabus_body") : null));
         }
         catch (CanvasApiRequestException exception)
         {
@@ -708,6 +729,33 @@ public static class CanvasIntegrationEndpoints
                 detail: exception.Detail,
                 statusCode: exception.StatusCode);
         }
+    }
+
+    private static string NormalizeCanvasCourseContentSection(string? section)
+    {
+        if (string.IsNullOrWhiteSpace(section))
+        {
+            return "all";
+        }
+
+        return section.Trim().ToLowerInvariant() switch
+        {
+            "home" => "home",
+            "modules" or "module" => "modules",
+            "announcements" or "announcement" => "announcements",
+            "syllabus" => "syllabus",
+            "assignments" or "assignment" or "quizzes" or "quiz" => "assignments",
+            "pages" or "page" or "wiki" => "pages",
+            "people" or "users" or "user" => "people",
+            "grades" or "grade" => "grades",
+            "all" => "all",
+            _ => "home",
+        };
+    }
+
+    private static bool ShouldLoadCanvasCourseContentSection(string requestedSection, string section)
+    {
+        return requestedSection == "all" || requestedSection == section;
     }
 
     private static async Task<IResult> GetCanvasCourseAssignmentAsync(
@@ -1226,6 +1274,7 @@ public static class CanvasIntegrationEndpoints
         IncosWorkspaceDbContext db,
         IConfiguration configuration,
         IDataProtectionProvider dataProtectionProvider,
+        string? courseId,
         int? pageSize,
         CancellationToken cancellationToken)
     {
@@ -1256,12 +1305,21 @@ public static class CanvasIntegrationEndpoints
             var courseLookup = courses
                 .Where(course => !string.IsNullOrWhiteSpace(course.Id))
                 .ToDictionary(course => course.Id, StringComparer.OrdinalIgnoreCase);
+            var safeCourseId = courseId?.Trim();
             var query = new List<KeyValuePair<string, string?>>
             {
-                new("only_active_courses", "true"),
                 new("per_page", Math.Min(safePageSize, 100).ToString(CultureInfo.InvariantCulture)),
             };
-            var requestUri = QueryHelpers.AddQueryString($"{instanceUrl}/api/v1/users/self/activity_stream", query);
+
+            if (string.IsNullOrWhiteSpace(safeCourseId))
+            {
+                query.Add(new("only_active_courses", "true"));
+            }
+
+            var requestPath = string.IsNullOrWhiteSpace(safeCourseId)
+                ? $"{instanceUrl}/api/v1/users/self/activity_stream"
+                : $"{instanceUrl}/api/v1/courses/{Uri.EscapeDataString(safeCourseId)}/activity_stream";
+            var requestUri = QueryHelpers.AddQueryString(requestPath, query);
             var inboxItems = new List<CanvasInboxItemDto>();
 
             while (!string.IsNullOrWhiteSpace(requestUri) && inboxItems.Count < safePageSize)
@@ -1284,9 +1342,11 @@ public static class CanvasIntegrationEndpoints
 
                 inboxItems.AddRange(document.RootElement
                     .EnumerateArray()
-                    .Select(activityItem => ParseCanvasInboxItem(activityItem, courseLookup))
+                    .Select(activityItem => ParseCanvasInboxItem(activityItem, courseLookup, safeCourseId))
                     .Where(item => item is not null)
-                    .Select(item => item!));
+                    .Select(item => item!)
+                    .Where(item => string.IsNullOrWhiteSpace(safeCourseId) ||
+                                   string.Equals(item.CourseId, safeCourseId, StringComparison.OrdinalIgnoreCase)));
 
                 requestUri = page.NextUrl;
             }
@@ -1382,7 +1442,7 @@ public static class CanvasIntegrationEndpoints
         }
     }
 
-    private static async Task<IResult> UpdateCanvasTokenForUserKeyAsync(
+    public static async Task<IResult> UpdateCanvasTokenForUserKeyAsync(
         string userKey,
         IHttpClientFactory httpClientFactory,
         IncosWorkspaceDbContext db,
@@ -1631,6 +1691,49 @@ public static class CanvasIntegrationEndpoints
         return string.IsNullOrWhiteSpace(email) ? null : email.Trim().ToLowerInvariant();
     }
 
+    private static async Task<CanvasCourseDto[]> GetCachedActiveStudentCoursesAsync(
+        IMemoryCache memoryCache,
+        IHttpClientFactory httpClientFactory,
+        string instanceUrl,
+        string accessToken,
+        string userCacheKey,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+        var safePageSize = Math.Clamp(pageSize, 1, 50);
+        var courseCacheKey = string.Join(
+            ':',
+            "canvas-active-courses",
+            "v2",
+            userCacheKey,
+            instanceUrl,
+            safePageSize.ToString(CultureInfo.InvariantCulture));
+
+        if (memoryCache.TryGetValue(courseCacheKey, out CanvasCourseDto[]? courses) &&
+            courses is not null)
+        {
+            return courses;
+        }
+
+        courses = await GetActiveStudentCoursesAsync(
+            httpClientFactory,
+            instanceUrl,
+            accessToken,
+            safePageSize,
+            cancellationToken);
+
+        memoryCache.Set(
+            courseCacheKey,
+            courses,
+            new MemoryCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5),
+                SlidingExpiration = TimeSpan.FromMinutes(1),
+            });
+
+        return courses;
+    }
+
     private static async Task<CanvasCourseDto[]> GetActiveStudentCoursesAsync(
         IHttpClientFactory httpClientFactory,
         string instanceUrl,
@@ -1725,7 +1828,7 @@ public static class CanvasIntegrationEndpoints
         var contextCodeBatches = contextCodes.Length > 0
             ? contextCodes.Chunk(10).Select(batch => batch.ToArray()).ToArray()
             : new[] { Array.Empty<string>() };
-        using var concurrencyGate = new SemaphoreSlim(4);
+        using var concurrencyGate = new SemaphoreSlim(8);
         var batchTasks = contextCodeBatches.Select(async contextCodeBatch =>
         {
             await concurrencyGate.WaitAsync(cancellationToken);
@@ -1806,6 +1909,144 @@ public static class CanvasIntegrationEndpoints
         }
 
         return events.ToArray();
+    }
+
+    private static async Task<CanvasCalendarItemDto[]> GetCanvasCourseAssignmentCalendarItemsAsync(
+        IHttpClientFactory httpClientFactory,
+        string instanceUrl,
+        string accessToken,
+        CanvasCourseDto[] courses,
+        DateTimeOffset startAt,
+        DateTimeOffset endAt,
+        CancellationToken cancellationToken)
+    {
+        using var concurrencyGate = new SemaphoreSlim(4);
+        var courseTasks = courses
+            .Where(course => !string.IsNullOrWhiteSpace(course.Id))
+            .Select(async course =>
+            {
+                await concurrencyGate.WaitAsync(cancellationToken);
+
+                try
+                {
+                    return await GetCanvasCourseAssignmentCalendarItemsForCourseAsync(
+                        httpClientFactory,
+                        instanceUrl,
+                        accessToken,
+                        course,
+                        startAt,
+                        endAt,
+                        cancellationToken);
+                }
+                catch (CanvasApiRequestException)
+                {
+                    return [];
+                }
+                finally
+                {
+                    concurrencyGate.Release();
+                }
+            });
+        var courseItems = await Task.WhenAll(courseTasks);
+
+        return courseItems.SelectMany(items => items).ToArray();
+    }
+
+    private static async Task<CanvasCalendarItemDto[]> GetCanvasCourseAssignmentCalendarItemsForCourseAsync(
+        IHttpClientFactory httpClientFactory,
+        string instanceUrl,
+        string accessToken,
+        CanvasCourseDto course,
+        DateTimeOffset startAt,
+        DateTimeOffset endAt,
+        CancellationToken cancellationToken)
+    {
+        var assignments = new List<CanvasCalendarItemDto>();
+        var query = new List<KeyValuePair<string, string?>>
+        {
+            new("include[]", "submission"),
+            new("order_by", "due_at"),
+            new("per_page", "100"),
+        };
+        var requestUri = QueryHelpers.AddQueryString(
+            $"{instanceUrl}/api/v1/courses/{Uri.EscapeDataString(course.Id)}/assignments",
+            query);
+
+        while (!string.IsNullOrWhiteSpace(requestUri))
+        {
+            var page = await SendCanvasGetPageAsync(
+                httpClientFactory,
+                accessToken,
+                requestUri,
+                cancellationToken);
+
+            using var document = JsonDocument.Parse(page.Payload);
+
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                throw new CanvasApiRequestException(
+                    "Canvas assignments failed to load.",
+                    "Canvas returned an unexpected assignments response.",
+                    StatusCodes.Status502BadGateway);
+            }
+
+            assignments.AddRange(document.RootElement
+                .EnumerateArray()
+                .Select(assignment => ParseCanvasAssignmentCalendarItem(assignment, course, startAt, endAt))
+                .Where(item => item is not null)
+                .Select(item => item!));
+
+            requestUri = page.NextUrl;
+        }
+
+        return assignments.ToArray();
+    }
+
+    private static CanvasCalendarItemDto? ParseCanvasAssignmentCalendarItem(
+        JsonElement assignment,
+        CanvasCourseDto course,
+        DateTimeOffset startAt,
+        DateTimeOffset endAt)
+    {
+        var assignmentId = GetJsonStringOrNumber(assignment, "id");
+        var title = GetJsonString(assignment, "name");
+        var dueAt = GetJsonDateTimeOffset(assignment, "due_at");
+
+        if (string.IsNullOrWhiteSpace(assignmentId) ||
+            string.IsNullOrWhiteSpace(title) ||
+            !dueAt.HasValue ||
+            dueAt.Value < startAt ||
+            dueAt.Value > endAt)
+        {
+            return null;
+        }
+
+        var submissionStatus = GetCanvasAssignmentSubmissionStatus(assignment);
+        var contextCode = $"course_{course.Id}";
+
+        return new CanvasCalendarItemDto(
+            $"canvas-assignment-{course.Id}-{assignmentId}",
+            title,
+            GetCanvasCalendarItemType(title, "assignment", assignment),
+            course.Id,
+            course.CourseCode,
+            course.Name,
+            dueAt,
+            dueAt,
+            dueAt,
+            GetJsonString(assignment, "html_url"),
+            contextCode,
+            GetJsonStringArray(assignment, "submission_types"),
+            assignmentId,
+            submissionStatus.IsSubmitted,
+            submissionStatus.SubmittedAt);
+    }
+
+    private static string GetCanvasCalendarItemDedupeKey(CanvasCalendarItemDto item)
+    {
+        return !string.IsNullOrWhiteSpace(item.CourseId) && !string.IsNullOrWhiteSpace(item.AssignmentId)
+            ? $"assignment:{item.CourseId}:{item.AssignmentId}"
+            : item.Id;
     }
 
     private static async Task<(IReadOnlyDictionary<string, CanvasSubmissionStatus> Lookup, bool IsComplete)> GetCanvasAssignmentSubmissionLookupBestEffortAsync(
@@ -2028,7 +2269,8 @@ public static class CanvasIntegrationEndpoints
 
     private static CanvasInboxItemDto? ParseCanvasInboxItem(
         JsonElement activityItem,
-        IReadOnlyDictionary<string, CanvasCourseDto> courses)
+        IReadOnlyDictionary<string, CanvasCourseDto> courses,
+        string? fallbackCourseId = null)
     {
         var id = GetJsonStringOrNumber(activityItem, "id");
 
@@ -2039,7 +2281,8 @@ public static class CanvasIntegrationEndpoints
 
         var courseId =
             GetJsonStringOrNumber(activityItem, "course_id") ??
-            GetCourseId(GetJsonString(activityItem, "context_code"));
+            GetCourseId(GetJsonString(activityItem, "context_code")) ??
+            fallbackCourseId;
         courses.TryGetValue(courseId ?? "", out var course);
         var title =
             GetJsonString(activityItem, "title") ??
@@ -2646,7 +2889,7 @@ public static class CanvasIntegrationEndpoints
         CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        AddCanvasRequestHeaders(request, accessToken);
 
         var response = await httpClientFactory
             .CreateClient()
@@ -2672,7 +2915,7 @@ public static class CanvasIntegrationEndpoints
         CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, requestUri);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        AddCanvasRequestHeaders(request, accessToken);
         request.Content = new FormUrlEncodedContent(fields);
 
         var response = await httpClientFactory
@@ -2699,6 +2942,12 @@ public static class CanvasIntegrationEndpoints
         }
 
         return document.RootElement.Clone();
+    }
+
+    private static void AddCanvasRequestHeaders(HttpRequestMessage request, string accessToken)
+    {
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        request.Headers.TryAddWithoutValidation("User-Agent", CanvasUserAgent);
     }
 
     private static string? GetNextLinkUrl(HttpResponseMessage response)

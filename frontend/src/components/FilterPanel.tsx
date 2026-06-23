@@ -19,81 +19,6 @@ interface FilterPanelProps {
   variant?: 'card' | 'menu';
 }
 
-interface StoredCoursePreference {
-  chipColor?: ColorToken;
-  code?: string;
-  friendlyCourseCode?: string;
-  originalCourseCode?: string;
-}
-
-const manualLecturesStorageKey = 'incos-academy-manual-lectures';
-const canvasLecturePreferencesStorageKey = 'incos-academy-canvas-lecture-preferences';
-
-function normalizeCourseCode(value: string) {
-  return value.replace(/\s+/g, '').toLowerCase();
-}
-
-function getCourseCodeRoot(value: string) {
-  const match = value.match(/[a-z]{2,}\s*\d{2,4}[a-z]?/i);
-
-  return match ? normalizeCourseCode(match[0]) : undefined;
-}
-
-function getCourseCodeCandidates(value?: string) {
-  if (!value) {
-    return [];
-  }
-
-  return [normalizeCourseCode(value), getCourseCodeRoot(value)].filter(Boolean) as string[];
-}
-
-function codesMatch(firstCode?: string, secondCode?: string) {
-  const firstCandidates = getCourseCodeCandidates(firstCode);
-  const secondCandidates = getCourseCodeCandidates(secondCode);
-
-  return firstCandidates.some((candidate) => secondCandidates.includes(candidate));
-}
-
-function readStoredJson<T>(key: string, fallback: T): T {
-  if (typeof window === 'undefined') {
-    return fallback;
-  }
-
-  try {
-    const storedValue = window.localStorage.getItem(key);
-
-    return storedValue ? JSON.parse(storedValue) as T : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function getStoredCourseChipColor(courseCode: string): ColorToken | undefined {
-  const storedManualLectures = readStoredJson<unknown>(manualLecturesStorageKey, []);
-  const manualLectures = Array.isArray(storedManualLectures)
-    ? storedManualLectures as StoredCoursePreference[]
-    : [];
-  const manualLecture = manualLectures.find((lecture) => (
-    codesMatch(courseCode, lecture.friendlyCourseCode) || codesMatch(courseCode, lecture.code)
-  ));
-
-  if (manualLecture?.chipColor) {
-    return manualLecture.chipColor;
-  }
-
-  const storedCanvasPreferences = readStoredJson<unknown>(canvasLecturePreferencesStorageKey, {});
-  const canvasPreferences = storedCanvasPreferences &&
-    typeof storedCanvasPreferences === 'object' &&
-    !Array.isArray(storedCanvasPreferences)
-    ? storedCanvasPreferences as Record<string, StoredCoursePreference>
-    : {};
-  const canvasLecture = Object.values(canvasPreferences).find((preference) => (
-    codesMatch(courseCode, preference.friendlyCourseCode) || codesMatch(courseCode, preference.originalCourseCode)
-  ));
-
-  return canvasLecture?.chipColor;
-}
-
 export function FilterPanel({
   className,
   courseOptions,
@@ -107,10 +32,8 @@ export function FilterPanel({
     ? activeMode.filters.filter((group) => group.id === 'courses')
     : activeMode.filters;
 
-  const renderOption = (groupId: string, option: typeof activeMode.filters[number]['options'][number]) => {
-    const color = groupId === 'courses'
-      ? getStoredCourseChipColor(option.label) ?? option.color
-      : option.color;
+  const renderOption = (option: typeof activeMode.filters[number]['options'][number]) => {
+    const color = option.color;
 
     return (
       <Label className="flex items-center gap-2 text-sm font-bold text-muted-foreground" key={option.id}>
@@ -146,12 +69,12 @@ export function FilterPanel({
               <div className="space-y-2">
                 {(courseOptions && courseOptions.length > 0
                   ? courseOptions.map(renderCourseOption)
-                  : group.options.map((option) => renderOption(group.id, option)))}
+                  : group.options.map(renderOption))}
               </div>
             </div>
           ) : (
             <div className="space-y-2">
-              {group.options.map((option) => renderOption(group.id, option))}
+              {group.options.map(renderOption)}
             </div>
           )}
         </div>

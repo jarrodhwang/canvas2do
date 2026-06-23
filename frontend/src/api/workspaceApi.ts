@@ -180,12 +180,32 @@ export interface AuthSession {
   email?: string;
   hostedDomain?: string;
   isAuthenticated: boolean;
+  isPreview?: boolean;
+  loginId?: string;
   permissions?: string[];
   pictureUrl?: string;
-  provider?: string;
+  previewAdminDisplayName?: string;
+  previewAdminEmail?: string;
+  provider?: 'google' | 'academy' | string;
   requiresAssignment?: boolean;
   requiresApproval?: boolean;
   settings?: string[];
+}
+
+export interface AcademyCredentialSignupRequest {
+  name: string;
+  loginId: string;
+  password: string;
+  confirmPassword: string;
+  profileImageDataUrl?: string;
+  canvasInstanceUrl?: string;
+  canvasAccessToken?: string;
+}
+
+export interface AcademyCredentialSignupResult {
+  loginId: string;
+  accountStatus: AdminUserStatus;
+  canvasTokenConfigured: boolean;
 }
 
 export interface AdminUser {
@@ -193,13 +213,16 @@ export interface AdminUser {
   email: string;
   displayName: string;
   photoUrl?: string;
+  role?: string;
   status: AdminUserStatus;
+  isAcademyUser: boolean;
   apiAccessEnabled: boolean;
   hasLoggedIn: boolean;
   isDirectorySuspended: boolean;
   lastLoginAt?: string;
   googleLastLoginAt?: string;
   directorySyncedAt?: string;
+  sessionRevokedAt?: string;
 }
 
 export interface AdminUsersResponse {
@@ -209,8 +232,26 @@ export interface AdminUsersResponse {
 }
 
 export interface UpdateAdminUserRequest {
+  displayName?: string;
+  photoUrl?: string;
+  role?: string;
+  loginId?: string;
+  password?: string;
   status?: AdminUserStatus;
   apiAccessEnabled?: boolean;
+}
+
+export interface AdminUserLog {
+  action: string;
+  at: string;
+  detail?: string;
+}
+
+export interface AdminUserDetail {
+  user: AdminUser;
+  academyLoginId?: string;
+  groups: string[];
+  logs: AdminUserLog[];
 }
 
 export type AdminGroupStatus = 'active' | 'inactive';
@@ -488,6 +529,17 @@ export interface CanvasCourseContent {
   syllabusBody?: string;
 }
 
+export type CanvasCourseContentSection =
+  | 'home'
+  | 'modules'
+  | 'announcements'
+  | 'syllabus'
+  | 'assignments'
+  | 'pages'
+  | 'people'
+  | 'grades'
+  | 'all';
+
 export interface CanvasCoursePage {
   id: string;
   title: string;
@@ -561,8 +613,8 @@ export interface AcademyPreferences {
 }
 
 export interface SaveAcademyPreferencesRequest {
-  manualLectures: unknown[];
-  canvasLecturePreferences: Record<string, unknown>;
+  manualLectures?: unknown[];
+  canvasLecturePreferences?: Record<string, unknown>;
   manualCoursework?: unknown[];
   canvasCourseworkPreferences?: Record<string, unknown>;
   manualAssessments?: unknown[];
@@ -817,12 +869,20 @@ export const workspaceApi = {
   },
 
   async getAuthSession() {
-    const response = await fetch(`${apiBaseUrl}/auth/session`, {
-      credentials: 'include',
-    });
+    let response: Response;
+
+    try {
+      response = await fetch(`${apiBaseUrl}/auth/session`, {
+        credentials: 'include',
+      });
+    } catch {
+      throw new Error('Unable to reach the workspace API. Check that the API container is running.');
+    }
 
     if (!response.ok) {
-      return { isAuthenticated: false } satisfies AuthSession;
+      const { message } = await readErrorResponse(response, 'Unable to check your sign-in session.');
+
+      throw new Error(message);
     }
 
     return response.json() as Promise<AuthSession>;
@@ -841,16 +901,99 @@ export const workspaceApi = {
     }
   },
 
+  async previewAdminUser(userId: string) {
+    const response = await fetch(`${apiBaseUrl}/auth/preview/users/${encodeURIComponent(userId)}`, {
+      credentials: 'include',
+      method: 'POST',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to preview this user.');
+      throw new Error(message);
+    }
+
+    return this.getAuthSession();
+  },
+
+  async exitPreviewMode() {
+    const response = await fetch(`${apiBaseUrl}/auth/preview/exit`, {
+      credentials: 'include',
+      method: 'POST',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to exit preview mode.');
+      throw new Error(message);
+    }
+
+    return this.getAuthSession();
+  },
+
   async getAuthConfig() {
     const response = await fetch(`${apiBaseUrl}/auth/config`, {
       credentials: 'include',
     });
 
     if (!response.ok) {
-      return { googleConfigured: false };
+      return { academyCredentialsConfigured: true, googleConfigured: false };
     }
 
-    return response.json() as Promise<{ googleConfigured: boolean; hostedDomain?: string; workspaceDataDomain?: string }>;
+    return response.json() as Promise<{
+      academyCredentialsConfigured?: boolean;
+      googleConfigured: boolean;
+      hostedDomain?: string;
+      workspaceDataDomain?: string;
+    }>;
+  },
+
+  async checkAcademyLoginId(loginId: string) {
+    const params = new URLSearchParams({ id: loginId });
+    const response = await fetch(`${apiBaseUrl}/auth/academy/id-available?${params.toString()}`, {
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to check this ID.');
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<{ loginId: string; available: boolean }>;
+  },
+
+  async loginWithAcademyCredentials(request: { loginId: string; password: string }) {
+    const response = await fetch(`${apiBaseUrl}/auth/academy/login`, {
+      body: JSON.stringify(request),
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to sign in with this Academy ID.');
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<{ loginId: string; accountStatus: AdminUserStatus; requiresApproval: boolean }>;
+  },
+
+  async signupAcademyAccount(request: AcademyCredentialSignupRequest) {
+    const response = await fetch(`${apiBaseUrl}/auth/academy/signup`, {
+      body: JSON.stringify(request),
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to create this Academy account.');
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<AcademyCredentialSignupResult>;
   },
 
   async getGoogleIntegrations() {
@@ -890,6 +1033,33 @@ export const workspaceApi = {
 
     if (!response.ok) {
       const { message } = await readErrorResponse(response, 'Unable to update user.');
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<AdminUser>;
+  },
+
+  async getAdminUserDetail(userId: string) {
+    const response = await fetch(`${apiBaseUrl}/admin/users/${encodeURIComponent(userId)}`, {
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to load user details.');
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<AdminUserDetail>;
+  },
+
+  async signOutAdminUser(userId: string) {
+    const response = await fetch(`${apiBaseUrl}/admin/users/${encodeURIComponent(userId)}/sign-out`, {
+      credentials: 'include',
+      method: 'POST',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to sign out this user.');
       throw new Error(message);
     }
 
@@ -1076,8 +1246,14 @@ export const workspaceApi = {
     return response.json() as Promise<CanvasCourses>;
   },
 
-  async getCanvasCourseContent(courseId: string) {
-    const response = await fetch(`${apiBaseUrl}/canvas/courses/${encodeURIComponent(courseId)}/content`, {
+  async getCanvasCourseContent(courseId: string, section?: CanvasCourseContentSection) {
+    const params = new URLSearchParams();
+
+    if (section) {
+      params.set('section', section);
+    }
+
+    const response = await fetch(`${apiBaseUrl}/canvas/courses/${encodeURIComponent(courseId)}/content${params.size ? `?${params.toString()}` : ''}`, {
       credentials: 'include',
     });
 
@@ -1272,10 +1448,10 @@ export const workspaceApi = {
       });
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
-        throw new Error('Canvas calendar took too long to respond. Check Canvas API status and try again.');
+        throw new Error('Canvas calendar took too long to respond. Check Canvas API status and try again.', { cause: error });
       }
 
-      throw new Error('Unable to reach the workspace API. Check that the API container is running.');
+      throw new Error('Unable to reach the workspace API. Check that the API container is running.', { cause: error });
     } finally {
       timeout.cancel();
     }
@@ -1289,8 +1465,13 @@ export const workspaceApi = {
     return response.json() as Promise<CanvasCalendarItems>;
   },
 
-  async getCanvasInboxItems(pageSize = 50) {
+  async getCanvasInboxItems(pageSize = 50, options: { courseId?: string } = {}) {
     const params = new URLSearchParams({ pageSize: String(Math.min(Math.max(pageSize, 1), 100)) });
+
+    if (options.courseId) {
+      params.set('courseId', options.courseId);
+    }
+
     const response = await fetch(`${apiBaseUrl}/canvas/inbox-items?${params.toString()}`, {
       credentials: 'include',
     });
@@ -1626,10 +1807,10 @@ export const workspaceApi = {
       });
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
-        throw new Error('Gmail send took too long. Check the attachment size or try again in a moment.');
+        throw new Error('Gmail send took too long. Check the attachment size or try again in a moment.', { cause: error });
       }
 
-      throw new Error('Unable to reach the workspace API. Check that the API container is running.');
+      throw new Error('Unable to reach the workspace API. Check that the API container is running.', { cause: error });
     } finally {
       timeout.cancel();
     }
@@ -1706,10 +1887,10 @@ export const workspaceApi = {
       });
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
-        throw new Error('Scheduled send took too long. Check the attachment size or try again in a moment.');
+        throw new Error('Scheduled send took too long. Check the attachment size or try again in a moment.', { cause: error });
       }
 
-      throw new Error('Unable to reach the workspace API. Check that the API container is running.');
+      throw new Error('Unable to reach the workspace API. Check that the API container is running.', { cause: error });
     } finally {
       timeout.cancel();
     }

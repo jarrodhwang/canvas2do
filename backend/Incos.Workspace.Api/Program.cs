@@ -19,8 +19,7 @@ var googleClientSecret = googleSection["ClientSecret"];
 var isGoogleAuthenticationConfigured =
     !string.IsNullOrWhiteSpace(googleClientId) &&
     !string.IsNullOrWhiteSpace(googleClientSecret);
-var workspaceSessionHours = Math.Clamp(googleSection.GetValue<double?>("WorkspaceSessionHours") ?? 8, 1, 24 * 14);
-var workspaceSessionDuration = TimeSpan.FromHours(workspaceSessionHours);
+var workspaceSessionDuration = AuthEndpoints.GetWorkspaceSessionDuration(builder.Configuration);
 
 builder.Services.AddOpenApi();
 builder.Services.AddHttpClient();
@@ -291,9 +290,6 @@ if (isGoogleAuthenticationConfigured)
                 }
             }
 
-            context.Properties.IsPersistent = true;
-            context.Properties.ExpiresUtc = DateTimeOffset.UtcNow.Add(workspaceSessionDuration);
-
             if (!string.IsNullOrWhiteSpace(email) &&
                 !string.IsNullOrWhiteSpace(effectiveWorkspaceScopes) &&
                 !string.IsNullOrWhiteSpace(context.AccessToken))
@@ -334,6 +330,20 @@ if (isGoogleAuthenticationConfigured)
                 await db.SaveChangesAsync(context.HttpContext.RequestAborted);
             }
 
+            var sessionDuration = workspaceSessionDuration;
+
+            if (!string.IsNullOrWhiteSpace(email))
+            {
+                var db = context.HttpContext.RequestServices.GetRequiredService<IncosWorkspaceDbContext>();
+                sessionDuration = await AuthEndpoints.GetUserSessionDurationAsync(
+                    context.HttpContext.RequestServices.GetRequiredService<IConfiguration>(),
+                    db,
+                    NormalizeGoogleUserKey(email),
+                    context.HttpContext.RequestAborted);
+            }
+
+            context.Properties.IsPersistent = true;
+            context.Properties.ExpiresUtc = DateTimeOffset.UtcNow.Add(sessionDuration);
             RemoveGoogleOAuthTokens(context.Properties);
         };
     });
@@ -416,8 +426,14 @@ app.Use(async (context, next) =>
 
     var configuration = context.RequestServices.GetRequiredService<IConfiguration>();
     var workspaceDataDomain = GetGoogleWorkspaceDataDomain(configuration.GetSection("Authentication:Google"));
+    var authProvider = context.User.FindFirstValue("incos:auth_provider");
+    var isAcademyCredentialAccount = string.Equals(
+        authProvider,
+        AuthEndpoints.AcademyCredentialProvider,
+        StringComparison.OrdinalIgnoreCase);
 
-    if (!IsWorkspaceGoogleAccount(email, context.User.FindFirstValue("hd"), workspaceDataDomain))
+    if (!isAcademyCredentialAccount &&
+        !IsWorkspaceGoogleAccount(email, context.User.FindFirstValue("hd"), workspaceDataDomain))
     {
         context.Response.StatusCode = StatusCodes.Status403Forbidden;
         context.Response.ContentType = "application/problem+json";
@@ -442,6 +458,9 @@ app.Use(async (context, next) =>
     if (status == "active")
     {
         var grants = await AuthEndpoints.GetAdminAccessGrantsAsync(db, email, context.RequestAborted);
+        grants = isAcademyCredentialAccount
+            ? AuthEndpoints.FilterAcademyOnlyGrants(grants)
+            : grants;
         var access = grants.Access.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         if (access.Count == 0)
@@ -503,6 +522,7 @@ if (app.Configuration.GetValue("Database:EnsureCreated", false))
     await GoogleIntegrationEndpoints.EnsureGoogleOAuthTokensTableAsync(db);
     await GoogleIntegrationEndpoints.EnsureAdminUsersTableAsync(db);
     await GoogleIntegrationEndpoints.EnsureAdminGroupsTableAsync(db);
+    await AuthEndpoints.EnsureAcademyCredentialAccountsTableAsync(db);
     await GoogleIntegrationEndpoints.EnsureScheduledGmailMessagesTableAsync(db);
     await WorkspaceEndpoints.EnsureUserSettingsTableAsync(db);
     await SeedData.SeedAsync(db);

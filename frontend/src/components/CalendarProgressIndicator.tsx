@@ -11,6 +11,7 @@ interface CalendarProgressIndicatorProps {
   className?: string;
   display: CalendarProgressDisplay;
   label: string;
+  showValueLabel?: boolean;
   size?: 'compact' | 'default';
   thresholds: CalendarProgressThresholds;
   value: number;
@@ -58,6 +59,7 @@ export function CalendarProgressIndicator({
   className,
   display,
   label,
+  showValueLabel = true,
   size = 'default',
   thresholds,
   value,
@@ -111,7 +113,9 @@ export function CalendarProgressIndicator({
             strokeWidth={size === 'compact' ? '2.25' : '2.5'}
           />
         </svg>
-        <span className="relative">{visibleValue}</span>
+        {showValueLabel ? (
+          <span className="relative">{visibleValue}</span>
+        ) : null}
       </span>
     );
   }
@@ -137,15 +141,17 @@ export function CalendarProgressIndicator({
           style={{ width: `${safeValue}%` }}
         />
       </span>
-      <span
-        className={cn(
-          'shrink-0 text-right font-black',
-          size === 'compact' ? 'w-8 text-[9px]' : 'w-10 text-xs',
-          tone.text,
-        )}
-      >
-        {visibleValue}
-      </span>
+      {showValueLabel ? (
+        <span
+          className={cn(
+            'shrink-0 text-right font-black',
+            size === 'compact' ? 'w-8 text-[9px]' : 'w-10 text-xs',
+            tone.text,
+          )}
+        >
+          {visibleValue}
+        </span>
+      ) : null}
     </span>
   );
 }

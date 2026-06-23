@@ -1,7 +1,7 @@
 import { ArrowLeft, ArrowRight, ChevronDown, ChevronRight, ExternalLink, Inbox, LoaderCircle, RefreshCw } from 'lucide-react';
 import { useEffect, useMemo, useState, type MouseEvent } from 'react';
 
-import { workspaceApi, type AcademyPreferences, type CanvasInboxItem } from '../api/workspaceApi';
+import { workspaceApi, type AcademyPreferences, type CanvasCourse, type CanvasInboxItem } from '../api/workspaceApi';
 import { useLanguage } from '../context/LanguageContext';
 import { isColorToken } from '../lib/colorStyles';
 import { cn } from '../lib/utils';
@@ -30,11 +30,10 @@ interface CanvasInboxViewProps {
   onOpenIntegration?: (courseRowId?: string | null, resourceUrl?: string | null) => void;
 }
 
-interface InboxCourseGroup {
-  key: string;
-  label: string;
-  color: ColorToken;
+interface CourseInboxState {
   items: CanvasInboxItem[];
+  status: LoadStatus;
+  error?: string;
 }
 
 interface InboxSelectionHistory {
@@ -245,10 +244,6 @@ function getInboxCourseLabel(item: CanvasInboxItem, fallback: string, preference
     fallback;
 }
 
-function getInboxCourseKey(item: CanvasInboxItem, fallback: string, preferences: CanvasLecturePreferences) {
-  return item.courseId?.trim() || getInboxCourseLabel(item, fallback, preferences);
-}
-
 function getInboxCourseColor(item: CanvasInboxItem, preferences: CanvasLecturePreferences): ColorToken {
   const storedColor = getInboxCoursePreference(item, preferences)?.chipColor;
 
@@ -259,6 +254,58 @@ function getInboxCourseColor(item: CanvasInboxItem, preferences: CanvasLecturePr
 
 function isInboxCourseHidden(item: CanvasInboxItem, preferences: CanvasLecturePreferences) {
   return Boolean(getInboxCoursePreference(item, preferences)?.hidden);
+}
+
+function getCoursePreference(course: CanvasCourse, preferences: CanvasLecturePreferences) {
+  const courseId = String(course.id ?? '').trim() || getCanvasCourseIdFromUrl(course.htmlUrl);
+  const directPreference = preferences[courseId];
+
+  if (directPreference) {
+    return directPreference;
+  }
+
+  const normalizedCourseId = normalizeCourseMatchValue(courseId);
+  const normalizedCourseCode = normalizeCourseMatchValue(course.courseCode);
+  const normalizedCourseName = normalizeCourseMatchValue(course.name);
+
+  return Object.entries(preferences).find(([preferenceKey, preference]) => {
+    const preferenceValues = [
+      preferenceKey.replace(/^canvas:/i, ''),
+      preference.courseId,
+      preference.courseCode,
+      preference.originalCourseCode,
+      preference.friendlyCourseCode,
+      preference.courseName,
+      preference.friendlyName,
+    ].map(normalizeCourseMatchValue);
+
+    return Boolean(
+      normalizedCourseId && preferenceValues.includes(normalizedCourseId) ||
+      normalizedCourseCode && preferenceValues.includes(normalizedCourseCode) ||
+      normalizedCourseName && preferenceValues.includes(normalizedCourseName),
+    );
+  })?.[1];
+}
+
+function getCourseColor(course: CanvasCourse, preferences: CanvasLecturePreferences): ColorToken {
+  const storedColor = getCoursePreference(course, preferences)?.chipColor;
+
+  return isColorToken(storedColor)
+    ? storedColor
+    : 'blue';
+}
+
+function getCourseLabel(course: CanvasCourse, preferences: CanvasLecturePreferences) {
+  const preference = getCoursePreference(course, preferences);
+
+  return preference?.friendlyCourseCode?.trim() ||
+    course.courseCode?.trim() ||
+    preference?.friendlyName?.trim() ||
+    course.name;
+}
+
+function isCourseHidden(course: CanvasCourse, preferences: CanvasLecturePreferences) {
+  return Boolean(getCoursePreference(course, preferences)?.hidden);
 }
 
 function getCanvasCourseRowId(item: CanvasInboxItem) {
@@ -272,48 +319,52 @@ function getCanvasCourseRowId(item: CanvasInboxItem) {
 }
 
 function groupCanvasInboxItems(
-  items: CanvasInboxItem[],
-  fallbackLabel: string,
+  courses: CanvasCourse[],
+  courseInbox: Record<string, CourseInboxState>,
   locale: string,
   preferences: CanvasLecturePreferences,
 ) {
-  const groups = new Map<string, InboxCourseGroup>();
+  return courses
+    .filter((course) => !isCourseHidden(course, preferences))
+    .map((course) => {
+      const state = courseInbox[course.id] ?? { items: [], status: 'idle' as LoadStatus };
 
-  items
-    .filter((item) => !isInboxCourseHidden(item, preferences))
-    .forEach((item) => {
-      const key = getInboxCourseKey(item, fallbackLabel, preferences);
-      const label = getInboxCourseLabel(item, fallbackLabel, preferences);
-      const currentGroup = groups.get(key) ?? {
-        color: getInboxCourseColor(item, preferences),
-        key,
-        label,
-        items: [],
+      return {
+        course,
+        items: [...state.items]
+          .filter((item) => !isInboxCourseHidden(item, preferences))
+          .sort(sortCanvasInboxItems),
+        state,
       };
-
-      currentGroup.items.push(item);
-      groups.set(key, currentGroup);
-    });
-
-  return Array.from(groups.values()).sort((firstGroup, secondGroup) => (
-    firstGroup.label.localeCompare(secondGroup.label, locale, { numeric: true, sensitivity: 'base' })
+    })
+    .sort((firstGroup, secondGroup) => (
+      getCourseLabel(firstGroup.course, preferences)
+        .localeCompare(getCourseLabel(secondGroup.course, preferences), locale, {
+          numeric: true,
+          sensitivity: 'base',
+        })
   ));
 }
 
 export function CanvasInboxView({ onOpenIntegration }: CanvasInboxViewProps = {}) {
   const { dictionary, language } = useLanguage();
   const locale = language === 'ko' ? 'ko-KR' : 'en-CA';
-  const [items, setItems] = useState<CanvasInboxItem[]>([]);
+  const [courses, setCourses] = useState<CanvasCourse[]>([]);
+  const [courseInbox, setCourseInbox] = useState<Record<string, CourseInboxState>>({});
   const [loadStatus, setLoadStatus] = useState<LoadStatus>('idle');
   const [errorMessage, setErrorMessage] = useState('');
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
-  const [collapsedCourseKeys, setCollapsedCourseKeys] = useState<Set<string>>(() => new Set());
+  const [expandedCourseIds, setExpandedCourseIds] = useState<Set<string>>(() => new Set());
   const [canvasLecturePreferences, setCanvasLecturePreferences] = useState<CanvasLecturePreferences>({});
   const [selectionHistory, setSelectionHistory] = useState<InboxSelectionHistory>({ ids: [], index: -1 });
-  const sortedItems = useMemo(() => [...items].sort(sortCanvasInboxItems), [items]);
+  const sortedItems = useMemo(() => (
+    Object.values(courseInbox)
+      .flatMap((state) => state.items)
+      .sort(sortCanvasInboxItems)
+  ), [courseInbox]);
   const groupedItems = useMemo(
-    () => groupCanvasInboxItems(sortedItems, dictionary.canvasInboxCourseFallback, locale, canvasLecturePreferences),
-    [canvasLecturePreferences, dictionary.canvasInboxCourseFallback, locale, sortedItems],
+    () => groupCanvasInboxItems(courses, courseInbox, locale, canvasLecturePreferences),
+    [canvasLecturePreferences, courseInbox, courses, locale],
   );
   const selectedItem = useMemo(
     () => sortedItems.find((item) => item.id === selectedItemId) ?? null,
@@ -358,32 +409,81 @@ export function CanvasInboxView({ onOpenIntegration }: CanvasInboxViewProps = {}
       window.removeEventListener(academyPreferencesUpdatedEvent, handleAcademyPreferencesUpdated);
     };
   }, []);
-  const toggleCourseGroup = (courseKey: string) => {
-    setCollapsedCourseKeys((currentKeys) => {
-      const nextKeys = new Set(currentKeys);
+  const loadCourseInbox = (courseId: string, options?: { force?: boolean }) => {
+    const currentState = courseInbox[courseId];
 
-      if (nextKeys.has(courseKey)) {
-        nextKeys.delete(courseKey);
+    if (!options?.force && (currentState?.status === 'loading' || currentState?.status === 'loaded')) {
+      return;
+    }
+
+    setCourseInbox((currentInbox) => ({
+      ...currentInbox,
+      [courseId]: {
+        items: options?.force ? [] : currentInbox[courseId]?.items ?? [],
+        status: 'loading',
+      },
+    }));
+
+    workspaceApi
+      .getCanvasInboxItems(75, { courseId })
+      .then(({ items: nextItems }) => {
+        setCourseInbox((currentInbox) => ({
+          ...currentInbox,
+          [courseId]: {
+            items: nextItems,
+            status: 'loaded',
+          },
+        }));
+
+        if (nextItems.length > 0) {
+          selectInboxItem([...nextItems].sort(sortCanvasInboxItems)[0].id, true);
+        }
+      })
+      .catch((error) => {
+        setCourseInbox((currentInbox) => ({
+          ...currentInbox,
+          [courseId]: {
+            error: error instanceof Error ? error.message : undefined,
+            items: [],
+            status: 'failed',
+          },
+        }));
+      });
+  };
+
+  const toggleCourseGroup = (courseId: string) => {
+    setExpandedCourseIds((currentIds) => {
+      const nextIds = new Set(currentIds);
+
+      if (nextIds.has(courseId)) {
+        nextIds.delete(courseId);
       } else {
-        nextKeys.add(courseKey);
+        nextIds.add(courseId);
+        loadCourseInbox(courseId);
       }
 
-      return nextKeys;
+      return nextIds;
     });
   };
 
-  const loadItems = () => {
+  const loadInboxCourses = () => {
     setLoadStatus('loading');
     setErrorMessage('');
+    setCourses([]);
+    setCourseInbox({});
+    setExpandedCourseIds(new Set());
+    setSelectedItemId(null);
+    setSelectionHistory({ ids: [], index: -1 });
 
     workspaceApi
-      .getCanvasInboxItems(75)
-      .then(({ items: nextItems }) => {
-        setItems(nextItems);
+      .getCanvasCourses(50)
+      .then(({ courses: nextCourses }) => {
+        setCourses(nextCourses);
         setLoadStatus('loaded');
       })
       .catch((error) => {
-        setItems([]);
+        setCourses([]);
+        setCourseInbox({});
         setErrorMessage(error instanceof Error ? error.message : '');
         setLoadStatus('failed');
       });
@@ -473,7 +573,7 @@ export function CanvasInboxView({ onOpenIntegration }: CanvasInboxViewProps = {}
   };
 
   useEffect(() => {
-    loadItems();
+    loadInboxCourses();
   }, []);
 
   useEffect(() => {
@@ -516,7 +616,7 @@ export function CanvasInboxView({ onOpenIntegration }: CanvasInboxViewProps = {}
                 aria-label={dictionary.canvasInboxRefresh}
                 className="size-9"
                 disabled={isLoading}
-                onClick={loadItems}
+                onClick={loadInboxCourses}
                 title={dictionary.canvasInboxRefresh}
                 type="button"
                 variant="outline"
@@ -540,13 +640,13 @@ export function CanvasInboxView({ onOpenIntegration }: CanvasInboxViewProps = {}
           </div>
         ) : null}
 
-        {loadStatus !== 'failed' && !isLoading && sortedItems.length === 0 ? (
+        {loadStatus !== 'failed' && !isLoading && groupedItems.length === 0 ? (
           <div className="m-4 rounded-lg border border-dashed bg-muted/35 p-6 text-sm font-bold text-muted-foreground">
             {dictionary.canvasInboxEmpty}
           </div>
         ) : null}
 
-        {sortedItems.length > 0 ? (
+        {groupedItems.length > 0 ? (
           <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[330px_minmax(0,1fr)]">
             <aside className="min-h-0 border-b bg-muted/15 lg:border-b-0 lg:border-r">
               <div className="flex h-full min-h-0 flex-col">
@@ -556,24 +656,50 @@ export function CanvasInboxView({ onOpenIntegration }: CanvasInboxViewProps = {}
                   </p>
                 </div>
                 <div className="min-h-0 flex-1 overflow-y-auto p-2">
-                  {groupedItems.map((group) => (
-                    <section className="mb-3 last:mb-0" key={group.key}>
+                  {groupedItems.map((group) => {
+                    const courseColor = getCourseColor(group.course, canvasLecturePreferences);
+                    const courseLabel = getCourseLabel(group.course, canvasLecturePreferences);
+                    const isCollapsed = !expandedCourseIds.has(group.course.id);
+                    const countLabel = group.state.status === 'loaded'
+                      ? `${group.state.items.length}`
+                      : group.state.status === 'loading'
+                        ? dictionary.canvasInboxLoading
+                        : group.state.status === 'failed'
+                          ? dictionary.canvasInboxUnavailable
+                          : '0';
+
+                    return (
+                    <section className="mb-3 last:mb-0" key={group.course.id}>
                       <button
                         className="sticky top-0 z-10 mb-1 flex w-full items-center justify-between gap-2 rounded-md bg-card/95 px-2 py-1.5 text-left backdrop-blur transition hover:bg-muted/55"
-                        onClick={() => toggleCourseGroup(group.key)}
+                        onClick={() => toggleCourseGroup(group.course.id)}
                         type="button"
                       >
                         <span className="flex min-w-0 items-center gap-2">
-                          {collapsedCourseKeys.has(group.key) ? (
+                          {isCollapsed ? (
                             <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
                           ) : (
                             <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
                           )}
-                          <EventPill color={group.color} compact label={group.label} />
+                          <EventPill color={courseColor} compact label={courseLabel} />
                         </span>
-                        <span className="text-[10px] font-black text-muted-foreground">{group.items.length}</span>
+                        <span className="truncate text-[10px] font-black text-muted-foreground">{countLabel}</span>
                       </button>
-                      {!collapsedCourseKeys.has(group.key) ? (
+                      {!isCollapsed ? (
+                        group.state.status === 'loading' ? (
+                          <div className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold text-muted-foreground">
+                            <LoaderCircle className="size-4 animate-spin text-primary" />
+                            {dictionary.canvasInboxLoading}
+                          </div>
+                        ) : group.state.status === 'failed' ? (
+                          <div className="rounded-lg px-3 py-2 text-xs font-bold text-muted-foreground">
+                            {group.state.error || dictionary.canvasInboxUnavailable}
+                          </div>
+                        ) : group.state.status === 'loaded' && group.items.length === 0 ? (
+                          <div className="rounded-lg px-3 py-2 text-xs font-bold text-muted-foreground">
+                            {dictionary.canvasInboxEmpty}
+                          </div>
+                        ) : (
                       <div className="space-y-1">
                         {group.items.map((item) => {
                           const timestamp = formatCanvasInboxDate(item.updatedAt ?? item.createdAt, locale);
@@ -612,9 +738,11 @@ export function CanvasInboxView({ onOpenIntegration }: CanvasInboxViewProps = {}
                           );
                         })}
                       </div>
+                        )
                       ) : null}
                     </section>
-                  ))}
+                  );
+                  })}
                 </div>
               </div>
             </aside>

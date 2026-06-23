@@ -2,6 +2,10 @@ import {
   ArrowLeft,
   ArrowRight,
   BookOpen,
+  ChevronLeft,
+  ChevronRight,
+  Eye,
+  EyeOff,
   ExternalLink,
   FileText,
   GraduationCap,
@@ -12,10 +16,13 @@ import {
   ListChecks,
   LoaderCircle,
   Megaphone,
+  MoreHorizontal,
+  Palette,
+  Star,
   Users,
   Video,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent, type TouchEvent } from 'react';
 
 import { workspaceApi } from '../api/workspaceApi';
 import type {
@@ -23,6 +30,7 @@ import type {
   CanvasCalendarItem,
   CanvasCourse,
   CanvasCourseContent,
+  CanvasCourseContentSection,
   CanvasCourseAssignment,
   CanvasCourseDiscussion,
   CanvasCourseFile,
@@ -44,7 +52,12 @@ import {
 import { cn } from '../lib/utils';
 import type { ColorToken } from '../modes/types';
 import { ManualGradeEditor } from './ManualGradeEditor';
-import type { ManualLecture, ManualLectureSchedule, ManualLectureScheduleEntry } from './ManualLectureDialog';
+import {
+  ManualLectureDialog,
+  type ManualLecture,
+  type ManualLectureSchedule,
+  type ManualLectureScheduleEntry,
+} from './ManualLectureDialog';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import {
@@ -55,6 +68,27 @@ import {
   CardHeader,
   CardTitle,
 } from './ui/card';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuLabel,
+  ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
+  ContextMenuTrigger,
+} from './ui/context-menu';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from './ui/dropdown-menu';
 import {
   Select,
   SelectContent,
@@ -71,19 +105,24 @@ interface CanvasLecturePreference {
   chipColor?: ColorToken;
   courseName?: string;
   credits?: string;
+  currentGrade?: string;
+  currentScore?: number;
   friendlyCourseCode?: string;
   friendlyName?: string;
   hidden?: boolean;
   htmlUrl?: string;
   labSection?: string;
+  lastSeenAt?: string;
   lectureSection?: string;
   links?: ManualLecture['links'];
   originalCourseCode?: string;
   schedule?: ManualLectureSchedule;
+  semesterSource?: 'canvas' | 'fallback' | 'manual';
   semester?: string;
   starred?: boolean;
   termName?: string;
   tutorialSection?: string;
+  workflowState?: string;
 }
 
 type CanvasLecturePreferences = Record<string, CanvasLecturePreference>;
@@ -103,6 +142,7 @@ interface CourseOverviewRow {
   hidden: boolean;
   semester: string;
   source: 'canvas' | 'manual';
+  starred: boolean;
   status: string;
   htmlUrl?: string;
   manualLecture?: ManualLecture;
@@ -171,6 +211,30 @@ const academyCalendarSettingsStorageKey = 'incos-academy-calendar-settings';
 const academyPreferencesUpdatedEvent = 'incos-academy-preferences-updated';
 const defaultAcademySemester = getDateBasedAcademySemester();
 const noTermSemester = 'No Term';
+const defaultCourseChipColor: ColorToken = 'blue';
+const lectureChipColors: ColorToken[] = [
+  'butter',
+  'sage',
+  'powder',
+  'blush',
+  'red',
+  'orange',
+  'gold',
+  'emerald',
+  'teal',
+  'blue',
+  'indigo',
+  'purple',
+  'pink',
+  'slate',
+];
+const lectureChipColorVariantPages: ColorToken[][] = [
+  ['butter', 'vanilla', 'cream', 'honeydew', 'pistachio', 'sage', 'seafoam', 'powder', 'babyblue', 'periwinkle', 'wisteria', 'blush', 'cottoncandy'],
+  ['peachfuzz', 'softcoral', 'flamingo', 'watermelon', 'tangerine', 'marigold', 'citron', 'neomint', 'jade', 'lagoon', 'serenity', 'veryperi', 'orchid', 'amethyst'],
+  ['red', 'crimson', 'rose', 'coral', 'peach', 'apricot', 'amber', 'orange', 'yellow', 'gold', 'lemon', 'lime', 'olive', 'moss', 'forest', 'emerald'],
+  ['green', 'mint', 'turquoise', 'teal', 'aqua', 'cyan', 'ice', 'sky', 'ocean', 'cobalt', 'blue', 'navy', 'midnight', 'indigo', 'violet', 'lavender'],
+  ['purple', 'lilac', 'plum', 'mauve', 'fuchsia', 'magenta', 'pink', 'slate', 'zinc', 'neutral', 'stone', 'graphite', 'cocoa', 'sand', 'gray'],
+];
 
 function getDateBasedAcademySemester(date = new Date()) {
   const month = date.getMonth();
@@ -179,18 +243,8 @@ function getDateBasedAcademySemester(date = new Date()) {
   return `${term} ${date.getFullYear()}`;
 }
 
-function readStoredJson<T>(key: string, fallback: T): T {
-  if (typeof window === 'undefined') {
-    return fallback;
-  }
-
-  try {
-    const storedValue = window.localStorage.getItem(key);
-
-    return storedValue ? JSON.parse(storedValue) as T : fallback;
-  } catch {
-    return fallback;
-  }
+function readStoredJson<T>(_key: string, fallback: T): T {
+  return fallback;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -274,6 +328,74 @@ function normalizeCanvasSemesterName(value?: string) {
   return trimmedValue;
 }
 
+function mergeDefinedSnapshot<TPreference extends object>(
+  preference: TPreference | undefined,
+  snapshot: Record<string, unknown>,
+) {
+  const nextPreference = { ...(preference ?? {}) } as TPreference;
+  let changed = false;
+
+  Object.entries(snapshot).forEach(([key, value]) => {
+    if (value === undefined) {
+      return;
+    }
+
+    if ((nextPreference as Record<string, unknown>)[key] !== value) {
+      (nextPreference as Record<string, unknown>)[key] = value;
+      changed = true;
+    }
+  });
+
+  return { changed, nextPreference };
+}
+
+function getCanvasCourseSnapshot(
+  course: CanvasCourse,
+  preference: CanvasLecturePreference | undefined,
+  fallbackSemester: string,
+) {
+  const originalCourseCode = course.courseCode?.trim() || course.id;
+  const reportedSemester = normalizeCanvasSemesterName(course.termName);
+  const reportedSemesterIsUsable = reportedSemester !== noTermSemester;
+  const storedSemester = normalizeCanvasSemesterName(preference?.semester ?? preference?.termName);
+  const shouldUseReportedSemester = reportedSemesterIsUsable && (
+    !preference?.semester ||
+    preference.semesterSource === 'canvas' ||
+    preference.semesterSource === 'fallback' ||
+    storedSemester === noTermSemester
+  );
+  const shouldUseFallbackSemester = !reportedSemesterIsUsable && (
+    !preference?.semester ||
+    preference.semesterSource === 'fallback' ||
+    storedSemester === noTermSemester
+  );
+  const semester = normalizeSemesterName(
+    shouldUseReportedSemester
+      ? reportedSemester
+      : shouldUseFallbackSemester
+        ? fallbackSemester
+        : preference?.semester ?? preference?.termName ?? reportedSemester,
+    fallbackSemester,
+  );
+
+  return {
+    courseName: course.name,
+    currentGrade: course.currentGrade,
+    currentScore: course.currentScore,
+    htmlUrl: course.htmlUrl,
+    lastSeenAt: preference?.lastSeenAt ?? new Date().toISOString(),
+    originalCourseCode,
+    semester,
+    semesterSource: shouldUseReportedSemester
+      ? 'canvas'
+      : shouldUseFallbackSemester
+        ? 'fallback'
+        : preference?.semesterSource ?? (reportedSemesterIsUsable ? 'canvas' : 'fallback'),
+    termName: semester,
+    workflowState: course.workflowState,
+  };
+}
+
 function getStoredSelectedAcademySemester() {
   const settings = readStoredJson<unknown>(academyCalendarSettingsStorageKey, {});
 
@@ -295,13 +417,14 @@ function storeSelectedAcademySemester(semester: string) {
 
   const settings = readStoredJson<Record<string, unknown>>(academyCalendarSettingsStorageKey, {});
 
-  window.localStorage.setItem(
-    academyCalendarSettingsStorageKey,
-    JSON.stringify({
-      ...settings,
-      selectedSemester: normalizeSemesterName(semester),
-    }),
-  );
+  window.dispatchEvent(new CustomEvent(academyPreferencesUpdatedEvent, {
+    detail: {
+      calendarSettings: {
+        ...settings,
+        selectedSemester: normalizeSemesterName(semester),
+      },
+    },
+  }));
 }
 
 function getScheduleEntriesFromSchedule(schedule?: ManualLectureSchedule): ManualLectureScheduleEntry[] {
@@ -342,6 +465,14 @@ function formatCanvasGrade(course: CanvasCourse) {
     : '';
 
   return [course.currentGrade, score].filter(Boolean).join(' · ') || '--';
+}
+
+function formatStoredCanvasGrade(preference: CanvasLecturePreference) {
+  const score = typeof preference.currentScore === 'number'
+    ? `${Math.round(preference.currentScore * 10) / 10}%`
+    : '';
+
+  return [preference.currentGrade, score].filter(Boolean).join(' · ') || '--';
 }
 
 function formatStatus(value?: string) {
@@ -423,14 +554,18 @@ function createCanvasRows(
   courses: CanvasCourse[],
   preferences: CanvasLecturePreferences,
   notificationCounts: Record<string, number>,
+  fallbackSemester = defaultAcademySemester,
 ): CourseOverviewRow[] {
   return courses.map((course) => {
     const courseId = String(course.id ?? '');
     const preference = getCanvasPreferenceForCourse(course, preferences);
     const courseCode = preference.friendlyCourseCode?.trim() || course.courseCode?.trim() || course.id;
+    const reportedSemester = normalizeCanvasSemesterName(course.termName);
     const semester = preference.semester || preference.termName
       ? normalizeSemesterName(preference.semester ?? preference.termName)
-      : normalizeCanvasSemesterName(course.termName);
+      : reportedSemester === noTermSemester
+        ? fallbackSemester
+        : reportedSemester;
 
     return {
       id: `canvas:${courseId}`,
@@ -443,10 +578,11 @@ function createCanvasRows(
       tutorialSection: formatSection(preference.tutorialSection),
       grade: formatCanvasGrade(course),
       notificationCount: notificationCounts[courseId] ?? 0,
-      color: preference.chipColor ?? 'blue',
+      color: preference.chipColor ?? defaultCourseChipColor,
       hidden: Boolean(preference.hidden),
       semester,
       source: 'canvas',
+      starred: Boolean(preference.starred),
       status: formatStatus(course.workflowState),
       htmlUrl: course.htmlUrl,
     };
@@ -464,77 +600,19 @@ function createManualRows(lectures: ManualLecture[]): CourseOverviewRow[] {
     tutorialSection: formatSection(lecture.tutorialSection || getManualSection(lecture, 'tutorial')),
     grade: '--',
     notificationCount: 0,
-    color: lecture.chipColor ?? 'blue',
+    color: lecture.chipColor ?? defaultCourseChipColor,
     hidden: Boolean(lecture.hidden),
     semester: normalizeSemesterName(lecture.semester),
     source: 'manual',
+    starred: Boolean(lecture.starred),
     status: '',
     manualLecture: lecture,
   }));
 }
 
-function getArchivedCanvasLectureId(courseId: string) {
-  const safeCourseId = courseId.replace(/[^A-Za-z0-9_-]+/g, '-');
-
-  return `archived-canvas-${safeCourseId}`;
-}
-
-function createManualLectureFromStoredCanvasPreference(
-  courseId: string,
-  preference: CanvasLecturePreference,
-): ManualLecture | null {
-  const courseCode = preference.friendlyCourseCode?.trim() ||
-    preference.originalCourseCode?.trim() ||
-    courseId;
-  const courseName = preference.friendlyName?.trim() ||
-    preference.courseName?.trim() ||
-    courseCode;
-
-  if (!courseCode && !courseName) {
-    return null;
-  }
-
-  const archivedLectureId = preference.archivedAsManualLectureId || getArchivedCanvasLectureId(courseId);
-  const links = [...(preference.links ?? [])];
-
-  if (preference.htmlUrl && !links.some((link) => link.url === preference.htmlUrl)) {
-    links.unshift({
-      id: `${archivedLectureId}-canvas-link`,
-      label: 'Canvas course',
-      url: preference.htmlUrl,
-    });
-  }
-
-  return {
-    id: archivedLectureId,
-    name: courseName,
-    code: courseCode,
-    lectureSection: preference.lectureSection ?? '',
-    labSection: preference.labSection ?? '',
-    tutorialSection: preference.tutorialSection ?? '',
-    credits: preference.credits ?? '',
-    assessments: preference.assessments ?? [],
-    schedule: preference.schedule ?? {
-      deliveryMode: 'inPerson',
-      day: '',
-      time: '',
-      location: '',
-      entries: [],
-    },
-    links,
-    chipColor: preference.chipColor ?? 'blue',
-    friendlyCourseCode: preference.friendlyCourseCode,
-    friendlyName: preference.friendlyName,
-    hidden: preference.hidden,
-    semester: normalizeSemesterName(preference.semester ?? preference.termName),
-    starred: preference.starred,
-  };
-}
-
-function createStoredCanvasManualRows(
+function createStoredCanvasRows(
   preferences: CanvasLecturePreferences,
   liveCourses: CanvasCourse[],
-  manualLectures: ManualLecture[],
 ): CourseOverviewRow[] {
   const liveCourseIds = new Set(liveCourses.map((course) => String(course.id ?? '')));
 
@@ -548,23 +626,89 @@ function createStoredCanvasManualRows(
         preference.courseName?.trim()
       )
     ))
-    .map(([courseId, preference]) => createManualLectureFromStoredCanvasPreference(courseId, preference))
-    .filter((lecture): lecture is ManualLecture => Boolean(lecture))
-    .filter((lecture) => !manualLectures.some((manualLecture) => (
-      manualLecture.id === lecture.id ||
-      (
-        normalizeSemesterName(manualLecture.semester) === normalizeSemesterName(lecture.semester) &&
-        manualLecture.code.replace(/\s+/g, '').toLowerCase() === lecture.code.replace(/\s+/g, '').toLowerCase()
-      )
-    )))
-    .map((lecture) => ({
-      ...createManualRows([lecture])[0]!,
-      id: `manual:${lecture.id}`,
+    .map(([courseId, preference]) => ({
+      id: `canvas:${courseId}`,
+      canvasCourseId: courseId,
+      name: preference.friendlyName?.trim() || preference.courseName?.trim() || preference.originalCourseCode?.trim() || courseId,
+      courseCode: preference.friendlyCourseCode?.trim() || preference.originalCourseCode?.trim() || courseId,
+      credits: preference.credits?.trim() || '',
+      lectureSection: formatSection(preference.lectureSection),
+      labSection: formatSection(preference.labSection),
+      tutorialSection: formatSection(preference.tutorialSection),
+      grade: formatStoredCanvasGrade(preference),
+      notificationCount: 0,
+      color: preference.chipColor ?? defaultCourseChipColor,
+      hidden: Boolean(preference.hidden),
+      semester: normalizeSemesterName(preference.semester ?? preference.termName),
+      source: 'canvas' as const,
+      starred: Boolean(preference.starred),
+      status: formatStatus(preference.workflowState),
+      htmlUrl: preference.htmlUrl,
     }));
 }
 
+function createCanvasEditableLecture(
+  courseId: string,
+  course: CanvasCourse | undefined,
+  preference: CanvasLecturePreference | undefined,
+  fallbackSemester: string,
+): ManualLecture | undefined {
+  const courseCode = preference?.friendlyCourseCode?.trim() ||
+    course?.courseCode?.trim() ||
+    preference?.originalCourseCode?.trim() ||
+    courseId;
+  const courseName = preference?.friendlyName?.trim() ||
+    course?.name ||
+    preference?.courseName?.trim() ||
+    courseCode;
+
+  if (!courseCode && !courseName) {
+    return undefined;
+  }
+
+  const links = [...(preference?.links ?? [])];
+  const htmlUrl = preference?.htmlUrl ?? course?.htmlUrl;
+
+  if (htmlUrl && !links.some((link) => link.url === htmlUrl)) {
+    links.unshift({
+      id: `${courseId}-canvas-link`,
+      label: 'Canvas course',
+      url: htmlUrl,
+    });
+  }
+
+  return {
+    id: `canvas:${courseId}`,
+    name: courseName,
+    code: courseCode,
+    lectureSection: preference?.lectureSection ?? '',
+    labSection: preference?.labSection ?? '',
+    tutorialSection: preference?.tutorialSection ?? '',
+    credits: preference?.credits ?? '',
+    assessments: preference?.assessments ?? [],
+    schedule: preference?.schedule ?? {
+      deliveryMode: 'inPerson',
+      day: '',
+      time: '',
+      location: '',
+      entries: [],
+    },
+    links,
+    chipColor: preference?.chipColor ?? defaultCourseChipColor,
+    friendlyCourseCode: preference?.friendlyCourseCode,
+    friendlyName: preference?.friendlyName,
+    hidden: preference?.hidden,
+    semester: normalizeSemesterName(preference?.semester ?? preference?.termName ?? course?.termName, fallbackSemester),
+    starred: preference?.starred,
+  };
+}
+
+function isGeneratedArchivedCanvasLecture(lecture: ManualLecture, preferences: CanvasLecturePreferences) {
+  return Object.values(preferences).some((preference) => preference.archivedAsManualLectureId === lecture.id);
+}
+
 function sortRows(firstRow: CourseOverviewRow, secondRow: CourseOverviewRow) {
-  return Number(secondRow.notificationCount > 0) - Number(firstRow.notificationCount > 0) ||
+  return Number(secondRow.starred) - Number(firstRow.starred) ||
     Number(firstRow.hidden) - Number(secondRow.hidden) ||
     firstRow.courseCode.localeCompare(secondRow.courseCode);
 }
@@ -1370,6 +1514,52 @@ function getManualNavigationItems(dictionary: ReturnType<typeof useLanguage>['di
     { id: 'grades', label: dictionary.courseDetailGrades, section: 'grades' },
     { id: 'links', label: dictionary.courseDetailLinks, section: 'links' },
   ];
+}
+
+function getCanvasContentSectionForCourseDetail(section: CourseDetailSection): CanvasCourseContentSection | null {
+  if (
+    section === 'home' ||
+    section === 'modules' ||
+    section === 'announcements' ||
+    section === 'syllabus' ||
+    section === 'assignments' ||
+    section === 'pages' ||
+    section === 'grades'
+  ) {
+    return section;
+  }
+
+  return null;
+}
+
+function mergeCanvasCourseContentSection(
+  currentContent: CanvasCourseContent | null,
+  nextContent: CanvasCourseContent,
+  section: CanvasCourseContentSection,
+): CanvasCourseContent {
+  if (!currentContent || section === 'all') {
+    return nextContent;
+  }
+
+  return {
+    course: nextContent.course,
+    tabs: nextContent.tabs.length > 0 ? nextContent.tabs : currentContent.tabs,
+    modules: section === 'modules' ? nextContent.modules : currentContent.modules,
+    announcements: section === 'announcements' || section === 'home'
+      ? nextContent.announcements
+      : currentContent.announcements,
+    assignments: section === 'assignments' || section === 'grades'
+      ? nextContent.assignments
+      : currentContent.assignments,
+    quizzes: section === 'assignments' || section === 'grades'
+      ? nextContent.quizzes
+      : currentContent.quizzes,
+    discussions: section === 'announcements' ? nextContent.discussions : currentContent.discussions,
+    pages: section === 'pages' ? nextContent.pages : currentContent.pages,
+    people: section === 'people' ? nextContent.people : currentContent.people,
+    frontPage: section === 'home' ? nextContent.frontPage : currentContent.frontPage,
+    syllabusBody: section === 'syllabus' ? nextContent.syllabusBody : currentContent.syllabusBody,
+  };
 }
 
 function CourseDetailView({
@@ -2976,8 +3166,8 @@ function CourseDetailView({
   };
 
   return (
-    <div className="grid min-h-[520px] gap-3 lg:h-full lg:min-h-0 lg:grid-cols-[220px_minmax(0,1fr)] lg:overflow-hidden">
-      <aside className="rounded-xl border bg-card p-3 lg:h-full lg:min-h-0 lg:overflow-y-auto">
+    <div className="grid h-full min-h-0 gap-3 overflow-hidden lg:grid-cols-[220px_minmax(0,1fr)]">
+      <aside className="rounded-xl border bg-card p-3 lg:sticky lg:top-0 lg:h-full lg:min-h-0 lg:self-start lg:overflow-y-auto">
         <Button className="mb-3 h-8 w-full justify-start rounded-md" onClick={onBack} size="sm" variant="ghost">
           <ArrowLeft className="size-4" />
           {dictionary.courseDetailBack}
@@ -3114,22 +3304,32 @@ export function CourseOverviewView({
   const [canvasCourses, setCanvasCourses] = useState<CanvasCourse[]>([]);
   const [canvasLecturePreferences, setCanvasLecturePreferences] = useState<CanvasLecturePreferences>(() => getStoredCanvasLecturePreferences());
   const [courseLoadStatus, setCourseLoadStatus] = useState<LoadStatus>('idle');
+  const [hasLoadedAcademyPreferences, setHasLoadedAcademyPreferences] = useState(false);
   const [manualLectures, setManualLectures] = useState<ManualLecture[]>(() => getStoredManualLectures());
   const [notificationCounts, setNotificationCounts] = useState<Record<string, number>>({});
   const [selectedSemester, setSelectedSemester] = useState(getStoredSelectedAcademySemester);
   const [gradeProgressThresholds, setGradeProgressThresholds] =
     useState<GradeProgressColorThresholds>(defaultGradeProgressColorThresholds);
   const [selectedCourseRowId, setSelectedCourseRowId] = useState<string | null>(initialSelectedCourseRowId ?? null);
+  const [selectedManualLectureId, setSelectedManualLectureId] = useState<string | null>(null);
+  const [selectedCanvasCourseId, setSelectedCanvasCourseId] = useState<string | null>(null);
   const [activeCourseItem, setActiveCourseItem] = useState<CourseNavigationItem | null>(null);
   const [canvasCourseContent, setCanvasCourseContent] = useState<CanvasCourseContent | null>(null);
   const [canvasCourseContentStatus, setCanvasCourseContentStatus] = useState<LoadStatus>('idle');
+  const [loadedCanvasCourseContentSections, setLoadedCanvasCourseContentSections] = useState<Set<CanvasCourseContentSection>>(() => new Set());
   const manualGradeSaveSequenceRef = useRef(0);
+  const coursePreferenceSaveSequenceRef = useRef(0);
+  const suppressCourseOpenUntilRef = useRef(0);
+  const canvasCourseContentRequestRef = useRef(0);
+  const [dropdownColorVariantPage, setDropdownColorVariantPage] = useState(0);
+  const [contextColorVariantPage, setContextColorVariantPage] = useState(0);
 
   useEffect(() => {
     const applyAcademyPreferences = (preferences: AcademyPreferences) => {
       setManualLectures(getManualLecturesFromAcademyPreferences(preferences));
       setCanvasLecturePreferences(getCanvasLecturePreferencesFromAcademyPreferences(preferences));
       setGradeProgressThresholds(getGradeProgressThresholdsFromAcademyPreferences(preferences));
+      setHasLoadedAcademyPreferences(true);
 
       const preferenceSemester = getSelectedSemesterFromAcademyPreferences(preferences);
 
@@ -3207,6 +3407,8 @@ export function CourseOverviewView({
         if (preferenceSemester) {
           setSelectedSemester(preferenceSemester);
         }
+
+        setHasLoadedAcademyPreferences(true);
       })
       .catch(() => {
         if (isCancelled) {
@@ -3215,33 +3417,36 @@ export function CourseOverviewView({
 
         setManualLectures(getStoredManualLectures());
         setCanvasLecturePreferences(getStoredCanvasLecturePreferences());
+        setHasLoadedAcademyPreferences(false);
       });
 
-    workspaceApi
+    const canvasCoursesTask = workspaceApi
       .getCanvasCourses(20)
       .then(({ courses }) => {
         if (isCancelled) {
-          return;
+          return [];
         }
 
         setCanvasCourses(courses);
         setCourseLoadStatus('loaded');
+        return courses;
       })
       .catch(() => {
         if (isCancelled) {
-          return;
+          return [];
         }
 
         setCanvasCourses([]);
         setCourseLoadStatus('failed');
+        return [];
       });
 
-    workspaceApi
-      .getCanvasCalendarItems({
+    canvasCoursesTask
+      .then(() => workspaceApi.getCanvasCalendarItems({
         endDate: getFutureIsoDate(45),
         pageSize: 100,
         startDate: getTodayIsoDate(),
-      })
+      }))
       .then(({ items }) => {
         if (isCancelled) {
           return;
@@ -3260,13 +3465,116 @@ export function CourseOverviewView({
     };
   }, []);
 
+  const saveCoursePreferences = (
+    nextManualLectures: ManualLecture[],
+    nextCanvasLecturePreferences: CanvasLecturePreferences,
+  ) => {
+    const saveSequence = coursePreferenceSaveSequenceRef.current + 1;
+
+    coursePreferenceSaveSequenceRef.current = saveSequence;
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(academyPreferencesUpdatedEvent, {
+        detail: {
+          canvasLecturePreferences: nextCanvasLecturePreferences,
+          calendarSettings: { selectedSemester: normalizeSemesterName(selectedSemester) },
+          manualLectures: nextManualLectures,
+        },
+      }));
+    }
+
+    void workspaceApi
+      .saveAcademyPreferences({
+        canvasLecturePreferences: nextCanvasLecturePreferences,
+        calendarSettings: { selectedSemester: normalizeSemesterName(selectedSemester) },
+        manualLectures: nextManualLectures,
+      })
+      .then((preferences) => {
+        if (coursePreferenceSaveSequenceRef.current !== saveSequence) {
+          return;
+        }
+
+        const savedManualLectures = getManualLecturesFromAcademyPreferences(preferences);
+        const savedCanvasLecturePreferences = getCanvasLecturePreferencesFromAcademyPreferences(preferences);
+
+        setManualLectures(savedManualLectures);
+        setCanvasLecturePreferences(savedCanvasLecturePreferences);
+        window.dispatchEvent(new CustomEvent(academyPreferencesUpdatedEvent, {
+          detail: {
+            calendarSettings: preferences.calendarSettings,
+            canvasLecturePreferences: savedCanvasLecturePreferences,
+            manualLectures: savedManualLectures,
+          },
+        }));
+      })
+      .catch(() => undefined);
+  };
+
+  const saveCanvasLectureSnapshotPreferences = (
+    nextCanvasLecturePreferences: CanvasLecturePreferences,
+  ) => {
+    const calendarSettings = { selectedSemester: normalizeSemesterName(selectedSemester) };
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(academyPreferencesUpdatedEvent, {
+        detail: {
+          calendarSettings,
+          canvasLecturePreferences: nextCanvasLecturePreferences,
+        },
+      }));
+    }
+
+    void workspaceApi
+      .saveAcademyPreferences({
+        canvasLecturePreferences: nextCanvasLecturePreferences,
+        calendarSettings,
+      })
+      .catch(() => undefined);
+  };
+
+  useEffect(() => {
+    if (!hasLoadedAcademyPreferences || canvasCourses.length === 0) {
+      return;
+    }
+
+    setCanvasLecturePreferences((currentPreferences) => {
+      let changed = false;
+      const nextPreferences = { ...currentPreferences };
+      const fallbackSemester = normalizeSemesterName(selectedSemester);
+
+      canvasCourses.forEach((course) => {
+        const courseId = String(course.id ?? '');
+        const preference = currentPreferences[courseId] ?? {};
+        const { changed: preferenceChanged, nextPreference } = mergeDefinedSnapshot(
+          preference,
+          getCanvasCourseSnapshot(course, preference, fallbackSemester),
+        );
+
+        if (preferenceChanged) {
+          nextPreferences[courseId] = nextPreference;
+          changed = true;
+        }
+      });
+
+      if (!changed) {
+        return currentPreferences;
+      }
+
+      saveCanvasLectureSnapshotPreferences(nextPreferences);
+
+      return nextPreferences;
+    });
+  }, [canvasCourses, hasLoadedAcademyPreferences, selectedSemester]);
+
   const allRows = useMemo(
     () => [
-      ...createCanvasRows(canvasCourses, canvasLecturePreferences, notificationCounts),
-      ...createStoredCanvasManualRows(canvasLecturePreferences, canvasCourses, manualLectures),
-      ...createManualRows(manualLectures),
+      ...createCanvasRows(canvasCourses, canvasLecturePreferences, notificationCounts, normalizeSemesterName(selectedSemester)),
+      ...createStoredCanvasRows(canvasLecturePreferences, canvasCourses),
+      ...createManualRows(manualLectures.filter((lecture) => (
+        !isGeneratedArchivedCanvasLecture(lecture, canvasLecturePreferences)
+      ))),
     ].sort(sortRows),
-    [canvasCourses, canvasLecturePreferences, manualLectures, notificationCounts],
+    [canvasCourses, canvasLecturePreferences, manualLectures, notificationCounts, selectedSemester],
   );
   const semesterOptions = useMemo(() => {
     const semesters = new Set<string>();
@@ -3286,8 +3594,460 @@ export function CourseOverviewView({
   const selectedCourseRow = selectedCourseRowId
     ? allRows.find((row) => row.id === selectedCourseRowId)
     : undefined;
+  const selectedManualLecture = selectedManualLectureId
+    ? manualLectures.find((lecture) => lecture.id === selectedManualLectureId)
+    : undefined;
+  const selectedCanvasCourse = selectedCanvasCourseId
+    ? canvasCourses.find((course) => String(course.id ?? '') === selectedCanvasCourseId)
+    : undefined;
+  const selectedCanvasLecture = selectedCanvasCourseId
+    ? createCanvasEditableLecture(
+        selectedCanvasCourseId,
+        selectedCanvasCourse,
+        canvasLecturePreferences[selectedCanvasCourseId],
+        normalizeSemesterName(selectedSemester),
+      )
+    : undefined;
   const isLoading = courseLoadStatus === 'loading' && rows.length === 0;
   const isUnavailable = courseLoadStatus === 'failed' && rows.length === 0;
+  const chipColorLabels: Partial<Record<ColorToken, string>> = {
+    blue: dictionary.manualLectureChipColorBlue,
+    sky: dictionary.manualLectureChipColorSky,
+    cyan: dictionary.manualLectureChipColorCyan,
+    green: dictionary.manualLectureChipColorGreen,
+    indigo: dictionary.manualLectureChipColorIndigo,
+    orange: dictionary.manualLectureChipColorOrange,
+    red: dictionary.manualLectureChipColorRed,
+    purple: dictionary.manualLectureChipColorPurple,
+    violet: dictionary.manualLectureChipColorViolet,
+    fuchsia: dictionary.manualLectureChipColorFuchsia,
+    pink: dictionary.manualLectureChipColorPink,
+    teal: dictionary.manualLectureChipColorTeal,
+    gold: dictionary.manualLectureChipColorGold,
+    slate: dictionary.manualLectureChipColorSlate,
+    gray: dictionary.manualLectureChipColorGray,
+    butter: dictionary.manualLectureChipColorButter,
+    vanilla: dictionary.manualLectureChipColorVanilla,
+    cream: dictionary.manualLectureChipColorCream,
+    honeydew: dictionary.manualLectureChipColorHoneydew,
+    pistachio: dictionary.manualLectureChipColorPistachio,
+    sage: dictionary.manualLectureChipColorSage,
+    seafoam: dictionary.manualLectureChipColorSeafoam,
+    powder: dictionary.manualLectureChipColorPowder,
+    babyblue: dictionary.manualLectureChipColorBabyBlue,
+    periwinkle: dictionary.manualLectureChipColorPeriwinkle,
+    wisteria: dictionary.manualLectureChipColorWisteria,
+    blush: dictionary.manualLectureChipColorBlush,
+    cottoncandy: dictionary.manualLectureChipColorCottonCandy,
+    peachfuzz: dictionary.manualLectureChipColorPeachFuzz,
+    softcoral: dictionary.manualLectureChipColorSoftCoral,
+    flamingo: dictionary.manualLectureChipColorFlamingo,
+    watermelon: dictionary.manualLectureChipColorWatermelon,
+    tangerine: dictionary.manualLectureChipColorTangerine,
+    marigold: dictionary.manualLectureChipColorMarigold,
+    citron: dictionary.manualLectureChipColorCitron,
+    neomint: dictionary.manualLectureChipColorNeoMint,
+    jade: dictionary.manualLectureChipColorJade,
+    lagoon: dictionary.manualLectureChipColorLagoon,
+    serenity: dictionary.manualLectureChipColorSerenity,
+    veryperi: dictionary.manualLectureChipColorVeryPeri,
+    orchid: dictionary.manualLectureChipColorOrchid,
+    amethyst: dictionary.manualLectureChipColorAmethyst,
+  };
+  const getCanvasPreferenceWithSnapshot = (row: CourseOverviewRow) => {
+    if (!row.canvasCourseId) {
+      return undefined;
+    }
+
+    const course = canvasCourses.find((canvasCourse) => String(canvasCourse.id ?? '') === row.canvasCourseId);
+    const preference = canvasLecturePreferences[row.canvasCourseId] ?? {};
+
+    if (!course) {
+      return preference;
+    }
+
+    return mergeDefinedSnapshot(
+      preference,
+      getCanvasCourseSnapshot(course, preference, normalizeSemesterName(selectedSemester)),
+    ).nextPreference;
+  };
+  const updateCanvasCoursePreference = (
+    row: CourseOverviewRow,
+    patch: Partial<CanvasLecturePreference>,
+  ) => {
+    if (!row.canvasCourseId) {
+      return;
+    }
+
+    const basePreference = getCanvasPreferenceWithSnapshot(row) ?? {};
+    const nextCanvasLecturePreferences = {
+      ...canvasLecturePreferences,
+      [row.canvasCourseId]: {
+        ...basePreference,
+        ...patch,
+      },
+    };
+
+    setCanvasLecturePreferences(nextCanvasLecturePreferences);
+    saveCoursePreferences(manualLectures, nextCanvasLecturePreferences);
+  };
+  const handleOpenCourseDetails = (row: CourseOverviewRow) => {
+    if (row.source === 'canvas' && row.canvasCourseId) {
+      setSelectedCanvasCourseId(row.canvasCourseId);
+      return;
+    }
+
+    if (row.manualLecture?.id) {
+      setSelectedManualLectureId(row.manualLecture.id);
+    }
+  };
+  const handleToggleCourseHidden = (row: CourseOverviewRow) => {
+    if (row.source === 'canvas') {
+      updateCanvasCoursePreference(row, { hidden: !row.hidden });
+      return;
+    }
+
+    if (!row.manualLecture?.id) {
+      return;
+    }
+
+    const nextManualLectures = manualLectures.map((lecture) => (
+      lecture.id === row.manualLecture?.id ? { ...lecture, hidden: !lecture.hidden } : lecture
+    ));
+
+    setManualLectures(nextManualLectures);
+    saveCoursePreferences(nextManualLectures, canvasLecturePreferences);
+  };
+  const handleToggleCourseStar = (row: CourseOverviewRow) => {
+    if (row.source === 'canvas') {
+      updateCanvasCoursePreference(row, { starred: !row.starred });
+      return;
+    }
+
+    if (!row.manualLecture?.id) {
+      return;
+    }
+
+    const nextManualLectures = manualLectures.map((lecture) => (
+      lecture.id === row.manualLecture?.id ? { ...lecture, starred: !lecture.starred } : lecture
+    ));
+
+    setManualLectures(nextManualLectures);
+    saveCoursePreferences(nextManualLectures, canvasLecturePreferences);
+  };
+  const handleSetCourseChipColor = (row: CourseOverviewRow, color: ColorToken) => {
+    if (row.source === 'canvas') {
+      updateCanvasCoursePreference(row, { chipColor: color });
+      return;
+    }
+
+    if (!row.manualLecture?.id) {
+      return;
+    }
+
+    const nextManualLectures = manualLectures.map((lecture) => (
+      lecture.id === row.manualLecture?.id ? { ...lecture, chipColor: color } : lecture
+    ));
+
+    setManualLectures(nextManualLectures);
+    saveCoursePreferences(nextManualLectures, canvasLecturePreferences);
+  };
+  const handleUpdateManualLecture = (updatedLecture: ManualLecture) => {
+    const nextManualLectures = manualLectures.map((lecture) => (
+      lecture.id === updatedLecture.id ? updatedLecture : lecture
+    ));
+
+    setManualLectures(nextManualLectures);
+    saveCoursePreferences(nextManualLectures, canvasLecturePreferences);
+    setSelectedManualLectureId(null);
+  };
+  const handleUpdateCanvasLecture = (updatedLecture: ManualLecture) => {
+    if (!selectedCanvasCourseId) {
+      return;
+    }
+
+    const course = canvasCourses.find((canvasCourse) => String(canvasCourse.id ?? '') === selectedCanvasCourseId);
+    const currentPreference = canvasLecturePreferences[selectedCanvasCourseId] ?? {};
+    const nextSemester = normalizeSemesterName(updatedLecture.semester, selectedSemester);
+    const nextCanvasLecturePreferences = {
+      ...canvasLecturePreferences,
+      [selectedCanvasCourseId]: {
+        ...currentPreference,
+        assessments: updatedLecture.assessments,
+        credits: updatedLecture.credits,
+        friendlyCourseCode: updatedLecture.code || undefined,
+        friendlyName: updatedLecture.name || undefined,
+        labSection: updatedLecture.labSection,
+        lectureSection: updatedLecture.lectureSection,
+        links: updatedLecture.links,
+        originalCourseCode:
+          course?.courseCode?.trim() ||
+          currentPreference.originalCourseCode ||
+          updatedLecture.code,
+        schedule: updatedLecture.schedule,
+        semester: nextSemester,
+        semesterSource: 'manual' as const,
+        termName: nextSemester,
+        tutorialSection: updatedLecture.tutorialSection,
+      },
+    };
+
+    setCanvasLecturePreferences(nextCanvasLecturePreferences);
+    saveCoursePreferences(manualLectures, nextCanvasLecturePreferences);
+    setSelectedCanvasCourseId(null);
+  };
+  const stopCourseActionPropagation = (event: MouseEvent | PointerEvent | TouchEvent) => {
+    event.stopPropagation();
+  };
+  const suppressCourseOpenAfterAction = () => {
+    suppressCourseOpenUntilRef.current = Date.now() + 700;
+  };
+  const isCourseOpenSuppressed = () => Date.now() < suppressCourseOpenUntilRef.current;
+  const runCourseAction = (action: () => void) => {
+    suppressCourseOpenAfterAction();
+    action();
+  };
+  const isCourseRowActionTarget = (target: EventTarget | null) => (
+    target instanceof Element &&
+      Boolean(target.closest('button,a,input,textarea,select,[role="menuitem"],[data-course-row-action]'))
+  );
+  const handleCourseRowOpen = (event: MouseEvent<HTMLElement>, row: CourseOverviewRow) => {
+    if (isCourseRowActionTarget(event.target) || isCourseOpenSuppressed()) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    setSelectedCourseRowId(row.id);
+  };
+  const handleCourseRowKeyDown = (event: KeyboardEvent<HTMLElement>, row: CourseOverviewRow) => {
+    if (event.key !== 'Enter' && event.key !== ' ') {
+      return;
+    }
+
+    if (isCourseRowActionTarget(event.target) || isCourseOpenSuppressed()) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    event.preventDefault();
+    setSelectedCourseRowId(row.id);
+  };
+  const renderColorVariantGrid = (
+    row: CourseOverviewRow,
+    pageIndex: number,
+    onPageChange: (pageIndex: number) => void,
+  ) => {
+    const colorPage = lectureChipColorVariantPages[pageIndex] ?? lectureChipColorVariantPages[0];
+    const lastPageIndex = lectureChipColorVariantPages.length - 1;
+
+    return (
+      <div
+        className="w-40"
+        data-course-row-action
+        onClick={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-1 pb-1">
+          <button
+            aria-label={dictionary.manualLectureChipColorPrevious}
+            className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-35"
+            disabled={pageIndex === 0}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onPageChange(Math.max(0, pageIndex - 1));
+            }}
+            type="button"
+          >
+            <ChevronLeft className="size-4" />
+          </button>
+          <span className="text-[11px] font-black text-muted-foreground">
+            {pageIndex + 1}/{lectureChipColorVariantPages.length}
+          </span>
+          <button
+            aria-label={dictionary.manualLectureChipColorNext}
+            className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-35"
+            disabled={pageIndex === lastPageIndex}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onPageChange(Math.min(lastPageIndex, pageIndex + 1));
+            }}
+            type="button"
+          >
+            <ChevronRight className="size-4" />
+          </button>
+        </div>
+        <div className="grid grid-cols-4 gap-1 p-1">
+          {colorPage.map((color) => (
+            <button
+              aria-label={chipColorLabels[color] ?? color}
+              className={cn(
+                'grid size-8 place-items-center rounded-md transition-colors hover:bg-accent',
+                row.color === color && 'bg-accent',
+              )}
+              disabled={row.color === color}
+              key={color}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                suppressCourseOpenAfterAction();
+                handleSetCourseChipColor(row, color);
+              }}
+              type="button"
+            >
+              <span aria-hidden="true" className={cn('size-4 rounded-full', dotColorClasses[color])} />
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  };
+  const renderDropdownCourseActions = (row: CourseOverviewRow) => (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          aria-label={dictionary.gmailMoreActions}
+          className="size-7 rounded-md"
+          data-course-row-action
+          onClick={stopCourseActionPropagation}
+          onMouseDown={stopCourseActionPropagation}
+          onPointerDown={stopCourseActionPropagation}
+          onPointerUp={stopCourseActionPropagation}
+          onTouchEnd={stopCourseActionPropagation}
+          onTouchStart={stopCourseActionPropagation}
+          size="icon-sm"
+          title={dictionary.gmailMoreActions}
+          type="button"
+          variant="ghost"
+        >
+          <MoreHorizontal className="size-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        className="w-56"
+        data-course-row-action
+        onClick={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
+        onTouchStart={(event) => event.stopPropagation()}
+      >
+        <DropdownMenuItem onSelect={() => runCourseAction(() => handleOpenCourseDetails(row))}>
+          <BookOpen className="size-4" />
+          <span>{dictionary.manualLectureOpenDetails}</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => runCourseAction(() => handleToggleCourseStar(row))}>
+          <Star className={cn('size-4', row.starred && 'fill-amber-400 text-amber-500')} />
+          <span>{row.starred ? dictionary.manualLectureUnstar : dictionary.manualLectureStar}</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => runCourseAction(() => handleToggleCourseHidden(row))}>
+          {row.hidden ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
+          <span>{row.hidden ? dictionary.manualLectureUnhide : dictionary.manualLectureHide}</span>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger data-course-row-action>
+            <Palette className="size-4" />
+            <span>{dictionary.manualLectureChipColor}</span>
+            <ChevronRight className="ml-auto size-4 text-muted-foreground" />
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent alignOffset={-4} className="w-56">
+              {lectureChipColors.map((color) => (
+                <DropdownMenuItem
+                  data-course-row-action
+                  disabled={row.color === color}
+                  key={color}
+                  onClick={(event) => event.stopPropagation()}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onSelect={(event) => {
+                    event.stopPropagation();
+                    runCourseAction(() => handleSetCourseChipColor(row, color));
+                  }}
+                >
+                  <span
+                    aria-hidden="true"
+                    className={cn('size-3 rounded-full border border-foreground/10', dotColorClasses[color])}
+                  />
+                  <span>{chipColorLabels[color] ?? color}</span>
+                </DropdownMenuItem>
+              ))}
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger data-course-row-action>
+                  <span
+                    aria-hidden="true"
+                    className="size-3 rounded-full"
+                    style={{
+                      background:
+                        'conic-gradient(from 90deg, #ef4444, #f97316, #facc15, #22c55e, #06b6d4, #3b82f6, #8b5cf6, #ec4899, #ef4444)',
+                    }}
+                  />
+                  <span>{dictionary.manualLectureChipColorOther}</span>
+                  <ChevronRight className="ml-auto size-4 text-muted-foreground" />
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent alignOffset={-4} className="w-40">
+                {renderColorVariantGrid(row, dropdownColorVariantPage, setDropdownColorVariantPage)}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+  const renderContextCourseActions = (row: CourseOverviewRow) => (
+    <ContextMenuContent className="w-56">
+      <ContextMenuLabel>{row.courseCode}</ContextMenuLabel>
+      <ContextMenuItem onSelect={() => handleOpenCourseDetails(row)}>
+        <BookOpen className="size-4" />
+        <span>{dictionary.manualLectureOpenDetails}</span>
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => handleToggleCourseStar(row)}>
+        <Star className={cn('size-4', row.starred && 'fill-amber-400 text-amber-500')} />
+        <span>{row.starred ? dictionary.manualLectureUnstar : dictionary.manualLectureStar}</span>
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => handleToggleCourseHidden(row)}>
+        {row.hidden ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
+        <span>{row.hidden ? dictionary.manualLectureUnhide : dictionary.manualLectureHide}</span>
+      </ContextMenuItem>
+      <ContextMenuSeparator />
+      <ContextMenuLabel>{dictionary.manualLectureChipColor}</ContextMenuLabel>
+      {lectureChipColors.map((color) => (
+        <ContextMenuItem
+          data-course-row-action
+          disabled={row.color === color}
+          key={color}
+          onSelect={(event) => {
+            event.stopPropagation();
+            handleSetCourseChipColor(row, color);
+          }}
+        >
+          <span
+            aria-hidden="true"
+            className={cn('size-3 rounded-full border border-foreground/10', dotColorClasses[color])}
+          />
+          <span>{chipColorLabels[color] ?? color}</span>
+        </ContextMenuItem>
+      ))}
+      <ContextMenuSub>
+        <ContextMenuSubTrigger data-course-row-action>
+          <span
+            aria-hidden="true"
+            className="size-3 rounded-full"
+            style={{
+              background:
+                'conic-gradient(from 90deg, #ef4444, #f97316, #facc15, #22c55e, #06b6d4, #3b82f6, #8b5cf6, #ec4899, #ef4444)',
+            }}
+          />
+          <span>{dictionary.manualLectureChipColorOther}</span>
+          <ChevronRight className="ml-auto size-4 text-muted-foreground" />
+        </ContextMenuSubTrigger>
+        <ContextMenuSubContent alignOffset={-4} className="w-40">
+          {renderColorVariantGrid(row, contextColorVariantPage, setContextColorVariantPage)}
+        </ContextMenuSubContent>
+      </ContextMenuSub>
+    </ContextMenuContent>
+  );
   const persistSelectedSemester = (semester: string) => {
     const normalizedSemester = normalizeSemesterName(semester);
 
@@ -3295,12 +4055,6 @@ export function CourseOverviewView({
 
     void workspaceApi
       .saveAcademyPreferences({
-        manualLectures,
-        canvasLecturePreferences,
-        manualCoursework: [],
-        canvasCourseworkPreferences: {},
-        manualAssessments: [],
-        canvasAssessmentPreferences: {},
         calendarSettings: { selectedSemester: normalizedSemester },
       })
       .then((preferences) => {
@@ -3313,8 +4067,6 @@ export function CourseOverviewView({
         window.dispatchEvent(new CustomEvent(academyPreferencesUpdatedEvent, {
           detail: {
             calendarSettings: preferences.calendarSettings,
-            canvasLecturePreferences: preferences.canvasLecturePreferences,
-            manualLectures: preferences.manualLectures,
           },
         }));
       })
@@ -3397,39 +4149,69 @@ export function CourseOverviewView({
   }, [selectedCourseRow, selectedSemester]);
 
   useEffect(() => {
-    let isCancelled = false;
-
     if (!selectedCourseRow?.canvasCourseId) {
       setCanvasCourseContent(null);
       setCanvasCourseContentStatus('idle');
-      return undefined;
+      setLoadedCanvasCourseContentSections(new Set());
+      return;
     }
 
     setCanvasCourseContent(null);
+    setCanvasCourseContentStatus('idle');
+    setLoadedCanvasCourseContentSections(new Set());
+    setActiveCourseItem(null);
+    canvasCourseContentRequestRef.current += 1;
+  }, [selectedCourseRow?.canvasCourseId]);
+
+  useEffect(() => {
+    const requestedSection = getCanvasContentSectionForCourseDetail(activeCourseItem?.section ?? 'home');
+
+    if (!selectedCourseRow?.canvasCourseId || !requestedSection) {
+      return undefined;
+    }
+
+    if (loadedCanvasCourseContentSections.has(requestedSection)) {
+      setCanvasCourseContentStatus('loaded');
+      return undefined;
+    }
+
+    const requestId = canvasCourseContentRequestRef.current + 1;
+
+    canvasCourseContentRequestRef.current = requestId;
     setCanvasCourseContentStatus('loading');
     workspaceApi
-      .getCanvasCourseContent(selectedCourseRow.canvasCourseId)
+      .getCanvasCourseContent(selectedCourseRow.canvasCourseId, requestedSection)
       .then((content) => {
-        if (isCancelled) {
+        if (canvasCourseContentRequestRef.current !== requestId) {
           return;
         }
 
-        setCanvasCourseContent(content);
+        setCanvasCourseContent((currentContent) => mergeCanvasCourseContentSection(
+          currentContent,
+          content,
+          requestedSection,
+        ));
+        setLoadedCanvasCourseContentSections((currentSections) => {
+          const nextSections = new Set(currentSections);
+
+          nextSections.add(requestedSection);
+
+          return nextSections;
+        });
         setCanvasCourseContentStatus('loaded');
       })
       .catch(() => {
-        if (isCancelled) {
+        if (canvasCourseContentRequestRef.current !== requestId) {
           return;
         }
 
-        setCanvasCourseContent(null);
         setCanvasCourseContentStatus('failed');
       });
 
     return () => {
-      isCancelled = true;
+      canvasCourseContentRequestRef.current += 1;
     };
-  }, [selectedCourseRow?.canvasCourseId]);
+  }, [activeCourseItem?.section, loadedCanvasCourseContentSections, selectedCourseRow?.canvasCourseId]);
 
   useEffect(() => {
     if (!selectedCourseRow) {
@@ -3468,8 +4250,9 @@ export function CourseOverviewView({
   }
 
   return (
-    <Card className="min-h-[520px] rounded-xl shadow-none max-[520px]:min-h-0 max-[520px]:rounded-none max-[520px]:border-0 max-[520px]:bg-transparent max-[520px]:py-0" size="sm">
-      <CardHeader className="border-b max-[520px]:grid-cols-[minmax(0,1fr)_auto] max-[520px]:gap-2 max-[520px]:rounded-none max-[520px]:border-b max-[520px]:px-3 max-[520px]:py-3">
+    <>
+    <Card className="flex h-full min-h-0 flex-col rounded-xl shadow-none max-[520px]:min-h-0 max-[520px]:rounded-none max-[520px]:border-0 max-[520px]:bg-transparent max-[520px]:py-0" size="sm">
+      <CardHeader className="shrink-0 border-b max-[520px]:grid-cols-[minmax(0,1fr)_auto] max-[520px]:gap-2 max-[520px]:rounded-none max-[520px]:border-b max-[520px]:px-3 max-[520px]:py-3">
         <div className="flex min-w-0 items-center gap-2 text-xs font-semibold uppercase text-muted-foreground">
           <BookOpen aria-hidden="true" size={15} strokeWidth={2.3} />
           <span>{dictionary.courseOverviewEyebrow}</span>
@@ -3505,7 +4288,7 @@ export function CourseOverviewView({
         </CardAction>
       </CardHeader>
 
-      <CardContent className="space-y-2 max-[520px]:px-3 max-[520px]:py-3">
+      <CardContent className="min-h-0 flex-1 space-y-2 overflow-y-auto max-[520px]:px-3 max-[520px]:py-3">
         {courseLoadStatus === 'loading' ? (
           <CanvasLoadingBanner label={dictionary.canvasCoursesLoading} size="compact" />
         ) : null}
@@ -3533,7 +4316,7 @@ export function CourseOverviewView({
                 .filter(([, value]) => value && value !== '--')
                 .slice(0, 2);
 
-              return (
+              const rowElement = (
                 <article
                   className={cn(
                     'grid min-w-0 cursor-pointer gap-3 rounded-lg border bg-background px-3 py-3 transition-colors hover:bg-muted/35',
@@ -3541,14 +4324,8 @@ export function CourseOverviewView({
                     'max-[520px]:block max-[520px]:rounded-xl max-[520px]:px-3 max-[520px]:py-3',
                     row.hidden && 'border-dashed bg-muted/15 opacity-35 grayscale hover:bg-muted/20',
                   )}
-                  key={row.id}
-                  onClick={() => setSelectedCourseRowId(row.id)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault();
-                      setSelectedCourseRowId(row.id);
-                    }
-                  }}
+                  onClick={(event) => handleCourseRowOpen(event, row)}
+                  onKeyDown={(event) => handleCourseRowKeyDown(event, row)}
                   role="button"
                   tabIndex={0}
                 >
@@ -3573,6 +4350,12 @@ export function CourseOverviewView({
                         {row.hidden ? (
                           <Badge className="h-5 rounded-md px-1.5 text-[10px] uppercase" variant="secondary">
                             {dictionary.courseOverviewHidden}
+                          </Badge>
+                        ) : null}
+                        {row.starred ? (
+                          <Badge className="h-5 gap-1 rounded-md px-1.5 text-[10px] uppercase" variant="secondary">
+                            <Star aria-hidden="true" className="size-3 fill-amber-400 text-amber-500" />
+                            {dictionary.manualLectureStar}
                           </Badge>
                         ) : null}
                       </div>
@@ -3618,10 +4401,10 @@ export function CourseOverviewView({
                           asChild
                           className="size-7 rounded-md"
                           size="icon-sm"
-                        title={dictionary.courseOverviewOpenCanvas}
-                        type="button"
-                        variant="ghost"
-                      >
+                          title={dictionary.courseOverviewOpenCanvas}
+                          type="button"
+                          variant="ghost"
+                        >
                           <a
                             href={row.htmlUrl}
                             onClick={(event) => event.stopPropagation()}
@@ -3630,16 +4413,52 @@ export function CourseOverviewView({
                           >
                             <ExternalLink aria-hidden="true" size={14} strokeWidth={2.4} />
                           </a>
-                      </Button>
+                        </Button>
                       ) : null}
+                      {renderDropdownCourseActions(row)}
                     </div>
                   </div>
                 </article>
+              );
+
+              return (
+                <ContextMenu key={row.id}>
+                  <ContextMenuTrigger asChild>{rowElement}</ContextMenuTrigger>
+                  {renderContextCourseActions(row)}
+                </ContextMenu>
               );
             })}
           </div>
         ) : null}
       </CardContent>
     </Card>
+    <ManualLectureDialog
+      initialLecture={selectedManualLecture}
+      onOpenChange={(isOpen) => {
+        if (!isOpen) {
+          setSelectedManualLectureId(null);
+        }
+      }}
+      onSaveLecture={handleUpdateManualLecture}
+      open={Boolean(selectedManualLecture)}
+      selectedSemester={normalizeSemesterName(selectedSemester)}
+      semesterOptions={semesterOptions}
+    />
+    <ManualLectureDialog
+      description={dictionary.canvasLectureEditDescription}
+      initialLecture={selectedCanvasLecture}
+      onOpenChange={(isOpen) => {
+        if (!isOpen) {
+          setSelectedCanvasCourseId(null);
+        }
+      }}
+      onSaveLecture={handleUpdateCanvasLecture}
+      open={Boolean(selectedCanvasLecture)}
+      selectedSemester={normalizeSemesterName(selectedSemester)}
+      semesterOptions={semesterOptions}
+      submitLabel={dictionary.manualLectureUpdate}
+      title={dictionary.canvasLectureEditTitle}
+    />
+    </>
   );
 }

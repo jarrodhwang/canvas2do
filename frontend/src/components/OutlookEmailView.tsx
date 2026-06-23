@@ -429,10 +429,9 @@ export function OutlookEmailView() {
             <p className="mt-2 text-sm font-semibold text-muted-foreground">{error}</p>
             <Button
               className="mt-4"
-              onClick={() => {
-                window.location.href = `${workspaceApi.apiBaseUrl}/microsoft/integrations/outlook/connect`;
-              }}
+              disabled
               type="button"
+              variant="outline"
             >
               {dictionary.outlookReconnect}
             </Button>

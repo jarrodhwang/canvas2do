@@ -92,6 +92,7 @@ export interface ManualLecture {
   friendlyName?: string;
   starred?: boolean;
   hidden?: boolean;
+  deleted?: boolean;
   chipColor?: ColorToken;
   semester?: string;
 }

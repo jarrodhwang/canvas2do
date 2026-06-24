@@ -19,6 +19,7 @@ import {
   MoreHorizontal,
   Palette,
   Star,
+  Trash2,
   Users,
   Video,
 } from 'lucide-react';
@@ -69,6 +70,14 @@ import {
   CardTitle,
 } from './ui/card';
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from './ui/dialog';
+import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
@@ -107,6 +116,7 @@ interface CanvasLecturePreference {
   credits?: string;
   currentGrade?: string;
   currentScore?: number;
+  deleted?: boolean;
   friendlyCourseCode?: string;
   friendlyName?: string;
   hidden?: boolean;
@@ -210,7 +220,7 @@ const canvasLecturePreferencesStorageKey = 'incos-academy-canvas-lecture-prefere
 const academyCalendarSettingsStorageKey = 'incos-academy-calendar-settings';
 const academyPreferencesUpdatedEvent = 'incos-academy-preferences-updated';
 const defaultAcademySemester = getDateBasedAcademySemester();
-const noTermSemester = 'No Term';
+const noTermSemester = 'Default Term';
 const defaultCourseChipColor: ColorToken = 'blue';
 const lectureChipColors: ColorToken[] = [
   'butter',
@@ -311,8 +321,12 @@ function getGradeProgressThresholdsFromAcademyPreferences(
 function normalizeSemesterName(value?: string, fallback = defaultAcademySemester) {
   const trimmedValue = value?.trim();
 
-  if (!trimmedValue || /^default term$/i.test(trimmedValue)) {
+  if (!trimmedValue) {
     return fallback;
+  }
+
+  if (/^default term$/i.test(trimmedValue)) {
+    return noTermSemester;
   }
 
   return trimmedValue;
@@ -364,16 +378,17 @@ function getCanvasCourseSnapshot(
     preference.semesterSource === 'fallback' ||
     storedSemester === noTermSemester
   );
-  const shouldUseFallbackSemester = !reportedSemesterIsUsable && (
+  const shouldUseDefaultTermSemester = !reportedSemesterIsUsable && (
     !preference?.semester ||
+    preference.semesterSource === 'canvas' ||
     preference.semesterSource === 'fallback' ||
     storedSemester === noTermSemester
   );
   const semester = normalizeSemesterName(
     shouldUseReportedSemester
       ? reportedSemester
-      : shouldUseFallbackSemester
-        ? fallbackSemester
+      : shouldUseDefaultTermSemester
+        ? reportedSemester
         : preference?.semester ?? preference?.termName ?? reportedSemester,
     fallbackSemester,
   );
@@ -388,7 +403,7 @@ function getCanvasCourseSnapshot(
     semester,
     semesterSource: shouldUseReportedSemester
       ? 'canvas'
-      : shouldUseFallbackSemester
+      : shouldUseDefaultTermSemester
         ? 'fallback'
         : preference?.semesterSource ?? (reportedSemesterIsUsable ? 'canvas' : 'fallback'),
     termName: semester,
@@ -415,14 +430,11 @@ function storeSelectedAcademySemester(semester: string) {
     return;
   }
 
-  const settings = readStoredJson<Record<string, unknown>>(academyCalendarSettingsStorageKey, {});
+  const selectedSemester = normalizeSemesterName(semester);
 
   window.dispatchEvent(new CustomEvent(academyPreferencesUpdatedEvent, {
     detail: {
-      calendarSettings: {
-        ...settings,
-        selectedSemester: normalizeSemesterName(semester),
-      },
+      calendarSettings: { selectedSemester },
     },
   }));
 }
@@ -554,18 +566,19 @@ function createCanvasRows(
   courses: CanvasCourse[],
   preferences: CanvasLecturePreferences,
   notificationCounts: Record<string, number>,
-  fallbackSemester = defaultAcademySemester,
 ): CourseOverviewRow[] {
-  return courses.map((course) => {
+  return courses.flatMap((course) => {
     const courseId = String(course.id ?? '');
     const preference = getCanvasPreferenceForCourse(course, preferences);
     const courseCode = preference.friendlyCourseCode?.trim() || course.courseCode?.trim() || course.id;
     const reportedSemester = normalizeCanvasSemesterName(course.termName);
     const semester = preference.semester || preference.termName
       ? normalizeSemesterName(preference.semester ?? preference.termName)
-      : reportedSemester === noTermSemester
-        ? fallbackSemester
-        : reportedSemester;
+      : reportedSemester;
+
+    if (preference.deleted) {
+      return [];
+    }
 
     return {
       id: `canvas:${courseId}`,
@@ -590,7 +603,7 @@ function createCanvasRows(
 }
 
 function createManualRows(lectures: ManualLecture[]): CourseOverviewRow[] {
-  return lectures.map((lecture) => ({
+  return lectures.filter((lecture) => !lecture.deleted).map((lecture) => ({
     id: `manual:${lecture.id}`,
     name: lecture.friendlyName?.trim() || lecture.name,
     courseCode: lecture.friendlyCourseCode?.trim() || lecture.code,
@@ -619,6 +632,7 @@ function createStoredCanvasRows(
   return Object.entries(preferences)
     .filter(([courseId, preference]) => (
       !liveCourseIds.has(courseId) &&
+      !preference.deleted &&
       Boolean(
         preference.friendlyCourseCode?.trim() ||
         preference.originalCourseCode?.trim() ||
@@ -698,7 +712,10 @@ function createCanvasEditableLecture(
     friendlyCourseCode: preference?.friendlyCourseCode,
     friendlyName: preference?.friendlyName,
     hidden: preference?.hidden,
-    semester: normalizeSemesterName(preference?.semester ?? preference?.termName ?? course?.termName, fallbackSemester),
+    semester: normalizeSemesterName(
+      preference?.semester ?? preference?.termName ?? normalizeCanvasSemesterName(course?.termName),
+      fallbackSemester,
+    ),
     starred: preference?.starred,
   };
 }
@@ -3296,9 +3313,11 @@ function CourseDetailView({
 export function CourseOverviewView({
   initialResourceUrl,
   initialSelectedCourseRowId,
+  selectedSemester: selectedSemesterProp,
 }: {
   initialResourceUrl?: string | null;
   initialSelectedCourseRowId?: string | null;
+  selectedSemester?: string;
 } = {}) {
   const { dictionary } = useLanguage();
   const [canvasCourses, setCanvasCourses] = useState<CanvasCourse[]>([]);
@@ -3307,12 +3326,15 @@ export function CourseOverviewView({
   const [hasLoadedAcademyPreferences, setHasLoadedAcademyPreferences] = useState(false);
   const [manualLectures, setManualLectures] = useState<ManualLecture[]>(() => getStoredManualLectures());
   const [notificationCounts, setNotificationCounts] = useState<Record<string, number>>({});
-  const [selectedSemester, setSelectedSemester] = useState(getStoredSelectedAcademySemester);
+  const [selectedSemester, setSelectedSemester] = useState(() => (
+    selectedSemesterProp ? normalizeSemesterName(selectedSemesterProp) : getStoredSelectedAcademySemester()
+  ));
   const [gradeProgressThresholds, setGradeProgressThresholds] =
     useState<GradeProgressColorThresholds>(defaultGradeProgressColorThresholds);
   const [selectedCourseRowId, setSelectedCourseRowId] = useState<string | null>(initialSelectedCourseRowId ?? null);
   const [selectedManualLectureId, setSelectedManualLectureId] = useState<string | null>(null);
   const [selectedCanvasCourseId, setSelectedCanvasCourseId] = useState<string | null>(null);
+  const [coursePendingDelete, setCoursePendingDelete] = useState<CourseOverviewRow | null>(null);
   const [activeCourseItem, setActiveCourseItem] = useState<CourseNavigationItem | null>(null);
   const [canvasCourseContent, setCanvasCourseContent] = useState<CanvasCourseContent | null>(null);
   const [canvasCourseContentStatus, setCanvasCourseContentStatus] = useState<LoadStatus>('idle');
@@ -3333,7 +3355,9 @@ export function CourseOverviewView({
 
       const preferenceSemester = getSelectedSemesterFromAcademyPreferences(preferences);
 
-      if (preferenceSemester) {
+      if (selectedSemesterProp) {
+        setSelectedSemester(normalizeSemesterName(selectedSemesterProp));
+      } else if (preferenceSemester) {
         setSelectedSemester(preferenceSemester);
       }
     };
@@ -3361,9 +3385,18 @@ export function CourseOverviewView({
           ));
         }
 
-        const selectedSemesterFromEvent = getSelectedSemesterFromCalendarSettings(event.detail.calendarSettings);
+        const selectedSemesterFromEvent = selectedSemesterProp
+          ? normalizeSemesterName(selectedSemesterProp)
+          : getSelectedSemesterFromCalendarSettings(event.detail.calendarSettings);
 
         if (selectedSemesterFromEvent) {
+          if (normalizeSemesterName(selectedSemesterFromEvent) !== normalizeSemesterName(selectedSemester)) {
+            setSelectedCourseRowId(null);
+            setSelectedManualLectureId(null);
+            setSelectedCanvasCourseId(null);
+            setActiveCourseItem(null);
+          }
+
           setSelectedSemester(selectedSemesterFromEvent);
         }
 
@@ -3378,7 +3411,17 @@ export function CourseOverviewView({
     return () => {
       window.removeEventListener(academyPreferencesUpdatedEvent, handleAcademyPreferencesUpdated);
     };
-  }, []);
+  }, [selectedSemester, selectedSemesterProp]);
+
+  useEffect(() => {
+    if (selectedSemesterProp && normalizeSemesterName(selectedSemesterProp) !== normalizeSemesterName(selectedSemester)) {
+      setSelectedCourseRowId(null);
+      setSelectedManualLectureId(null);
+      setSelectedCanvasCourseId(null);
+      setActiveCourseItem(null);
+      setSelectedSemester(normalizeSemesterName(selectedSemesterProp));
+    }
+  }, [selectedSemester, selectedSemesterProp]);
 
   useEffect(() => {
     if (initialSelectedCourseRowId !== undefined) {
@@ -3404,7 +3447,9 @@ export function CourseOverviewView({
 
         const preferenceSemester = getSelectedSemesterFromAcademyPreferences(preferences);
 
-        if (preferenceSemester) {
+        if (selectedSemesterProp) {
+          setSelectedSemester(normalizeSemesterName(selectedSemesterProp));
+        } else if (preferenceSemester) {
           setSelectedSemester(preferenceSemester);
         }
 
@@ -3463,7 +3508,7 @@ export function CourseOverviewView({
     return () => {
       isCancelled = true;
     };
-  }, []);
+  }, [selectedSemesterProp]);
 
   const saveCoursePreferences = (
     nextManualLectures: ManualLecture[],
@@ -3501,7 +3546,6 @@ export function CourseOverviewView({
         setCanvasLecturePreferences(savedCanvasLecturePreferences);
         window.dispatchEvent(new CustomEvent(academyPreferencesUpdatedEvent, {
           detail: {
-            calendarSettings: preferences.calendarSettings,
             canvasLecturePreferences: savedCanvasLecturePreferences,
             manualLectures: savedManualLectures,
           },
@@ -3568,7 +3612,7 @@ export function CourseOverviewView({
 
   const allRows = useMemo(
     () => [
-      ...createCanvasRows(canvasCourses, canvasLecturePreferences, notificationCounts, normalizeSemesterName(selectedSemester)),
+      ...createCanvasRows(canvasCourses, canvasLecturePreferences, notificationCounts),
       ...createStoredCanvasRows(canvasLecturePreferences, canvasCourses),
       ...createManualRows(manualLectures.filter((lecture) => (
         !isGeneratedArchivedCanvasLecture(lecture, canvasLecturePreferences)
@@ -3717,6 +3761,49 @@ export function CourseOverviewView({
 
     setManualLectures(nextManualLectures);
     saveCoursePreferences(nextManualLectures, canvasLecturePreferences);
+  };
+  const canDeleteCourse = (row: CourseOverviewRow) => normalizeSemesterName(row.semester) === noTermSemester;
+  const handleDeleteCourse = (row: CourseOverviewRow) => {
+    if (!canDeleteCourse(row)) {
+      return;
+    }
+
+    if (row.source === 'canvas' && row.canvasCourseId) {
+      const basePreference = getCanvasPreferenceWithSnapshot(row) ?? {};
+      const nextCanvasLecturePreferences = {
+        ...canvasLecturePreferences,
+        [row.canvasCourseId]: {
+          ...basePreference,
+          deleted: true,
+          hidden: true,
+        },
+      };
+
+      setCanvasLecturePreferences(nextCanvasLecturePreferences);
+      saveCoursePreferences(manualLectures, nextCanvasLecturePreferences);
+      if (selectedCourseRowId === row.id) {
+        setSelectedCourseRowId(null);
+      }
+      setSelectedCanvasCourseId(null);
+      setCoursePendingDelete(null);
+      return;
+    }
+
+    if (!row.manualLecture?.id) {
+      return;
+    }
+
+    const nextManualLectures = manualLectures.map((lecture) => (
+      lecture.id === row.manualLecture?.id ? { ...lecture, deleted: true, hidden: true } : lecture
+    ));
+
+    setManualLectures(nextManualLectures);
+    saveCoursePreferences(nextManualLectures, canvasLecturePreferences);
+    if (selectedCourseRowId === row.id) {
+      setSelectedCourseRowId(null);
+    }
+    setSelectedManualLectureId(null);
+    setCoursePendingDelete(null);
   };
   const handleToggleCourseStar = (row: CourseOverviewRow) => {
     if (row.source === 'canvas') {
@@ -3946,6 +4033,15 @@ export function CourseOverviewView({
           {row.hidden ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
           <span>{row.hidden ? dictionary.manualLectureUnhide : dictionary.manualLectureHide}</span>
         </DropdownMenuItem>
+        {canDeleteCourse(row) ? (
+          <DropdownMenuItem
+            className="text-destructive focus:text-destructive"
+            onSelect={() => runCourseAction(() => setCoursePendingDelete(row))}
+          >
+            <Trash2 className="size-4" />
+            <span>{dictionary.manualLectureDelete}</span>
+          </DropdownMenuItem>
+        ) : null}
         <DropdownMenuSeparator />
         <DropdownMenuSub>
           <DropdownMenuSubTrigger data-course-row-action>
@@ -4010,6 +4106,15 @@ export function CourseOverviewView({
         {row.hidden ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
         <span>{row.hidden ? dictionary.manualLectureUnhide : dictionary.manualLectureHide}</span>
       </ContextMenuItem>
+      {canDeleteCourse(row) ? (
+        <ContextMenuItem
+          className="text-destructive focus:text-destructive"
+          onSelect={() => setCoursePendingDelete(row)}
+        >
+          <Trash2 className="size-4" />
+          <span>{dictionary.manualLectureDelete}</span>
+        </ContextMenuItem>
+      ) : null}
       <ContextMenuSeparator />
       <ContextMenuLabel>{dictionary.manualLectureChipColor}</ContextMenuLabel>
       {lectureChipColors.map((color) => (
@@ -4066,15 +4171,41 @@ export function CourseOverviewView({
 
         window.dispatchEvent(new CustomEvent(academyPreferencesUpdatedEvent, {
           detail: {
-            calendarSettings: preferences.calendarSettings,
+            calendarSettings: { selectedSemester: preferenceSemester ?? normalizedSemester },
           },
         }));
+        setCourseLoadStatus('loading');
+        void workspaceApi
+          .getCanvasCourses(20)
+          .then(({ courses }) => {
+            setCanvasCourses(courses);
+            setCourseLoadStatus('loaded');
+
+            return workspaceApi.getCanvasCalendarItems({
+              endDate: getFutureIsoDate(45),
+              pageSize: 100,
+              startDate: getTodayIsoDate(),
+            }).then(({ items }) => {
+              setNotificationCounts(countNotificationsByCourse(items));
+            }).catch(() => {
+              setNotificationCounts({});
+            });
+          })
+          .catch(() => {
+            setCanvasCourses([]);
+            setNotificationCounts({});
+            setCourseLoadStatus('failed');
+          });
       })
       .catch(() => undefined);
   };
   const handleSelectSemester = (semester: string) => {
     const normalizedSemester = normalizeSemesterName(semester);
 
+    setSelectedCourseRowId(null);
+    setSelectedManualLectureId(null);
+    setSelectedCanvasCourseId(null);
+    setActiveCourseItem(null);
     setSelectedSemester(normalizedSemester);
     persistSelectedSemester(normalizedSemester);
   };
@@ -4107,7 +4238,6 @@ export function CourseOverviewView({
           : nextManualLectures;
 
         return workspaceApi.saveAcademyPreferences({
-          calendarSettings: preferences.calendarSettings,
           canvasAssessmentPreferences: preferences.canvasAssessmentPreferences,
           canvasCourseworkPreferences: preferences.canvasCourseworkPreferences,
           canvasLecturePreferences: preferences.canvasLecturePreferences,
@@ -4126,7 +4256,6 @@ export function CourseOverviewView({
         setManualLectures(savedManualLectures);
         window.dispatchEvent(new CustomEvent(academyPreferencesUpdatedEvent, {
           detail: {
-            calendarSettings: preferences.calendarSettings,
             canvasLecturePreferences: preferences.canvasLecturePreferences,
             manualLectures: savedManualLectures,
           },
@@ -4439,6 +4568,16 @@ export function CourseOverviewView({
           setSelectedManualLectureId(null);
         }
       }}
+      onRequestDeleteLecture={selectedManualLecture &&
+        normalizeSemesterName(selectedManualLecture.semester) === noTermSemester
+          ? () => {
+              const row = rows.find((courseRow) => courseRow.manualLecture?.id === selectedManualLecture.id);
+
+              if (row) {
+                setCoursePendingDelete(row);
+              }
+            }
+          : undefined}
       onSaveLecture={handleUpdateManualLecture}
       open={Boolean(selectedManualLecture)}
       selectedSemester={normalizeSemesterName(selectedSemester)}
@@ -4452,6 +4591,15 @@ export function CourseOverviewView({
           setSelectedCanvasCourseId(null);
         }
       }}
+      onRequestDeleteLecture={selectedCanvasLecture?.semester === noTermSemester
+        ? () => {
+            const row = rows.find((courseRow) => courseRow.canvasCourseId === selectedCanvasCourseId);
+
+            if (row) {
+              setCoursePendingDelete(row);
+            }
+          }
+        : undefined}
       onSaveLecture={handleUpdateCanvasLecture}
       open={Boolean(selectedCanvasLecture)}
       selectedSemester={normalizeSemesterName(selectedSemester)}
@@ -4459,6 +4607,50 @@ export function CourseOverviewView({
       submitLabel={dictionary.manualLectureUpdate}
       title={dictionary.canvasLectureEditTitle}
     />
-    </>
+    <Dialog
+      onOpenChange={(isOpen) => {
+        if (!isOpen) {
+          setCoursePendingDelete(null);
+        }
+      }}
+      open={Boolean(coursePendingDelete)}
+    >
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{dictionary.manualLectureDeleteTitle}</DialogTitle>
+          <DialogDescription>
+            {dictionary.courseOverviewDeleteDefaultTermDescription}
+          </DialogDescription>
+        </DialogHeader>
+        {coursePendingDelete ? (
+          <div className="rounded-md border border-border bg-muted/30 p-3 text-sm">
+            <p className="font-semibold text-foreground">
+              {coursePendingDelete.courseCode}
+            </p>
+            <p className="mt-1 text-muted-foreground">
+              {coursePendingDelete.name}
+            </p>
+          </div>
+        ) : null}
+        <DialogFooter>
+          <Button onClick={() => setCoursePendingDelete(null)} type="button" variant="outline">
+            {dictionary.cancel}
+          </Button>
+          <Button
+            onClick={() => {
+              if (coursePendingDelete) {
+                handleDeleteCourse(coursePendingDelete);
+              }
+            }}
+            type="button"
+            variant="destructive"
+          >
+            <Trash2 className="size-4" />
+            {dictionary.manualLectureDelete}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  </>
   );
 }

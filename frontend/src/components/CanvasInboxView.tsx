@@ -12,22 +12,60 @@ import { Card } from './ui/card';
 
 type LoadStatus = 'idle' | 'loading' | 'loaded' | 'failed';
 const academyPreferencesUpdatedEvent = 'incos-academy-preferences-updated';
+const defaultCanvasTermSemester = 'Default Term';
+
+function getDateBasedAcademySemester(date = new Date()) {
+  const month = date.getMonth();
+  const term = month <= 3 ? 'Spring' : month <= 7 ? 'Summer' : 'Fall';
+
+  return `${term} ${date.getFullYear()}`;
+}
+
+const defaultAcademySemester = getDateBasedAcademySemester();
+
+function normalizeSemesterName(value?: string, fallback = defaultAcademySemester) {
+  const trimmedValue = value?.trim();
+
+  if (!trimmedValue) {
+    return fallback;
+  }
+
+  if (/^default term$/i.test(trimmedValue)) {
+    return defaultCanvasTermSemester;
+  }
+
+  return trimmedValue;
+}
+
+function normalizeCanvasSemesterName(value?: string) {
+  const trimmedValue = value?.trim();
+
+  if (!trimmedValue || /^default term$/i.test(trimmedValue)) {
+    return defaultCanvasTermSemester;
+  }
+
+  return trimmedValue;
+}
 
 interface CanvasLecturePreference {
   chipColor?: ColorToken;
   courseId?: string;
   courseCode?: string;
   courseName?: string;
+  deleted?: boolean;
   friendlyCourseCode?: string;
   friendlyName?: string;
   hidden?: boolean;
   originalCourseCode?: string;
+  semester?: string;
+  termName?: string;
 }
 
 type CanvasLecturePreferences = Record<string, CanvasLecturePreference>;
 
 interface CanvasInboxViewProps {
   onOpenIntegration?: (courseRowId?: string | null, resourceUrl?: string | null) => void;
+  selectedSemester?: string;
 }
 
 interface CourseInboxState {
@@ -195,6 +233,18 @@ function getCanvasLecturePreferencesFromAcademyPreferences(
     : {};
 }
 
+function getSelectedSemesterFromAcademyPreferences(preferences: { calendarSettings?: unknown }) {
+  const settings = preferences.calendarSettings;
+
+  if (!isRecord(settings)) {
+    return undefined;
+  }
+
+  return typeof settings.selectedSemester === 'string'
+    ? normalizeSemesterName(settings.selectedSemester)
+    : undefined;
+}
+
 function normalizeCourseMatchValue(value?: string) {
   return value?.replace(/\s+/g, '').trim().toLowerCase() || '';
 }
@@ -253,7 +303,9 @@ function getInboxCourseColor(item: CanvasInboxItem, preferences: CanvasLecturePr
 }
 
 function isInboxCourseHidden(item: CanvasInboxItem, preferences: CanvasLecturePreferences) {
-  return Boolean(getInboxCoursePreference(item, preferences)?.hidden);
+  const preference = getInboxCoursePreference(item, preferences);
+
+  return Boolean(preference?.hidden || preference?.deleted);
 }
 
 function getCoursePreference(course: CanvasCourse, preferences: CanvasLecturePreferences) {
@@ -305,7 +357,23 @@ function getCourseLabel(course: CanvasCourse, preferences: CanvasLecturePreferen
 }
 
 function isCourseHidden(course: CanvasCourse, preferences: CanvasLecturePreferences) {
-  return Boolean(getCoursePreference(course, preferences)?.hidden);
+  const preference = getCoursePreference(course, preferences);
+
+  return Boolean(preference?.hidden || preference?.deleted);
+}
+
+function getCanvasCourseSemester(course: CanvasCourse, preferences: CanvasLecturePreferences) {
+  const preference = getCoursePreference(course, preferences);
+
+  if (preference?.semester || preference?.termName) {
+    return normalizeSemesterName(preference.semester ?? preference.termName);
+  }
+
+  return normalizeCanvasSemesterName(course.termName);
+}
+
+function courseMatchesSemester(course: CanvasCourse, preferences: CanvasLecturePreferences, semester: string) {
+  return getCanvasCourseSemester(course, preferences) === normalizeSemesterName(semester);
 }
 
 function getCanvasCourseRowId(item: CanvasInboxItem) {
@@ -323,9 +391,10 @@ function groupCanvasInboxItems(
   courseInbox: Record<string, CourseInboxState>,
   locale: string,
   preferences: CanvasLecturePreferences,
+  selectedSemester: string,
 ) {
   return courses
-    .filter((course) => !isCourseHidden(course, preferences))
+    .filter((course) => !isCourseHidden(course, preferences) && courseMatchesSemester(course, preferences, selectedSemester))
     .map((course) => {
       const state = courseInbox[course.id] ?? { items: [], status: 'idle' as LoadStatus };
 
@@ -346,7 +415,7 @@ function groupCanvasInboxItems(
   ));
 }
 
-export function CanvasInboxView({ onOpenIntegration }: CanvasInboxViewProps = {}) {
+export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasInboxViewProps = {}) {
   const { dictionary, language } = useLanguage();
   const locale = language === 'ko' ? 'ko-KR' : 'en-CA';
   const [courses, setCourses] = useState<CanvasCourse[]>([]);
@@ -356,15 +425,24 @@ export function CanvasInboxView({ onOpenIntegration }: CanvasInboxViewProps = {}
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [expandedCourseIds, setExpandedCourseIds] = useState<Set<string>>(() => new Set());
   const [canvasLecturePreferences, setCanvasLecturePreferences] = useState<CanvasLecturePreferences>({});
+  const [storedSelectedSemester, setStoredSelectedSemester] = useState(defaultAcademySemester);
   const [selectionHistory, setSelectionHistory] = useState<InboxSelectionHistory>({ ids: [], index: -1 });
+  const effectiveSelectedSemester = normalizeSemesterName(selectedSemester ?? storedSelectedSemester);
+  const visibleCourseIds = useMemo(() => new Set(
+    courses
+      .filter((course) => !isCourseHidden(course, canvasLecturePreferences) &&
+        courseMatchesSemester(course, canvasLecturePreferences, effectiveSelectedSemester))
+      .map((course) => course.id),
+  ), [canvasLecturePreferences, courses, effectiveSelectedSemester]);
   const sortedItems = useMemo(() => (
-    Object.values(courseInbox)
-      .flatMap((state) => state.items)
+    Object.entries(courseInbox)
+      .filter(([courseId]) => visibleCourseIds.has(courseId))
+      .flatMap(([, state]) => state.items)
       .sort(sortCanvasInboxItems)
-  ), [courseInbox]);
+  ), [courseInbox, visibleCourseIds]);
   const groupedItems = useMemo(
-    () => groupCanvasInboxItems(courses, courseInbox, locale, canvasLecturePreferences),
-    [canvasLecturePreferences, courseInbox, courses, locale],
+    () => groupCanvasInboxItems(courses, courseInbox, locale, canvasLecturePreferences, effectiveSelectedSemester),
+    [canvasLecturePreferences, courseInbox, courses, effectiveSelectedSemester, locale],
   );
   const selectedItem = useMemo(
     () => sortedItems.find((item) => item.id === selectedItemId) ?? null,
@@ -381,6 +459,7 @@ export function CanvasInboxView({ onOpenIntegration }: CanvasInboxViewProps = {}
   useEffect(() => {
     const applyAcademyPreferences = (preferences: AcademyPreferences) => {
       setCanvasLecturePreferences(getCanvasLecturePreferencesFromAcademyPreferences(preferences));
+      setStoredSelectedSemester(getSelectedSemesterFromAcademyPreferences(preferences) ?? defaultAcademySemester);
     };
 
     const reloadAcademyPreferences = () => {
@@ -392,8 +471,22 @@ export function CanvasInboxView({ onOpenIntegration }: CanvasInboxViewProps = {}
 
     const handleAcademyPreferencesUpdated = (event: Event) => {
       if (event instanceof CustomEvent && isRecord(event.detail)) {
+        let shouldReloadPreferences = false;
+
         if (isCanvasLecturePreferences(event.detail.canvasLecturePreferences)) {
           setCanvasLecturePreferences(event.detail.canvasLecturePreferences);
+        } else {
+          shouldReloadPreferences = true;
+        }
+
+        const nextSemester = getSelectedSemesterFromAcademyPreferences(event.detail);
+
+        if (nextSemester) {
+          setStoredSelectedSemester(nextSemester);
+        }
+
+        if (shouldReloadPreferences) {
+          reloadAcademyPreferences();
         }
 
         return;
@@ -574,7 +667,7 @@ export function CanvasInboxView({ onOpenIntegration }: CanvasInboxViewProps = {}
 
   useEffect(() => {
     loadInboxCourses();
-  }, []);
+  }, [effectiveSelectedSemester]);
 
   useEffect(() => {
     if (sortedItems.length === 0) {

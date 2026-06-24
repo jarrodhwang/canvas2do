@@ -158,6 +158,7 @@ interface AcademyCalendarSettings {
   gradeProgressYellowAt: number;
   language: Language;
   calendarTodoStyle: CalendarTodoStyle;
+  showPastTermCalendarItems: boolean;
   progressDisplay: CalendarProgressDisplay;
   progressGreenAt: number;
   progressYellowAt: number;
@@ -165,10 +166,31 @@ interface AcademyCalendarSettings {
   selectedSemester?: string;
   sessionDurationDays: number;
   themeMode: AppTheme;
+  themeTimerEnabled: boolean;
+  themeTimerEnd: string;
+  themeTimerMode: AppTheme;
+  themeTimerStart: string;
   topBarDefaultCollapsed: boolean;
 }
 
-type AcademyFontFamily = 'inter' | 'geist' | 'system' | 'serif' | 'mono';
+type AcademyFontFamily =
+  | 'aptos'
+  | 'geist'
+  | 'humanist'
+  | 'inter'
+  | 'mono'
+  | 'nanum-gothic'
+  | 'noto-sans'
+  | 'noto-sans-kr'
+  | 'noto-serif'
+  | 'noto-serif-kr'
+  | 'pretendard'
+  | 'roboto'
+  | 'rounded'
+  | 'segoe'
+  | 'serif'
+  | 'sf-pro'
+  | 'system';
 
 interface AdminConsoleSettings {
   topBarDefaultCollapsed: boolean;
@@ -320,6 +342,7 @@ interface StoredCoursePreference {
   credits?: string;
   currentGrade?: string;
   currentScore?: number;
+  deleted?: boolean;
   dueAt?: string;
   startAt?: string;
   endAt?: string;
@@ -470,7 +493,19 @@ const academyFontFamilyOptions: Array<{ value: AcademyFontFamily; label: string;
   { value: 'inter', label: 'Inter', cssValue: '"Inter Variable", sans-serif' },
   { value: 'geist', label: 'Geist', cssValue: '"Geist Variable", sans-serif' },
   { value: 'system', label: 'System', cssValue: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' },
+  { value: 'sf-pro', label: 'SF Pro', cssValue: '"SF Pro Text", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif' },
+  { value: 'segoe', label: 'Segoe UI', cssValue: '"Segoe UI", system-ui, -apple-system, sans-serif' },
+  { value: 'aptos', label: 'Aptos', cssValue: 'Aptos, "Segoe UI", system-ui, sans-serif' },
+  { value: 'roboto', label: 'Roboto', cssValue: 'Roboto, "Noto Sans", Arial, sans-serif' },
+  { value: 'noto-sans', label: 'Noto Sans', cssValue: '"Noto Sans", "Noto Sans KR", Arial, sans-serif' },
+  { value: 'pretendard', label: 'Pretendard', cssValue: '"Pretendard Variable", Pretendard, "Noto Sans KR", "Apple SD Gothic Neo", sans-serif' },
+  { value: 'noto-sans-kr', label: 'Noto Sans KR', cssValue: '"Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif' },
+  { value: 'nanum-gothic', label: 'Nanum Gothic', cssValue: '"Nanum Gothic", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif' },
+  { value: 'rounded', label: 'Rounded', cssValue: '"SF Pro Rounded", "Nunito Sans", "Avenir Next Rounded Std", system-ui, sans-serif' },
+  { value: 'humanist', label: 'Humanist', cssValue: '"Avenir Next", Avenir, "Gill Sans", "Segoe UI", sans-serif' },
   { value: 'serif', label: 'Serif', cssValue: 'Georgia, "Times New Roman", serif' },
+  { value: 'noto-serif', label: 'Noto Serif', cssValue: '"Noto Serif", Georgia, "Times New Roman", serif' },
+  { value: 'noto-serif-kr', label: 'Noto Serif KR', cssValue: '"Noto Serif KR", "Apple Myungjo", "Batang", serif' },
   { value: 'mono', label: 'Mono', cssValue: '"SFMono-Regular", Consolas, "Liberation Mono", monospace' },
 ];
 const academyFontFamilyValues = academyFontFamilyOptions.map((option) => option.value);
@@ -479,6 +514,7 @@ const academyFontFamilyCss = Object.fromEntries(
 ) as Record<AcademyFontFamily, string>;
 const academyFontSizeOptions = [85, 95, 100, 110, 120];
 const defaultAcademySemester = getDateBasedAcademySemester();
+const defaultCanvasTermSemester = 'Default Term';
 const defaultAcademyLogoSrc = '/brand/SFU_block_colour_rgb.png';
 const defaultWorkspaceTabIconSrc = '/brand/incos-workspace-tab-icon.png';
 const defaultWorkspaceTouchIconSrc = '/brand/incos-workspace-touch-icon.png';
@@ -607,12 +643,17 @@ const defaultAcademyCalendarSettings: AcademyCalendarSettings = {
   gradeProgressYellowAt: defaultGradeProgressColorThresholds.yellowAt,
   language: 'en',
   calendarTodoStyle: 'compact',
+  showPastTermCalendarItems: false,
   magnifierPercent: 100,
   progressDisplay: 'linear',
   progressGreenAt: defaultCalendarProgressThresholds.greenAt,
   progressYellowAt: defaultCalendarProgressThresholds.yellowAt,
   sessionDurationDays: 14,
   themeMode: 'dark',
+  themeTimerEnabled: false,
+  themeTimerEnd: '18:00',
+  themeTimerMode: 'light',
+  themeTimerStart: '08:00',
   topBarDefaultCollapsed: false,
 };
 const defaultAdminConsoleSettings: AdminConsoleSettings = {
@@ -669,6 +710,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+function hasMeaningfulSettingsRecord(value: unknown) {
+  return isRecord(value) && Object.keys(value).length > 0;
+}
+
 function getAcademyPreferenceCacheValue<T>(key: string, fallback: T): T {
   switch (key) {
     case manualLecturesStorageKey:
@@ -717,7 +762,9 @@ function setAcademyPreferenceCacheValue(key: string, value: unknown) {
         : {};
       break;
     case academyCalendarSettingsStorageKey:
-      academyPreferenceCache.calendarSettings = normalizeAcademyCalendarSettings(value);
+      academyPreferenceCache.calendarSettings = hasMeaningfulSettingsRecord(value)
+        ? normalizeAcademyCalendarSettings(value, academyPreferenceCache.calendarSettings)
+        : academyPreferenceCache.calendarSettings;
       break;
     default:
       break;
@@ -756,8 +803,12 @@ function getDateBasedAcademySemester(date = new Date()) {
 function normalizeSemesterName(value?: string, fallback = defaultAcademySemester) {
   const trimmedValue = value?.trim();
 
-  if (!trimmedValue || /^default term$/i.test(trimmedValue)) {
+  if (!trimmedValue) {
     return fallback;
+  }
+
+  if (/^default term$/i.test(trimmedValue)) {
+    return defaultCanvasTermSemester;
   }
 
   return trimmedValue;
@@ -1009,6 +1060,9 @@ function normalizeAcademyCalendarSettings(
   const calendarTodoStyle: CalendarTodoStyle = settings.calendarTodoStyle === 'comfortable' || settings.calendarTodoStyle === 'compact'
     ? settings.calendarTodoStyle
     : fallback.calendarTodoStyle;
+  const showPastTermCalendarItems = typeof settings.showPastTermCalendarItems === 'boolean'
+    ? settings.showPastTermCalendarItems
+    : fallback.showPastTermCalendarItems;
   const progressDisplay = settings.progressDisplay === 'circular' || settings.progressDisplay === 'linear'
     ? settings.progressDisplay
     : fallback.progressDisplay;
@@ -1040,6 +1094,14 @@ function normalizeAcademyCalendarSettings(
   const themeMode: AppTheme = settings.themeMode === 'light' || settings.themeMode === 'dark'
     ? settings.themeMode
     : fallback.themeMode;
+  const themeTimerEnabled = typeof settings.themeTimerEnabled === 'boolean'
+    ? settings.themeTimerEnabled
+    : fallback.themeTimerEnabled;
+  const themeTimerMode: AppTheme = settings.themeTimerMode === 'light' || settings.themeTimerMode === 'dark'
+    ? settings.themeTimerMode
+    : fallback.themeTimerMode;
+  const themeTimerStart = normalizeThemeTimerTime(settings.themeTimerStart, fallback.themeTimerStart);
+  const themeTimerEnd = normalizeThemeTimerTime(settings.themeTimerEnd, fallback.themeTimerEnd);
   const accentColor = typeof settings.accentColor === 'string' &&
     academyAccentColorOptions.includes(settings.accentColor as ColorToken)
     ? settings.accentColor as ColorToken
@@ -1091,17 +1153,67 @@ function normalizeAcademyCalendarSettings(
     hiddenCourseIds,
     language,
     calendarTodoStyle,
+    showPastTermCalendarItems,
     magnifierPercent,
     progressDisplay,
     progressGreenAt,
     progressYellowAt,
-    selectedSemester: typeof settings.selectedSemester === 'string' ? settings.selectedSemester : fallback.selectedSemester,
+    selectedSemester: normalizeSemesterName(
+      typeof settings.selectedSemester === 'string' ? settings.selectedSemester : fallback.selectedSemester,
+    ),
     sessionDurationDays,
     themeMode,
+    themeTimerEnabled,
+    themeTimerEnd,
+    themeTimerMode,
+    themeTimerStart,
     topBarDefaultCollapsed: typeof settings.topBarDefaultCollapsed === 'boolean'
       ? settings.topBarDefaultCollapsed
       : fallback.topBarDefaultCollapsed,
   };
+}
+
+function normalizeThemeTimerTime(value: unknown, fallback: string) {
+  if (typeof value !== 'string') {
+    return fallback;
+  }
+
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(value) ? value : fallback;
+}
+
+function getThemeTimerMinutes(value: string) {
+  const [hours = '0', minutes = '0'] = value.split(':');
+
+  return (Number(hours) * 60) + Number(minutes);
+}
+
+function getOppositeThemeMode(themeMode: AppTheme): AppTheme {
+  return themeMode === 'dark' ? 'light' : 'dark';
+}
+
+function isMinuteInThemeWindow(currentMinute: number, startMinute: number, endMinute: number) {
+  if (startMinute === endMinute) {
+    return false;
+  }
+
+  if (startMinute < endMinute) {
+    return currentMinute >= startMinute && currentMinute < endMinute;
+  }
+
+  return currentMinute >= startMinute || currentMinute < endMinute;
+}
+
+function getAcademyEffectiveTheme(settings: AcademyCalendarSettings, date = new Date()): AppTheme {
+  if (!settings.themeTimerEnabled) {
+    return settings.themeMode;
+  }
+
+  const startMinute = getThemeTimerMinutes(settings.themeTimerStart);
+  const endMinute = getThemeTimerMinutes(settings.themeTimerEnd);
+  const currentMinute = (date.getHours() * 60) + date.getMinutes();
+  const isTimerWindow = isMinuteInThemeWindow(currentMinute, startMinute, endMinute);
+
+  return isTimerWindow ? settings.themeTimerMode : getOppositeThemeMode(settings.themeTimerMode);
 }
 
 function getStoredAcademyCalendarSettings() {
@@ -1312,6 +1424,8 @@ function clearLegacyAcademyPreferenceStorage() {
 }
 
 function applyAcademyPreferencesResponse(preferences: AcademyPreferences) {
+  const hasRemoteCalendarSettings = hasMeaningfulSettingsRecord(preferences.calendarSettings);
+
   academyPreferenceCache = {
     canvasAssessmentPreferences: isRecord(preferences.canvasAssessmentPreferences)
       ? preferences.canvasAssessmentPreferences as Record<string, StoredCoursePreference>
@@ -1322,10 +1436,12 @@ function applyAcademyPreferencesResponse(preferences: AcademyPreferences) {
     canvasLecturePreferences: isRecord(preferences.canvasLecturePreferences)
       ? preferences.canvasLecturePreferences as Record<string, StoredCoursePreference>
       : {},
-    calendarSettings: normalizeAcademyCalendarSettings(
-      preferences.calendarSettings,
-      academyPreferenceCache.calendarSettings,
-    ),
+    calendarSettings: hasRemoteCalendarSettings
+      ? normalizeAcademyCalendarSettings(
+          preferences.calendarSettings,
+          academyPreferenceCache.calendarSettings,
+        )
+      : academyPreferenceCache.calendarSettings,
     manualAssessments: Array.isArray(preferences.manualAssessments)
       ? preferences.manualAssessments as StoredManualAssessment[]
       : [],
@@ -1504,7 +1620,7 @@ function coursePreferenceMatchesCourse(
 
 function isCourseReferenceHidden(course: Pick<CalendarSourceItem, 'courseCode' | 'courseId' | 'courseName'>) {
   const hiddenManualLecture = getStoredManualLectures().some((lecture) => (
-    Boolean(lecture.hidden) && coursePreferenceMatchesCourse(lecture, course)
+    Boolean(lecture.hidden || lecture.deleted) && coursePreferenceMatchesCourse(lecture, course)
   ));
 
   if (hiddenManualLecture) {
@@ -1512,7 +1628,7 @@ function isCourseReferenceHidden(course: Pick<CalendarSourceItem, 'courseCode' |
   }
 
   return Object.entries(getStoredCanvasLecturePreferences()).some(([courseId, preference]) => (
-    Boolean(preference.hidden) &&
+    Boolean(preference.hidden || preference.deleted) &&
     (
       (Boolean(course.courseId) && course.courseId === courseId) ||
       coursePreferenceMatchesCourse(preference, course)
@@ -1664,7 +1780,7 @@ function getActiveCalendarCourseOptions(
   const canvasLecturePreferences = getStoredCanvasLecturePreferences();
 
   getStoredManualLectures().forEach((lecture) => {
-    if (lecture.hidden || !semesterMatches(lecture.semester, selectedSemester)) {
+    if (lecture.hidden || lecture.deleted || !semesterMatches(lecture.semester, selectedSemester)) {
       return;
     }
 
@@ -1684,6 +1800,7 @@ function getActiveCalendarCourseOptions(
     if (
       preference.archivedAsManualLectureId ||
       preference.hidden ||
+      preference.deleted ||
       !semesterMatches(preference.semester ?? preference.termName, selectedSemester)
     ) {
       return;
@@ -2486,12 +2603,12 @@ function getCalendarSourceItems(canvasItems: CanvasCalendarItem[], preferenceVer
     }));
   const classSessionItems = [
     ...getStoredManualLectures()
-      .filter((lecture) => !lecture.hidden)
+      .filter((lecture) => !lecture.hidden && !lecture.deleted)
       .flatMap((lecture) => createClassSessionItemsFromCourse(lecture, {
         sourceId: lecture.id ?? lecture.code ?? lecture.courseCode ?? lecture.courseName ?? 'manual',
       })),
     ...Object.entries(canvasLecturePreferences)
-      .filter(([, preference]) => !preference.hidden && !preference.archivedAsManualLectureId)
+      .filter(([, preference]) => !preference.hidden && !preference.deleted && !preference.archivedAsManualLectureId)
       .flatMap(([courseId, preference]) => createClassSessionItemsFromCourse(preference, {
         courseId,
         sourceId: courseId,
@@ -2889,6 +3006,8 @@ function AcademySettingsView({
   const [accentVariantPage, setAccentVariantPage] = useState(0);
   const [logoUploadError, setLogoUploadError] = useState('');
   const dateLocale = language === 'ko' ? 'ko-KR' : 'en-CA';
+  const selectedFontFamilyOption = academyFontFamilyOptions.find((option) => option.value === settings.fontFamily) ??
+    academyFontFamilyOptions[0];
   const defaultAcademyLogoSrc = '/brand/SFU_block_colour_rgb.png';
   const isAcademyLogoHidden = settings.academyLogoSrc === 'none';
   const academyLogoPreviewSrc = isAcademyLogoHidden
@@ -3333,6 +3452,82 @@ function AcademySettingsView({
                   ))}
                 </div>
               </div>
+              <div className="grid gap-3 rounded-lg border bg-card p-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="inline-flex items-center gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                      <Clock3 className="size-3.5" />
+                      {dictionary.academyThemeTimerEnabled}
+                    </div>
+                    <div className="mt-1 text-xs font-bold text-muted-foreground">
+                      {dictionary.academyThemeTimerHint}
+                    </div>
+                  </div>
+                  <Button
+                    className={cn(
+                      'h-9 rounded-lg px-3 text-xs font-black',
+                      settings.themeTimerEnabled
+                        ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                        : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
+                    )}
+                    onClick={() => updateSettings({ themeTimerEnabled: !settings.themeTimerEnabled })}
+                    type="button"
+                    variant="outline"
+                  >
+                    {settings.themeTimerEnabled ? dictionary.settingEnabled : dictionary.settingDisabled}
+                  </Button>
+                </div>
+                {settings.themeTimerEnabled ? (
+                  <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_120px_120px]">
+                    <div className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                      <span>{dictionary.academyThemeTimerMode}</span>
+                      <div className="flex flex-wrap gap-2">
+                        {(['light', 'dark'] as const).map((mode) => (
+                          <Button
+                            className={cn(
+                              'h-9 rounded-lg px-3 text-xs font-black',
+                              settings.themeTimerMode === mode
+                                ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                                : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
+                            )}
+                            key={mode}
+                            onClick={() => updateSettings({ themeTimerMode: mode })}
+                            type="button"
+                            variant="outline"
+                          >
+                            {mode === 'dark' ? (
+                              <Moon className="mr-1.5 size-3.5" />
+                            ) : (
+                              <Sun className="mr-1.5 size-3.5" />
+                            )}
+                            {mode === 'dark'
+                              ? dictionary.academyThemeDark
+                              : dictionary.academyThemeLight}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                    <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                      <span>{dictionary.academyThemeTimerStart}</span>
+                      <input
+                        className="h-9 rounded-md border bg-background px-3 text-sm font-bold text-foreground"
+                        onChange={(event) => updateSettings({ themeTimerStart: event.target.value })}
+                        type="time"
+                        value={settings.themeTimerStart}
+                      />
+                    </label>
+                    <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                      <span>{dictionary.academyThemeTimerEnd}</span>
+                      <input
+                        className="h-9 rounded-md border bg-background px-3 text-sm font-bold text-foreground"
+                        onChange={(event) => updateSettings({ themeTimerEnd: event.target.value })}
+                        type="time"
+                        value={settings.themeTimerEnd}
+                      />
+                    </label>
+                  </div>
+                ) : null}
+              </div>
               <div className="grid gap-2 text-xs font-black uppercase text-muted-foreground">
                 <span>{dictionary.academyThemeAccentColor}</span>
                 <div className="grid grid-cols-6 gap-2 sm:flex sm:flex-wrap">
@@ -3463,12 +3658,19 @@ function AcademySettingsView({
                   onValueChange={(value) => updateSettings({ fontFamily: value as AcademyFontFamily })}
                   value={settings.fontFamily}
                 >
-                  <SelectTrigger className="h-9 rounded-md bg-background">
+                  <SelectTrigger
+                    className="h-9 rounded-md bg-background"
+                    style={{ fontFamily: selectedFontFamilyOption.cssValue }}
+                  >
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     {academyFontFamilyOptions.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
+                      <SelectItem
+                        key={option.value}
+                        style={{ fontFamily: option.cssValue }}
+                        value={option.value}
+                      >
                         {option.label}
                       </SelectItem>
                     ))}
@@ -3880,6 +4082,33 @@ function AcademySettingsView({
                 {dictionary.calendarTodoStyleHint}
               </div>
             </div>
+            <div className="grid gap-2 rounded-lg border bg-card p-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-xs font-black uppercase text-muted-foreground">
+                    {dictionary.calendarPastTermItems}
+                  </div>
+                  <div className="mt-1 text-xs font-bold text-muted-foreground">
+                    {dictionary.calendarPastTermItemsHint}
+                  </div>
+                </div>
+                <Button
+                  className={cn(
+                    'h-9 rounded-lg px-3 text-xs font-black',
+                    settings.showPastTermCalendarItems
+                      ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                      : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
+                  )}
+                  onClick={() => updateSettings({
+                    showPastTermCalendarItems: !settings.showPastTermCalendarItems,
+                  })}
+                  type="button"
+                  variant="outline"
+                >
+                  {settings.showPastTermCalendarItems ? dictionary.settingEnabled : dictionary.settingDisabled}
+                </Button>
+              </div>
+            </div>
             <div className="flex flex-wrap gap-2">
               {(['linear', 'circular'] as const).map((display) => (
                 <Button
@@ -4221,6 +4450,7 @@ function App() {
   const [isDayTodoDialogOpen, setIsDayTodoDialogOpen] = useState(false);
   const [academyCalendarSettings, setAcademyCalendarSettings] = useState(getStoredAcademyCalendarSettings);
   const [savedAcademyCalendarSettings, setSavedAcademyCalendarSettings] = useState(getStoredAcademyCalendarSettings);
+  const [academyThemeClock, setAcademyThemeClock] = useState(() => Date.now());
   const [adminConsoleSettings, setAdminConsoleSettings] = useState(getStoredAdminConsoleSettings);
   const [academyResponsiveState, setAcademyResponsiveState] = useState(() => getAcademyResponsiveState());
   const [hiddenCalendarCourseIds, setHiddenCalendarCourseIds] = useState(getStoredHiddenCalendarCourseIds);
@@ -4327,8 +4557,13 @@ function App() {
     currentView === 'board' ||
     currentView === 'timeline'
   );
+  const selectedAcademySemester = normalizeSemesterName(academyCalendarSettings.selectedSemester);
+  const shouldFetchLiveCanvasCalendar = selectedAcademySemester !== defaultCanvasTermSemester;
   const shouldLoadCanvasCalendar =
-    authStatus === 'authenticated' && activeMode.id === 'academy' && isCalendarDataView;
+    authStatus === 'authenticated' &&
+    activeMode.id === 'academy' &&
+    isCalendarDataView &&
+    shouldFetchLiveCanvasCalendar;
   const canvasCalendarPage = canvasCalendarPages[canvasCalendarMonthKey];
   const canvasCalendarItems = canvasCalendarPage?.items ?? [];
   const canvasCalendarLoadStatus: CanvasCalendarLoadStatus =
@@ -4336,10 +4571,12 @@ function App() {
   const canvasCalendarEmptyMessage = activeMode.id === 'academy' && canvasCalendarLoadStatus === 'failed'
     ? dictionary.canvasCalendarUnavailable
     : undefined;
-  const selectedAcademySemester = normalizeSemesterName(academyCalendarSettings.selectedSemester);
   const allCalendarSourceItems = activeMode.id === 'academy'
     ? getCalendarSourceItems(canvasCalendarItems, academyPreferenceVersion)
-        .filter((item) => semesterMatches(item.semester, selectedAcademySemester))
+        .filter((item) => (
+          academyCalendarSettings.showPastTermCalendarItems ||
+          semesterMatches(item.semester, selectedAcademySemester)
+        ))
         .filter((item) => !isCourseReferenceHidden(item))
     : [];
   const calendarCourseFilterOptions = activeMode.id === 'academy'
@@ -4491,6 +4728,10 @@ function App() {
     academyCalendarSettings,
     savedAcademyCalendarSettings,
   );
+  const academyEffectiveTheme = getAcademyEffectiveTheme(
+    academyCalendarSettings,
+    new Date(academyThemeClock),
+  );
 
   useEffect(() => {
     academyCalendarSettingsRef.current = academyCalendarSettings;
@@ -4532,29 +4773,43 @@ function App() {
   };
 
   const applyRemoteAcademyPreferences = (preferences: AcademyPreferences) => {
-    const previousSettings = savedAcademyCalendarSettingsRef.current;
+    const previousSavedSettings = savedAcademyCalendarSettingsRef.current;
+    const currentSettings = academyCalendarSettingsRef.current;
+    const hasUnsavedSettings = hasUnsavedAcademySettingsRef.current;
+    const hasRemoteCalendarSettings = hasMeaningfulSettingsRecord(preferences.calendarSettings);
+    const shouldIgnoreEmptyRemoteSettings =
+      (!preferences.exists || !hasRemoteCalendarSettings) &&
+      (
+        hasLoadedRemoteAcademySettingsRef.current ||
+        !areAcademyCalendarSettingsEqual(currentSettings, defaultAcademyCalendarSettings) ||
+        !areAcademyCalendarSettingsEqual(previousSavedSettings, defaultAcademyCalendarSettings)
+      );
     const shouldKeepCurrentSettings =
-      hasUnsavedAcademySettingsRef.current ||
+      hasUnsavedSettings ||
       isAcademyPreferencesSavingRef.current ||
-      Date.now() < academySettingsProtectedUntilRef.current;
+      Date.now() < academySettingsProtectedUntilRef.current ||
+      shouldIgnoreEmptyRemoteSettings;
 
     applyAcademyPreferencesResponse(preferences);
 
-    const nextSettings = shouldKeepCurrentSettings
-      ? previousSettings
+    const nextVisibleSettings = shouldKeepCurrentSettings
+      ? currentSettings
       : academyPreferenceCache.calendarSettings;
+    const nextSavedSettings = hasUnsavedSettings
+      ? previousSavedSettings
+      : nextVisibleSettings;
 
-    if (!areAcademyCalendarSettingsEqual(academyPreferenceCache.calendarSettings, nextSettings)) {
+    if (!areAcademyCalendarSettingsEqual(academyPreferenceCache.calendarSettings, nextVisibleSettings)) {
       academyPreferenceCache = {
         ...academyPreferenceCache,
-        calendarSettings: nextSettings,
+        calendarSettings: nextVisibleSettings,
       };
     }
 
-    savedAcademyCalendarSettingsRef.current = academyPreferenceCache.calendarSettings;
+    savedAcademyCalendarSettingsRef.current = nextSavedSettings;
     hasLoadedRemoteAcademySettingsRef.current = true;
 
-    return academyPreferenceCache.calendarSettings;
+    return nextSavedSettings;
   };
 
   const beginAcademyPreferencesLoad = () => {
@@ -4762,18 +5017,24 @@ function App() {
   };
 
   const persistAcademyPreferencesFromStorage = (
-    settings = savedAcademyCalendarSettings,
+    settings?: AcademyCalendarSettings,
     options: { calendarSettingsOnly?: boolean } = {},
   ) => {
+    const settingsToSave = normalizeAcademyCalendarSettings(
+      settings ?? savedAcademyCalendarSettingsRef.current,
+      academyCalendarSettingsRef.current,
+    );
     const saveSequence = academyPreferencesSaveSequenceRef.current + 1;
     academyPreferencesSaveSequenceRef.current = saveSequence;
     academyPreferencesLoadSequenceRef.current += 1;
     isAcademyPreferencesSavingRef.current = true;
+    academySettingsProtectedUntilRef.current = Date.now() + 30000;
     setAcademyPreferencesSaveStatus('saving');
     setAcademyPreferencesSaveError('');
 
+    const shouldSubmitCalendarSettings = options.calendarSettingsOnly || settings !== undefined;
     const preferencesPayload = options.calendarSettingsOnly
-      ? { calendarSettings: settings }
+      ? { calendarSettings: settingsToSave }
       : {
           manualLectures: readStoredJson<unknown[]>(manualLecturesStorageKey, []),
           canvasLecturePreferences: readStoredJson<Record<string, unknown>>(canvasLecturePreferencesStorageKey, {}),
@@ -4781,7 +5042,7 @@ function App() {
           canvasCourseworkPreferences: readStoredJson<Record<string, unknown>>(canvasCourseworkPreferencesStorageKey, {}),
           manualAssessments: readStoredJson<unknown[]>(manualAssessmentsStorageKey, []),
           canvasAssessmentPreferences: readStoredJson<Record<string, unknown>>(canvasAssessmentPreferencesStorageKey, {}),
-          calendarSettings: settings,
+          ...(shouldSubmitCalendarSettings ? { calendarSettings: settingsToSave } : {}),
         };
 
     return workspaceApi.saveAcademyPreferences(preferencesPayload)
@@ -4791,7 +5052,9 @@ function App() {
         }
 
         applyAcademyPreferencesResponse(preferences);
-        const nextSavedSettings = normalizeAcademyCalendarSettings(settings, academyPreferenceCache.calendarSettings);
+        const nextSavedSettings = shouldSubmitCalendarSettings
+          ? normalizeAcademyCalendarSettings(settingsToSave, academyPreferenceCache.calendarSettings)
+          : academyPreferenceCache.calendarSettings;
 
         academyPreferenceCache = {
           ...academyPreferenceCache,
@@ -4803,15 +5066,15 @@ function App() {
         academySettingsProtectedUntilRef.current = Date.now() + 15000;
         if (
           !hasUnsavedAcademySettingsRef.current ||
-          areAcademyCalendarSettingsEqual(settings, academyCalendarSettingsRef.current)
+          areAcademyCalendarSettingsEqual(settingsToSave, academyCalendarSettingsRef.current)
         ) {
           setAcademyCalendarSettings(nextSavedSettings);
+          academyCalendarSettingsRef.current = nextSavedSettings;
         }
         storeAcademyCalendarSettings(nextSavedSettings);
         setHiddenCalendarCourseIds(nextSavedSettings.hiddenCourseIds ?? []);
         setAcademyPreferenceVersion((currentVersion) => currentVersion + 1);
         setAcademyPreferencesSaveStatus('saved');
-        dispatchAcademyPreferencesUpdated();
       })
       .catch((error: unknown) => {
         if (saveSequence !== academyPreferencesSaveSequenceRef.current) {
@@ -4831,14 +5094,19 @@ function App() {
   const handleAcademyCalendarSettingsChange = (settings: AcademyCalendarSettings) => {
     const nextSettings = normalizeAcademyCalendarSettings(settings);
 
+    academyCalendarSettingsRef.current = nextSettings;
     setAcademyCalendarSettings(nextSettings);
     setAcademyPreferencesSaveStatus('idle');
     setAcademyPreferencesSaveError('');
   };
 
-  const handleSaveAcademyCalendarSettings = (settings = academyCalendarSettings) => {
-    const nextSettings = normalizeAcademyCalendarSettings(settings, academyCalendarSettingsRef.current);
+  const handleSaveAcademyCalendarSettings = (settings?: AcademyCalendarSettings) => {
+    const nextSettings = normalizeAcademyCalendarSettings(
+      settings ?? academyCalendarSettingsRef.current,
+      academyCalendarSettingsRef.current,
+    );
 
+    academyCalendarSettingsRef.current = nextSettings;
     setAcademyCalendarSettings(nextSettings);
     if (activeMode.id === 'academy') {
       setLanguage(nextSettings.language);
@@ -4847,11 +5115,14 @@ function App() {
   };
 
   const handleRevertAcademyCalendarSettings = () => {
-    setAcademyCalendarSettings(savedAcademyCalendarSettings);
+    const nextSettings = savedAcademyCalendarSettingsRef.current;
+
+    academyCalendarSettingsRef.current = nextSettings;
+    setAcademyCalendarSettings(nextSettings);
     if (activeMode.id === 'academy') {
-      setLanguage(savedAcademyCalendarSettings.language);
+      setLanguage(nextSettings.language);
     }
-    setHiddenCalendarCourseIds(savedAcademyCalendarSettings.hiddenCourseIds ?? []);
+    setHiddenCalendarCourseIds(nextSettings.hiddenCourseIds ?? []);
     setAcademyPreferencesSaveStatus('idle');
     setAcademyPreferencesSaveError('');
   };
@@ -5220,9 +5491,30 @@ function App() {
   };
 
   useEffect(() => {
+    if (activeMode.id !== 'academy' || !academyCalendarSettings.themeTimerEnabled) {
+      return undefined;
+    }
+
+    setAcademyThemeClock(Date.now());
+    const intervalId = window.setInterval(() => {
+      setAcademyThemeClock(Date.now());
+    }, 60_000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [
+    academyCalendarSettings.themeTimerEnabled,
+    academyCalendarSettings.themeTimerEnd,
+    academyCalendarSettings.themeTimerMode,
+    academyCalendarSettings.themeTimerStart,
+    activeMode.id,
+  ]);
+
+  useEffect(() => {
     const isAcademyMode = activeMode.id === 'academy';
 
-    applyTheme(isAcademyMode ? academyCalendarSettings.themeMode : theme, {
+    applyTheme(isAcademyMode ? academyEffectiveTheme : theme, {
       persist: !isAcademyMode,
     });
 
@@ -5231,7 +5523,7 @@ function App() {
     } else {
       clearAcademyAccentColor();
     }
-  }, [academyCalendarSettings.accentColor, academyCalendarSettings.themeMode, activeMode.id, theme]);
+  }, [academyCalendarSettings.accentColor, academyEffectiveTheme, activeMode.id, theme]);
 
   useEffect(() => {
     if (activeMode.id === 'academy' && language !== academyCalendarSettings.language) {
@@ -5295,9 +5587,55 @@ function App() {
   useEffect(() => {
     const handleAcademyPreferencesUpdated = (event: Event) => {
       const isSavingAcademyPreferences = isAcademyPreferencesSavingRef.current;
+      const isSettingsProtected = Date.now() < academySettingsProtectedUntilRef.current;
 
       if (event instanceof CustomEvent && event.detail) {
         if (isRecord(event.detail) && 'calendarSettings' in event.detail) {
+          if (isRecord(event.detail.calendarSettings)) {
+            const previousSemester = normalizeSemesterName(academyCalendarSettingsRef.current.selectedSemester);
+            const calendarSettingKeys = Object.keys(event.detail.calendarSettings);
+            const isSelectedSemesterPatch =
+              calendarSettingKeys.length <= 2 &&
+              calendarSettingKeys.includes('selectedSemester');
+            const eventSettings = normalizeAcademyCalendarSettings(
+              event.detail.calendarSettings,
+              academyCalendarSettingsRef.current,
+            );
+            const shouldKeepCurrentSettings =
+              hasUnsavedAcademySettingsRef.current ||
+              isSavingAcademyPreferences ||
+              (isSettingsProtected && !isSelectedSemesterPatch);
+            const nextSettings = isSelectedSemesterPatch
+              ? normalizeAcademyCalendarSettings({
+                  ...academyCalendarSettingsRef.current,
+                  selectedSemester: eventSettings.selectedSemester,
+                }, academyCalendarSettingsRef.current)
+              : shouldKeepCurrentSettings
+                ? academyCalendarSettingsRef.current
+                : eventSettings;
+            const nextSemester = normalizeSemesterName(nextSettings.selectedSemester);
+
+            academyPreferenceCache = {
+              ...academyPreferenceCache,
+              calendarSettings: nextSettings,
+            };
+            if (!shouldKeepCurrentSettings || previousSemester !== nextSemester) {
+              academySettingsProtectedUntilRef.current = Date.now() + 15000;
+            }
+            academyCalendarSettingsRef.current = nextSettings;
+            setAcademyCalendarSettings(nextSettings);
+            setHiddenCalendarCourseIds(nextSettings.hiddenCourseIds ?? []);
+
+            if (!hasUnsavedAcademySettingsRef.current) {
+              savedAcademyCalendarSettingsRef.current = nextSettings;
+              setSavedAcademyCalendarSettings(nextSettings);
+            }
+
+            if (previousSemester !== nextSemester) {
+              setCanvasCalendarPages({});
+            }
+          }
+
           const detailWithoutSettings = { ...event.detail };
 
           delete detailWithoutSettings.calendarSettings;
@@ -5344,6 +5682,7 @@ function App() {
         const nextSavedSettings = applyRemoteAcademyPreferences(preferences);
         setSavedAcademyCalendarSettings(nextSavedSettings);
         if (!hasUnsavedAcademySettingsRef.current) {
+          academyCalendarSettingsRef.current = nextSavedSettings;
           setAcademyCalendarSettings(nextSavedSettings);
           setHiddenCalendarCourseIds(nextSavedSettings.hiddenCourseIds ?? []);
         }
@@ -5390,6 +5729,7 @@ function App() {
           const nextSavedSettings = applyRemoteAcademyPreferences(preferences);
           setSavedAcademyCalendarSettings(nextSavedSettings);
           if (!hasUnsavedAcademySettingsRef.current) {
+            academyCalendarSettingsRef.current = nextSavedSettings;
             setAcademyCalendarSettings(nextSavedSettings);
             setHiddenCalendarCourseIds(nextSavedSettings.hiddenCourseIds ?? []);
           }
@@ -5637,7 +5977,7 @@ function App() {
       isCancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [calendarMonth, shouldLoadCanvasCalendar]);
+  }, [calendarMonth, selectedAcademySemester, shouldLoadCanvasCalendar]);
 
   useEffect(() => {
     const refreshCurrentCalendarMonth = () => {
@@ -5751,6 +6091,7 @@ function App() {
           const nextSavedSettings = applyRemoteAcademyPreferences(preferences);
           setSavedAcademyCalendarSettings(nextSavedSettings);
           if (!hasUnsavedAcademySettingsRef.current) {
+            academyCalendarSettingsRef.current = nextSavedSettings;
             setAcademyCalendarSettings(nextSavedSettings);
             setHiddenCalendarCourseIds(nextSavedSettings.hiddenCourseIds ?? []);
           }
@@ -5797,7 +6138,7 @@ function App() {
     return () => {
       window.removeEventListener(academyRefreshRequestedEvent, handleAcademyRefreshRequested);
     };
-  }, [activeMode.id, authStatus, calendarMonth, shouldLoadCanvasCalendar]);
+  }, [activeMode.id, authStatus, calendarMonth, selectedAcademySemester, shouldLoadCanvasCalendar]);
 
   const applyAuthSession = (session: AuthSession) => {
     const nextSessionKey = getAuthSessionIdentityKey(session);
@@ -6441,7 +6782,7 @@ function App() {
 
   if (authStatus !== 'authenticated') {
     const loginTheme = activeMode.id === 'academy'
-      ? academyCalendarSettings.themeMode
+      ? academyEffectiveTheme
       : theme;
 
     return (
@@ -6533,7 +6874,7 @@ function App() {
                 : undefined
           }
           onThemeChange={handleThemeChange}
-          theme={activeMode.id === 'academy' ? academyCalendarSettings.themeMode : theme}
+          theme={activeMode.id === 'academy' ? academyEffectiveTheme : theme}
         />
       )}
 
@@ -6668,15 +7009,22 @@ function App() {
           ) : isChatView ? (
             <GoogleCommunicationView key="chat" type="chat" />
           ) : isCanvasInboxView ? (
-            <CanvasInboxView onOpenIntegration={openAcademyCourseResource} />
+            <CanvasInboxView
+              onOpenIntegration={openAcademyCourseResource}
+              selectedSemester={selectedAcademySemester}
+            />
           ) : isAcademyPeopleView ? (
-            <CanvasPeopleView onOpenCoursePeople={openAcademyCourseResource} />
+            <CanvasPeopleView
+              onOpenCoursePeople={openAcademyCourseResource}
+              selectedSemester={selectedAcademySemester}
+            />
           ) : isAcademyGradesView ? (
-            <AcademyGradesView />
+            <AcademyGradesView selectedSemester={selectedAcademySemester} />
           ) : isCoursesView ? (
             <CourseOverviewView
               initialResourceUrl={selectedCourseOverviewResourceUrl}
               initialSelectedCourseRowId={selectedCourseOverviewRowId}
+              selectedSemester={selectedAcademySemester}
             />
           ) : isAcademySettingsView ? (
             <AcademySettingsView
@@ -6718,6 +7066,7 @@ function App() {
                   hideSummaryCards={effectiveCalendarExpanded}
                   onOpenAddItem={openAcademyCourseworkDialog}
                   onOpenCourse={openAcademyCourseResource}
+                  selectedSemester={selectedAcademySemester}
                   onPlanMeeting={() => {
                     window.open(
                       'https://calendar.google.com/calendar/u/0/r/eventedit',

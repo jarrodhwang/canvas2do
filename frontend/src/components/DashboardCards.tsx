@@ -94,7 +94,7 @@ const defaultCourseworkHideSettings: CourseworkHideSettings = {
   completedFrom: 'dueAt',
   uncompletedAfterHours: 72,
 };
-const noTermSemester = 'No Term';
+const noTermSemester = 'Default Term';
 type RenderableDashboardRow = DashboardRow & {
   assessmentKey?: string;
   assessmentSource?: AssessmentRowSource;
@@ -145,6 +145,7 @@ type CanvasLecturePreferences = Record<string, {
   credits?: string;
   currentGrade?: string;
   currentScore?: number;
+  deleted?: boolean;
   friendlyCourseCode?: string;
   friendlyName?: string;
   hidden?: boolean;
@@ -358,8 +359,12 @@ function codesMatch(firstCode?: string, secondCode?: string) {
 function normalizeSemesterName(value?: string, fallback = defaultAcademySemester) {
   const trimmedValue = value?.trim();
 
-  if (!trimmedValue || /^default term$/i.test(trimmedValue)) {
+  if (!trimmedValue) {
     return fallback;
+  }
+
+  if (/^default term$/i.test(trimmedValue)) {
+    return noTermSemester;
   }
 
   return trimmedValue;
@@ -399,7 +404,7 @@ function getCanvasCourseSemester(
 
   const reportedSemester = normalizeCanvasSemesterName(course.termName);
 
-  return reportedSemester === noTermSemester ? fallbackSemester : reportedSemester;
+  return reportedSemester;
 }
 
 function getCanvasItemSemester(
@@ -560,7 +565,7 @@ function createCanvasLectureRows(
   fallbackSemester = defaultAcademySemester,
 ): RenderableDashboardRow[] {
   return courses
-    .filter((course) => !preferences[course.id]?.hidden)
+    .filter((course) => !preferences[course.id]?.hidden && !preferences[course.id]?.deleted)
     .sort((firstCourse, secondCourse) => (
       Number(Boolean(preferences[secondCourse.id]?.starred)) -
       Number(Boolean(preferences[firstCourse.id]?.starred))
@@ -601,6 +606,7 @@ function createStoredCanvasLectureRows(
     .filter(([courseId, preference]) => (
       !liveCourseIds.has(courseId) &&
       !preference.hidden &&
+      !preference.deleted &&
       Boolean(
         preference.friendlyCourseCode?.trim() ||
         preference.originalCourseCode?.trim() ||
@@ -1242,7 +1248,7 @@ function getCourseworkDueAtForTargetDay(target: 'today' | 'tomorrow') {
 
 function getVisibleManualLectures(lectures: ManualLecture[]) {
   return lectures
-    .filter((lecture) => !lecture.hidden)
+    .filter((lecture) => !lecture.hidden && !lecture.deleted)
     .sort((firstLecture, secondLecture) => Number(Boolean(secondLecture.starred)) - Number(Boolean(firstLecture.starred)));
 }
 
@@ -1331,6 +1337,7 @@ function createArchivedManualLectureFromCanvasPreference(
     },
     links,
     chipColor: preference.chipColor ?? defaultCourseChipColor,
+    deleted: preference.deleted,
     friendlyCourseCode: preference.friendlyCourseCode,
     friendlyName: preference.friendlyName,
     hidden: preference.hidden,
@@ -1400,9 +1407,19 @@ function storeAcademyCalendarSettingsPatch(patch: Record<string, unknown>) {
 }
 
 function storeSelectedAcademySemester(semester: string) {
+  const selectedSemester = normalizeSemesterName(semester);
+
   storeAcademyCalendarSettingsPatch({
-    selectedSemester: normalizeSemesterName(semester),
+    selectedSemester,
   });
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(academyPreferencesUpdatedEvent, {
+      detail: {
+        calendarSettings: { selectedSemester },
+      },
+    }));
+  }
 }
 
 function storeCanvasTermSelection(semester: string) {
@@ -1420,6 +1437,7 @@ function cacheAcademyPreferences(
   assessments: ManualAssessmentItem[],
   assessmentPreferences: CanvasAssessmentPreferences,
   calendarSettings: Record<string, unknown> = getStoredAcademyCalendarSettings(),
+  options: { emitCalendarSettings?: boolean } = {},
 ) {
   if (typeof window === 'undefined') {
     return;
@@ -1427,16 +1445,20 @@ function cacheAcademyPreferences(
 
   cacheAcademyCalendarSettings(calendarSettings);
   clearLegacyAcademyPreferenceStorage();
-  window.dispatchEvent(new CustomEvent(academyPreferencesUpdatedEvent, {
-    detail: {
-      canvasAssessmentPreferences: assessmentPreferences,
-      canvasCourseworkPreferences: courseworkPreferences,
-      canvasLecturePreferences: preferences,
+  const detail = {
+    canvasAssessmentPreferences: assessmentPreferences,
+    canvasCourseworkPreferences: courseworkPreferences,
+    canvasLecturePreferences: preferences,
+    manualAssessments: assessments,
+    manualCoursework: coursework,
+    manualLectures: lectures,
+    ...(options.emitCalendarSettings === false ? {} : {
       calendarSettings: getStoredAcademyCalendarSettings(),
-      manualAssessments: assessments,
-      manualCoursework: coursework,
-      manualLectures: lectures,
-    },
+    }),
+  };
+
+  window.dispatchEvent(new CustomEvent(academyPreferencesUpdatedEvent, {
+    detail,
   }));
 }
 
@@ -1493,6 +1515,7 @@ function cacheAcademyPreferencesResponse(preferences: AcademyPreferences) {
     values.manualAssessments,
     values.canvasAssessmentPreferences,
     getStoredAcademyCalendarSettings(),
+    { emitCalendarSettings: false },
   );
 }
 
@@ -1505,6 +1528,7 @@ function persistAcademyPreferences(
   courseworkPreferences: CanvasCourseworkPreferences,
   assessments: ManualAssessmentItem[],
   assessmentPreferences: CanvasAssessmentPreferences,
+  options: { calendarSettings?: Record<string, unknown> } = {},
 ) {
   const saveSequence = ++academyPreferencesSaveSequence;
 
@@ -1516,16 +1540,17 @@ function persistAcademyPreferences(
     assessments,
     assessmentPreferences,
     getStoredAcademyCalendarSettings(),
+    { emitCalendarSettings: Boolean(options.calendarSettings) },
   );
 
-  void workspaceApi.saveAcademyPreferences({
+  return workspaceApi.saveAcademyPreferences({
     manualLectures: lectures,
     canvasLecturePreferences: preferences,
     manualCoursework: coursework,
     canvasCourseworkPreferences: courseworkPreferences,
     manualAssessments: assessments,
     canvasAssessmentPreferences: assessmentPreferences,
-    calendarSettings: getStoredAcademyCalendarSettings(),
+    ...(options.calendarSettings ? { calendarSettings: options.calendarSettings } : {}),
   })
     .then((savedPreferences) => {
       if (saveSequence === academyPreferencesSaveSequence) {
@@ -1589,7 +1614,7 @@ function createCanvasEditableLecture(
     friendlyName: preference?.friendlyName,
     hidden: preference?.hidden,
     starred: preference?.starred,
-    semester: normalizeSemesterName(preference?.semester ?? preference?.termName ?? course.termName),
+    semester: normalizeSemesterName(preference?.semester ?? preference?.termName ?? normalizeCanvasSemesterName(course.termName)),
   };
 }
 
@@ -1622,7 +1647,7 @@ function getCourseworkCourseOptions(
     const semester = getCanvasCourseSemester(course, canvasPreferences, fallbackSemester);
     const preferences = canvasPreferences[course.id] ?? {};
 
-    if (preferences.hidden || !semesterMatches(semester, selectedSemester, fallbackSemester)) {
+    if (preferences.hidden || preferences.deleted || !semesterMatches(semester, selectedSemester, fallbackSemester)) {
       return;
     }
 
@@ -1635,7 +1660,7 @@ function getCourseworkCourseOptions(
   manualLectures.forEach((lecture) => {
     const semester = normalizeSemesterName((lecture as ManualLecture & { semester?: string }).semester, fallbackSemester);
 
-    if (lecture.hidden || !semesterMatches(semester, selectedSemester, fallbackSemester)) {
+    if (lecture.hidden || lecture.deleted || !semesterMatches(semester, selectedSemester, fallbackSemester)) {
       return;
     }
 
@@ -1712,6 +1737,7 @@ interface DashboardRowsProps {
   onOpenLecture: (row: RenderableDashboardRow) => void;
   onOpenLectureDetails: (row: RenderableDashboardRow) => void;
   onOpenLectureFriendlyName: (row: RenderableDashboardRow) => void;
+  onRequestDeleteLecture: (row: RenderableDashboardRow) => void;
   onRenameCoursework: (row: RenderableDashboardRow, title: string) => void;
   onRemoveAssessment: (row: RenderableDashboardRow) => void;
   onRemoveCoursework: (row: RenderableDashboardRow) => void;
@@ -1739,6 +1765,7 @@ function DashboardRows({
   onOpenLecture,
   onOpenLectureDetails,
   onOpenLectureFriendlyName,
+  onRequestDeleteLecture,
   onRenameCoursework,
   onRemoveAssessment,
   onRemoveCoursework,
@@ -2078,6 +2105,15 @@ function DashboardRows({
             <EyeOff className="size-4" />
             <span>{dictionary.manualLectureHide}</span>
           </DropdownMenuItem>
+          {normalizeSemesterName(row.semester) === noTermSemester ? (
+            <DropdownMenuItem
+              className="text-destructive focus:text-destructive"
+              onSelect={() => runLectureAction(() => onRequestDeleteLecture(row))}
+            >
+              <Trash2 className="size-4" />
+              <span>{dictionary.manualLectureDelete}</span>
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuSeparator />
           <DropdownMenuSub>
             <DropdownMenuSubTrigger data-dashboard-row-action>
@@ -2288,6 +2324,15 @@ function DashboardRows({
             <EyeOff className="size-4" />
             <span>{dictionary.manualLectureHide}</span>
           </ContextMenuItem>
+          {normalizeSemesterName(row.semester) === noTermSemester ? (
+            <ContextMenuItem
+              className="text-destructive focus:text-destructive"
+              onSelect={() => onRequestDeleteLecture(row)}
+            >
+              <Trash2 className="size-4" />
+              <span>{dictionary.manualLectureDelete}</span>
+            </ContextMenuItem>
+          ) : null}
           <ContextMenuSeparator />
           <ContextMenuLabel>{dictionary.manualLectureChipColor}</ContextMenuLabel>
           {lectureChipColors.map((color) => (
@@ -3372,6 +3417,7 @@ interface DashboardCardsProps {
   onPlanMeeting?: () => void;
   onStartMeetingNow?: () => void;
   onWriteInPersonMeetingReport?: () => void;
+  selectedSemester?: string;
 }
 
 export function DashboardCards({
@@ -3386,6 +3432,7 @@ export function DashboardCards({
   onPlanMeeting,
   onStartMeetingNow,
   onWriteInPersonMeetingReport,
+  selectedSemester,
 }: DashboardCardsProps) {
   const { activeMode } = useWorkspaceMode();
   const { dictionary, language, translateDashboardCard, translateModeName } = useLanguage();
@@ -3461,8 +3508,11 @@ export function DashboardCards({
     ? normalizeCanvasSemesterName(canvasTermName)
     : getCommonReportedCanvasSemester(canvasCourses);
   const fallbackCourseSemester = reportedCanvasSemester ?? defaultAcademySemester;
+  const selectedSemesterFromProps = selectedSemester
+    ? normalizeSemesterName(selectedSemester, fallbackCourseSemester)
+    : undefined;
   const activeCourseSemester = normalizeSemesterName(
-    selectedCourseSemester ?? reportedCanvasSemester,
+    selectedSemesterFromProps ?? selectedCourseSemester ?? reportedCanvasSemester,
     fallbackCourseSemester,
   );
   const selectedCanvasAssessmentEditable = selectedCanvasAssessmentId
@@ -3606,6 +3656,7 @@ export function DashboardCards({
       addSemester(preference.semester);
     });
     addSemester(selectedCourseSemester);
+    addSemester(selectedSemesterFromProps);
     if (reportedCanvasSemester) {
       addSemester(reportedCanvasSemester);
     }
@@ -3623,6 +3674,7 @@ export function DashboardCards({
     manualLectures,
     reportedCanvasSemester,
     selectedCourseSemester,
+    selectedSemesterFromProps,
   ]);
 
   useEffect(() => {
@@ -3703,10 +3755,22 @@ export function DashboardCards({
 
     if (patch.calendarSettings && typeof patch.calendarSettings === 'object' && !Array.isArray(patch.calendarSettings)) {
       cacheAcademyCalendarSettings(patch.calendarSettings, { protect: true });
+      const selectedSemesterFromPatch = getSelectedSemesterFromSettings(patch.calendarSettings);
+
+      if (selectedSemesterFromPatch) {
+        setSelectedCourseSemester(selectedSemesterFromPatch);
+      }
     }
   };
 
   useEffect(() => {
+    if (selectedSemesterFromProps) {
+      if (selectedCourseSemester !== selectedSemesterFromProps) {
+        setSelectedCourseSemester(selectedSemesterFromProps);
+      }
+      return;
+    }
+
     if (courseSemesterOptions.length === 0) {
       return;
     }
@@ -3722,7 +3786,7 @@ export function DashboardCards({
       setSelectedCourseSemester(nextSemester);
       storeSelectedAcademySemester(nextSemester);
     }
-  }, [courseSemesterOptions, fallbackCourseSemester, selectedCourseSemester]);
+  }, [courseSemesterOptions, fallbackCourseSemester, selectedCourseSemester, selectedSemesterFromProps]);
 
   const dashboardCards: RenderableDashboardCard[] = activeMode.dashboardCards.map((card) => {
     const translatedCard = translateDashboardCard(activeMode.id, card);
@@ -4232,7 +4296,6 @@ export function DashboardCards({
       canvasLecturePreferencesRef.current = nextPreferences;
       persistAcademyPreferencePatch({
         canvasLecturePreferences: nextPreferences,
-        calendarSettings: getStoredAcademyCalendarSettings(),
       });
 
       return nextPreferences;
@@ -4285,7 +4348,6 @@ export function DashboardCards({
       if (shouldPersist) {
         persistAcademyPreferencePatch({
           canvasCourseworkPreferences: nextPreferences,
-          calendarSettings: getStoredAcademyCalendarSettings(),
         });
       }
 
@@ -4339,7 +4401,6 @@ export function DashboardCards({
       if (shouldPersist) {
         persistAcademyPreferencePatch({
           canvasAssessmentPreferences: nextPreferences,
-          calendarSettings: getStoredAcademyCalendarSettings(),
         });
       }
 
@@ -4369,16 +4430,17 @@ export function DashboardCards({
           preference.semesterSource === 'fallback' ||
           storedSemester === noTermSemester
         );
-        const shouldUseFallbackSemester = !reportedSemesterIsUsable && (
+        const shouldUseDefaultTermSemester = !reportedSemesterIsUsable && (
           !preference.semester ||
+          preference.semesterSource === 'canvas' ||
           preference.semesterSource === 'fallback' ||
           storedSemester === noTermSemester
         );
         const semester = normalizeSemesterName(
           shouldUseReportedSemester
             ? reportedSemester
-            : shouldUseFallbackSemester
-              ? fallbackCourseSemester
+            : shouldUseDefaultTermSemester
+              ? reportedSemester
             : preference.semester ?? preference.termName ?? reportedSemester,
           fallbackCourseSemester,
         );
@@ -4391,7 +4453,7 @@ export function DashboardCards({
           originalCourseCode,
           semesterSource: shouldUseReportedSemester
             ? 'canvas'
-            : shouldUseFallbackSemester
+            : shouldUseDefaultTermSemester
               ? 'fallback'
               : preference.semesterSource ?? (reportedSemesterIsUsable ? 'canvas' : 'fallback'),
           semester,
@@ -4415,8 +4477,19 @@ export function DashboardCards({
     }
 
     const lastCanvasTermName = getLastCanvasTermNameFromSettings(getStoredAcademyCalendarSettings());
+    const currentSelectedSemester = normalizeSemesterName(
+      selectedSemesterFromProps ?? selectedCourseSemester,
+      fallbackCourseSemester,
+    );
 
     if (lastCanvasTermName === reportedCanvasSemester) {
+      return;
+    }
+
+    if (
+      selectedSemesterFromProps &&
+      currentSelectedSemester !== normalizeSemesterName(lastCanvasTermName, fallbackCourseSemester)
+    ) {
       return;
     }
 
@@ -4429,8 +4502,21 @@ export function DashboardCards({
       canvasCourseworkPreferencesRef.current,
       manualAssessmentsRef.current,
       canvasAssessmentPreferencesRef.current,
+      {
+        calendarSettings: {
+          lastCanvasTermName: reportedCanvasSemester,
+          selectedSemester: reportedCanvasSemester,
+        },
+      },
     );
-  }, [activeMode.id, canvasCourseLoadStatus, reportedCanvasSemester]);
+  }, [
+    activeMode.id,
+    canvasCourseLoadStatus,
+    fallbackCourseSemester,
+    reportedCanvasSemester,
+    selectedCourseSemester,
+    selectedSemesterFromProps,
+  ]);
 
   useEffect(() => {
     if (
@@ -4720,12 +4806,15 @@ export function DashboardCards({
   };
 
   const handleDeleteManualLecture = (lecture: ManualLecture, shouldDeleteCoursework: boolean) => {
-    const archivedCanvasCourseId = findArchivedCanvasCourseId(lecture, canvasLecturePreferencesRef.current);
-    const nextManualLectures = manualLecturesRef.current.map((storedLecture) => (
-      storedLecture.id === lecture.id
-        ? { ...storedLecture, hidden: true }
-        : storedLecture
-    ));
+    const liveCanvasCourseId = lecture.id.startsWith('canvas:') ? lecture.id.slice('canvas:'.length) : undefined;
+    const archivedCanvasCourseId = liveCanvasCourseId ?? findArchivedCanvasCourseId(lecture, canvasLecturePreferencesRef.current);
+    const nextManualLectures = liveCanvasCourseId
+      ? manualLecturesRef.current
+      : manualLecturesRef.current.map((storedLecture) => (
+          storedLecture.id === lecture.id
+            ? { ...storedLecture, deleted: true, hidden: true }
+            : storedLecture
+        ));
     const nextCanvasLecturePreferences = { ...canvasLecturePreferencesRef.current };
     let nextManualCoursework = manualCourseworkRef.current;
     let nextCanvasCourseworkPreferences = canvasCourseworkPreferencesRef.current;
@@ -4735,7 +4824,8 @@ export function DashboardCards({
     if (archivedCanvasCourseId) {
       nextCanvasLecturePreferences[archivedCanvasCourseId] = {
         ...(nextCanvasLecturePreferences[archivedCanvasCourseId] ?? {}),
-        archivedAsManualLectureId: lecture.id,
+        archivedAsManualLectureId: liveCanvasCourseId ? undefined : lecture.id,
+        deleted: true,
         hidden: true,
       };
     }
@@ -4790,6 +4880,7 @@ export function DashboardCards({
       nextCanvasAssessmentPreferences,
     );
     setSelectedManualLectureId(null);
+    setSelectedCanvasCourseId(null);
     setLecturePendingDelete(null);
   };
 
@@ -5053,6 +5144,60 @@ export function DashboardCards({
 
     if (row.manualLectureId) {
       setSelectedManualLectureId(row.manualLectureId);
+    }
+  };
+
+  const createDeleteLectureFromRow = (row: RenderableDashboardRow): ManualLecture | null => {
+    if (row.manualLectureId) {
+      return manualLecturesRef.current.find((lecture) => lecture.id === row.manualLectureId) ?? null;
+    }
+
+    if (!row.canvasCourseId) {
+      return null;
+    }
+
+    const course = canvasCourses?.find((canvasCourse) => String(canvasCourse.id ?? '') === row.canvasCourseId);
+    const preference = canvasLecturePreferencesRef.current[row.canvasCourseId] ?? {};
+
+    if (course) {
+      return createCanvasEditableLecture(course, preference);
+    }
+
+    return {
+      id: `canvas:${row.canvasCourseId}`,
+      name: preference.friendlyName?.trim() || preference.courseName?.trim() || row.friendlyName || row.courseName || row.value,
+      code: preference.friendlyCourseCode?.trim() || preference.originalCourseCode?.trim() || row.friendlyCourseCode || row.originalCourseCode || row.label,
+      lectureSection: preference.lectureSection ?? '',
+      labSection: preference.labSection ?? '',
+      tutorialSection: preference.tutorialSection ?? '',
+      credits: preference.credits ?? '',
+      assessments: preference.assessments ?? [],
+      schedule: preference.schedule ?? {
+        deliveryMode: 'inPerson',
+        day: '',
+        time: '',
+        location: '',
+        entries: [],
+      },
+      links: preference.links ?? [],
+      chipColor: preference.chipColor ?? row.chipColor ?? defaultCourseChipColor,
+      friendlyCourseCode: preference.friendlyCourseCode,
+      friendlyName: preference.friendlyName,
+      hidden: preference.hidden,
+      semester: normalizeSemesterName(preference.semester ?? preference.termName ?? row.semester, activeCourseSemester),
+      starred: preference.starred,
+    };
+  };
+
+  const handleRequestDeleteLecture = (row: RenderableDashboardRow) => {
+    if (normalizeSemesterName(row.semester) !== noTermSemester) {
+      return;
+    }
+
+    const lecture = createDeleteLectureFromRow(row);
+
+    if (lecture) {
+      setLecturePendingDelete(lecture);
     }
   };
 
@@ -5808,14 +5953,19 @@ export function DashboardCards({
 
       setSelectedCourseSemester(normalizedSemester);
       storeSelectedAcademySemester(normalizedSemester);
-      persistAcademyPreferences(
+      void persistAcademyPreferences(
         manualLecturesRef.current,
         canvasLecturePreferencesRef.current,
         manualCourseworkRef.current,
         canvasCourseworkPreferencesRef.current,
         manualAssessmentsRef.current,
         canvasAssessmentPreferencesRef.current,
-      );
+        {
+          calendarSettings: { selectedSemester: normalizedSemester },
+        },
+      ).then(() => {
+        void refreshAcademyDashboardData();
+      });
     };
 
     if (activeMode.id === 'academy' && card.id === 'semester-lectures') {
@@ -5947,6 +6097,7 @@ export function DashboardCards({
                   onOpenLecture={handleOpenLecture}
                   onOpenLectureDetails={handleOpenLectureDetails}
                   onOpenLectureFriendlyName={handleOpenLectureFriendlyName}
+                  onRequestDeleteLecture={handleRequestDeleteLecture}
                   onMoveAssessmentDueDate={handleMoveAssessmentDueDate}
                   onMoveCourseworkDueDate={handleMoveCourseworkDueDate}
                   onRenameCoursework={handleRenameCoursework}
@@ -6109,8 +6260,10 @@ export function DashboardCards({
         onOpenChange={(isOpen) => {
           if (!isOpen) {
             setSelectedCanvasCourseId(null);
+            setLecturePendingDelete(null);
           }
         }}
+        onRequestDeleteLecture={selectedCanvasLecture?.semester === noTermSemester ? setLecturePendingDelete : undefined}
         onSaveLecture={handleUpdateCanvasLecture}
         open={Boolean(selectedCanvasLecture)}
         selectedSemester={activeCourseSemester}

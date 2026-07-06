@@ -169,6 +169,7 @@ export const defaultModeConfigs: WorkspaceModeConfig[] = [
         label: 'Menu',
         items: [
           { id: 'dashboard', label: 'Dashboard', icon: 'layout-dashboard' },
+          { id: 'project', label: 'Project', icon: 'clipboard-list' },
           { id: 'calendar', label: 'Calendar', icon: 'calendar-days', feature: 'calendar' },
           { id: 'board', label: 'Board', icon: 'columns-3', feature: 'board' },
           { id: 'timeline', label: 'Timeline', icon: 'gantt-chart', feature: 'timeline' },
@@ -183,6 +184,7 @@ export const defaultModeConfigs: WorkspaceModeConfig[] = [
           { id: 'drive', label: 'Drive', icon: 'google-drive', feature: 'integrations' },
           { id: 'toptrack', label: 'TopTrack', icon: 'toptrack', feature: 'integrations' },
           { id: 'links', label: 'Links', icon: 'link', feature: 'links' },
+          { id: 'settings', label: 'Settings', icon: 'settings' },
         ],
       },
       sharedFilterSection,

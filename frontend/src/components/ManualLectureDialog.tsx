@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { ChevronDown, ChevronRight, Link, Plus, Save, Trash2 } from 'lucide-react';
+import { CalendarDays, ChevronDown, ChevronRight, Link, Plus, Save, Trash2 } from 'lucide-react';
 
 import { useLanguage } from '../context/LanguageContext';
 import type { ColorToken } from '../modes/types';
@@ -53,6 +53,7 @@ export interface ManualLectureLink {
 
 export type ManualLectureDeliveryMode = 'inPerson' | 'online';
 export type ManualLectureClassType = 'lecture' | 'lab' | 'tutorial' | 'seminar';
+export type ManualLectureRecurrence = 'weekly' | 'biweekly' | 'monthly' | 'bimonthly';
 export type ManualLectureWeekday = 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun';
 
 export interface ManualLectureScheduleEntry {
@@ -66,6 +67,8 @@ export interface ManualLectureScheduleEntry {
   endTime?: string;
   startDate?: string;
   endDate?: string;
+  recurrence?: ManualLectureRecurrence;
+  recurrenceOffset?: 0 | 1;
   location: string;
 }
 
@@ -147,6 +150,11 @@ type ClassTypeLabelKey =
   | 'manualLectureClassTypeLab'
   | 'manualLectureClassTypeTutorial'
   | 'manualLectureClassTypeSeminar';
+type RecurrenceLabelKey =
+  | 'manualLectureRecurrenceWeekly'
+  | 'manualLectureRecurrenceBiweekly'
+  | 'manualLectureRecurrenceMonthly'
+  | 'manualLectureRecurrenceBimonthly';
 type WeekdayLabelKey =
   | 'manualLectureWeekdayMon'
   | 'manualLectureWeekdayTue'
@@ -179,6 +187,12 @@ const classTypeOptions: Array<{ id: ManualLectureClassType; labelKey: ClassTypeL
   { id: 'lab', labelKey: 'manualLectureClassTypeLab' },
   { id: 'tutorial', labelKey: 'manualLectureClassTypeTutorial' },
   { id: 'seminar', labelKey: 'manualLectureClassTypeSeminar' },
+];
+const recurrenceOptions: Array<{ id: ManualLectureRecurrence; labelKey: RecurrenceLabelKey }> = [
+  { id: 'weekly', labelKey: 'manualLectureRecurrenceWeekly' },
+  { id: 'biweekly', labelKey: 'manualLectureRecurrenceBiweekly' },
+  { id: 'monthly', labelKey: 'manualLectureRecurrenceMonthly' },
+  { id: 'bimonthly', labelKey: 'manualLectureRecurrenceBimonthly' },
 ];
 const weekdayOptions: Array<{ id: ManualLectureWeekday; labelKey: WeekdayLabelKey }> = [
   { id: 'Mon', labelKey: 'manualLectureWeekdayMon' },
@@ -280,6 +294,8 @@ function createScheduleEntry(
     endTime: '',
     startDate: '',
     endDate: '',
+    recurrence: 'weekly',
+    recurrenceOffset: 0,
     location: '',
     ...overrides,
   };
@@ -410,7 +426,106 @@ function createUsefulLinksValue(lecture: ManualLecture | undefined) {
     .join('\n');
 }
 
-function createScheduleEntriesFromLecture(lecture: ManualLecture | undefined) {
+function normalizeRecurrenceOffset(value?: number): 0 | 1 {
+  return value === 1 ? 1 : 0;
+}
+
+function parsePreviewDate(value?: string) {
+  const match = value?.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+  if (!match) {
+    return undefined;
+  }
+
+  const year = Number.parseInt(match[1], 10);
+  const monthIndex = Number.parseInt(match[2], 10) - 1;
+  const day = Number.parseInt(match[3], 10);
+  const date = new Date(year, monthIndex, day);
+
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function getPreviewWeekOfMonth(date: Date) {
+  return Math.floor((date.getDate() - 1) / 7);
+}
+
+function shouldIncludePreviewDate(
+  entry: ManualLectureScheduleEntry,
+  currentDate: Date,
+  startDate: Date,
+) {
+  const recurrence = entry.recurrence ?? 'weekly';
+  const offset = normalizeRecurrenceOffset(entry.recurrenceOffset);
+
+  if (recurrence === 'weekly') {
+    return true;
+  }
+
+  if (recurrence === 'biweekly') {
+    const weeksSinceStart = Math.floor(
+      (currentDate.getTime() - startDate.getTime()) / (7 * 86_400_000),
+    );
+
+    return Math.max(weeksSinceStart, 0) % 2 === offset;
+  }
+
+  const monthsSinceStart = (
+    (currentDate.getFullYear() - startDate.getFullYear()) * 12
+  ) + currentDate.getMonth() - startDate.getMonth();
+
+  if (getPreviewWeekOfMonth(currentDate) !== getPreviewWeekOfMonth(startDate)) {
+    return false;
+  }
+
+  if (recurrence === 'monthly') {
+    return monthsSinceStart >= 0;
+  }
+
+  if (recurrence === 'bimonthly') {
+    return Math.max(monthsSinceStart, 0) % 2 === offset;
+  }
+
+  return true;
+}
+
+function createSchedulePreviewDays(entry: ManualLectureScheduleEntry) {
+  const selectedDays = normalizeScheduleDays(entry);
+  const startDate = parsePreviewDate(entry.startDate) ?? new Date();
+  const endDate = parsePreviewDate(entry.endDate);
+  const previewEndDate = endDate ?? new Date(startDate.getFullYear(), startDate.getMonth() + 2, startDate.getDate());
+  const monthStart = new Date(startDate.getFullYear(), startDate.getMonth(), 1);
+  const gridStart = new Date(monthStart);
+  const dayOffset = (gridStart.getDay() + 6) % 7;
+  const selectedDayIndexes = new Set(selectedDays.map((day) => weekdayOptions.findIndex((option) => option.id === day) + 1));
+
+  gridStart.setDate(gridStart.getDate() - dayOffset);
+
+  return Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(gridStart);
+
+    date.setDate(gridStart.getDate() + index);
+
+    const isInDateRange = date.getTime() >= startDate.getTime() && date.getTime() <= previewEndDate.getTime();
+    const isSelected = isInDateRange &&
+      selectedDayIndexes.has(date.getDay() === 0 ? 7 : date.getDay()) &&
+      shouldIncludePreviewDate(entry, date, startDate);
+
+    return {
+      date,
+      id: date.toISOString(),
+      isCurrentMonth: date.getMonth() === startDate.getMonth(),
+      isSelected,
+    };
+  });
+}
+
+function formatPreviewMonthLabel(entry: ManualLectureScheduleEntry) {
+  const startDate = parsePreviewDate(entry.startDate) ?? new Date();
+
+  return startDate.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+}
+
+function createScheduleEntriesFromLecture(lecture: ManualLecture | undefined): ManualLectureScheduleEntry[] {
   if (lecture?.schedule.entries?.length) {
     return lecture.schedule.entries.map((entry) => {
       const legacyTimeRange = parseLegacyTimeRange(entry.time);
@@ -420,6 +535,8 @@ function createScheduleEntriesFromLecture(lecture: ManualLecture | undefined) {
         days: normalizeScheduleDays(entry),
         endDate: entry.endDate ?? '',
         endTime: entry.endTime ?? legacyTimeRange.endTime,
+        recurrence: entry.recurrence ?? 'weekly',
+        recurrenceOffset: normalizeRecurrenceOffset(entry.recurrenceOffset),
         startDate: entry.startDate ?? '',
         startTime: entry.startTime ?? legacyTimeRange.startTime,
       };
@@ -435,6 +552,8 @@ function createScheduleEntriesFromLecture(lecture: ManualLecture | undefined) {
         day: lecture.schedule.day,
         days: parseScheduleDays(lecture.schedule.day),
         endTime: legacyTimeRange.endTime,
+        recurrence: 'weekly',
+        recurrenceOffset: 0,
         time: lecture.schedule.time,
         startTime: legacyTimeRange.startTime,
         location: lecture.schedule.location,
@@ -475,8 +594,12 @@ export function ManualLectureDialog({
     createScheduleEntry(),
   ]);
   const [assessments, setAssessments] = useState<AssessmentFormState>(createAssessmentState);
-  const [areAssessmentsExpanded, setAreAssessmentsExpanded] = useState(true);
+  const [areAssessmentsExpanded, setAreAssessmentsExpanded] = useState(false);
+  const [previewScheduleEntryId, setPreviewScheduleEntryId] = useState<string | null>(null);
   const hasOnlineSchedule = scheduleEntries.some((entry) => entry.deliveryMode === 'online');
+  const previewScheduleEntry = previewScheduleEntryId
+    ? scheduleEntries.find((entry) => entry.id === previewScheduleEntryId) ?? null
+    : null;
 
   const assessmentTotal = assessmentOptions.reduce((total, option) => {
     const assessment = assessments[option.id];
@@ -514,7 +637,8 @@ export function ManualLectureDialog({
     setUsefulLinks('');
     setScheduleEntries([createScheduleEntry()]);
     setAssessments(createAssessmentState());
-    setAreAssessmentsExpanded(true);
+    setAreAssessmentsExpanded(false);
+    setPreviewScheduleEntryId(null);
   };
 
   const loadLecture = (lecture: ManualLecture) => {
@@ -532,7 +656,8 @@ export function ManualLectureDialog({
     setUsefulLinks(createUsefulLinksValue(lecture));
     setScheduleEntries(createScheduleEntriesFromLecture(lecture));
     setAssessments(createAssessmentState(lecture.assessments));
-    setAreAssessmentsExpanded(true);
+    setAreAssessmentsExpanded(false);
+    setPreviewScheduleEntryId(null);
   };
 
   useEffect(() => {
@@ -558,6 +683,7 @@ export function ManualLectureDialog({
         const startDate = entry.startDate?.trim() ?? '';
         const endDate = entry.endDate?.trim() ?? '';
         const location = entry.location.trim();
+        const recurrence = entry.recurrence ?? 'weekly';
 
         return {
           ...entry,
@@ -566,6 +692,8 @@ export function ManualLectureDialog({
           endDate,
           endTime,
           location,
+          recurrence,
+        recurrenceOffset: recurrence === 'weekly' ? 0 : normalizeRecurrenceOffset(entry.recurrenceOffset),
           startDate,
           startTime,
           time: formatTimeRange(startTime, endTime, entry.time),
@@ -685,7 +813,28 @@ export function ManualLectureDialog({
     ));
   };
 
+  const handleToggleScheduleEntryRecurrenceOffset = (entryId: string) => {
+    setScheduleEntries((currentEntries) => currentEntries.map((entry) => {
+      if (entry.id !== entryId) {
+        return entry;
+      }
+
+      const recurrence = entry.recurrence ?? 'weekly';
+
+      if (recurrence !== 'biweekly' && recurrence !== 'bimonthly') {
+        return entry;
+      }
+
+      return {
+        ...entry,
+        recurrenceOffset: entry.recurrenceOffset === 1 ? 0 : 1,
+      };
+    }));
+    setPreviewScheduleEntryId(entryId);
+  };
+
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[calc(100vh-2rem)] overflow-auto rounded-xl p-5 sm:max-w-5xl">
         <DialogHeader>
@@ -960,6 +1109,45 @@ export function ManualLectureDialog({
                       })}
                     </div>
                   </div>
+                  <div className="space-y-2">
+                    <Label className="text-xs font-black uppercase text-muted-foreground">
+                      {dictionary.manualLectureRecurrence}
+                    </Label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {recurrenceOptions.map((option) => {
+                        const recurrence = entry.recurrence ?? 'weekly';
+                        const isSelected = recurrence === option.id;
+                        const supportsReverse = option.id === 'biweekly' || option.id === 'bimonthly';
+
+                        return (
+                          <Button
+                            className={isSelected
+                              ? 'h-8 rounded-md px-2.5 text-xs font-black'
+                              : 'h-8 rounded-md bg-background px-2.5 text-xs font-black text-muted-foreground hover:bg-muted hover:text-foreground'}
+                            key={option.id}
+                            onClick={() => updateScheduleEntry(entry.id, {
+                              recurrence: option.id,
+                              recurrenceOffset: supportsReverse ? normalizeRecurrenceOffset(entry.recurrenceOffset) : 0,
+                            })}
+                            type="button"
+                            variant={isSelected ? 'default' : 'outline'}
+                          >
+                            {dictionary[option.labelKey]}
+                          </Button>
+                        );
+                      })}
+                      <Button
+                        className="h-8 rounded-full border-dashed px-2.5 text-xs font-black"
+                        disabled={!['biweekly', 'bimonthly'].includes(entry.recurrence ?? 'weekly')}
+                        onClick={() => handleToggleScheduleEntryRecurrenceOffset(entry.id)}
+                        type="button"
+                        variant={entry.recurrenceOffset === 1 ? 'secondary' : 'outline'}
+                      >
+                        <CalendarDays className="size-3.5" />
+                        {dictionary.manualLectureRecurrenceReverse}
+                      </Button>
+                    </div>
+                  </div>
                   <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
                     <div className="space-y-2">
                       <Label className="text-xs font-black uppercase text-muted-foreground" htmlFor={`manual-class-start-time-${entry.id}`}>
@@ -1120,5 +1308,74 @@ export function ManualLectureDialog({
         </form>
       </DialogContent>
     </Dialog>
+    <Dialog open={Boolean(previewScheduleEntry)} onOpenChange={(nextOpen) => {
+      if (!nextOpen) {
+        setPreviewScheduleEntryId(null);
+      }
+    }}>
+      <DialogContent className="max-w-sm rounded-xl p-4">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-base">
+            <CalendarDays className="size-4 text-primary" />
+            {dictionary.manualLectureRecurrencePreviewTitle}
+          </DialogTitle>
+          <DialogDescription>
+            {dictionary.manualLectureRecurrencePreviewDescription}
+          </DialogDescription>
+        </DialogHeader>
+        {previewScheduleEntry ? (
+          <div className="grid gap-3">
+            <div className="rounded-lg border bg-muted/25 p-3">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="text-sm font-black">{formatPreviewMonthLabel(previewScheduleEntry)}</span>
+                <span className="rounded-md border bg-background px-2 py-0.5 text-xs font-black text-muted-foreground">
+                  {dictionary[
+                    recurrenceOptions.find((option) => option.id === (previewScheduleEntry.recurrence ?? 'weekly'))?.labelKey ??
+                      'manualLectureRecurrenceWeekly'
+                  ]}
+                </span>
+              </div>
+              <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-black uppercase text-muted-foreground">
+                {weekdayOptions.map((option) => (
+                  <span key={option.id}>{dictionary[option.labelKey]}</span>
+                ))}
+              </div>
+              <div className="mt-1 grid grid-cols-7 gap-1">
+                {createSchedulePreviewDays(previewScheduleEntry).map((day) => (
+                  <span
+                    className={[
+                      'grid aspect-square place-items-center rounded-md text-xs font-black',
+                      day.isSelected
+                        ? 'bg-primary text-primary-foreground shadow-sm'
+                        : day.isCurrentMonth
+                          ? 'bg-background text-foreground'
+                          : 'bg-muted/40 text-muted-foreground/45',
+                    ].join(' ')}
+                    key={day.id}
+                  >
+                    {day.date.getDate()}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button
+                disabled={!['biweekly', 'bimonthly'].includes(previewScheduleEntry.recurrence ?? 'weekly')}
+                onClick={() => handleToggleScheduleEntryRecurrenceOffset(previewScheduleEntry.id)}
+                type="button"
+                variant="secondary"
+              >
+                <CalendarDays className="size-4" />
+                {dictionary.manualLectureRecurrenceReverse}
+              </Button>
+              <Button onClick={() => setPreviewScheduleEntryId(null)} type="button" variant="outline">
+                {dictionary.cancel}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }

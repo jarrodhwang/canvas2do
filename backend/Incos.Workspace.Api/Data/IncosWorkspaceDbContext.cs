@@ -59,9 +59,11 @@ public sealed class IncosWorkspaceDbContext(DbContextOptions<IncosWorkspaceDbCon
         {
             entity.ToTable("admin_users");
             entity.HasIndex(user => user.Email).IsUnique();
+            entity.HasIndex(user => user.ContactEmail).IsUnique();
             entity.HasIndex(user => user.GoogleUserId);
             entity.Property(user => user.GoogleUserId).HasMaxLength(120);
             entity.Property(user => user.Email).HasMaxLength(320);
+            entity.Property(user => user.ContactEmail).HasMaxLength(320);
             entity.Property(user => user.DisplayName).HasMaxLength(160);
             entity.Property(user => user.PhotoUrl).HasColumnType("text");
             entity.Property(user => user.HostedDomain).HasMaxLength(160);

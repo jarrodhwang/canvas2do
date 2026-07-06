@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Languages, Maximize2, Minimize2, Moon, Plus, Sun } from 'lucide-react';
-import { workspaceApi } from '../api/workspaceApi';
+import { Languages, LogOut, Maximize2, Minimize2, Moon, Pencil, Plus, Sun } from 'lucide-react';
+import { workspaceApi, type AuthSession } from '../api/workspaceApi';
 import { useLanguage } from '../context/LanguageContext';
 import { useWorkspaceMode } from '../context/WorkspaceModeContext';
 import { languageOptions, type Language } from '../i18n';
@@ -11,6 +11,13 @@ import { ModeSwitch } from './ModeSwitch';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from './ui/dropdown-menu';
 import {
   Select,
   SelectContent,
@@ -24,20 +31,36 @@ import { WorkspaceIcon } from './WorkspaceIcon';
 interface TopBarProps {
   academyLogoSrc?: string;
   allowedModeIds?: string[];
+  authSession?: AuthSession | null;
   isTopBarCollapsed?: boolean;
   onBeforeModeChange?: (modeId: string) => boolean | void;
   onOpenAddItem: () => void;
+  onOpenProfile?: () => void;
+  onSignOut?: () => void;
   onToggleTopBarCollapsed?: () => void;
   onThemeChange: (theme: AppTheme) => void;
   theme: AppTheme;
 }
 
+function getAccountInitials(label: string) {
+  const parts = label.trim().split(/\s+/).filter(Boolean);
+
+  if (parts.length >= 2) {
+    return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+  }
+
+  return label.trim().slice(0, 2).toUpperCase() || 'U';
+}
+
 export function TopBar({
   academyLogoSrc,
   allowedModeIds,
+  authSession,
   isTopBarCollapsed = false,
   onBeforeModeChange,
   onOpenAddItem,
+  onOpenProfile,
+  onSignOut,
   onToggleTopBarCollapsed,
   onThemeChange,
   theme,
@@ -54,15 +77,29 @@ export function TopBar({
     : visibleModes;
   const activeModePurpose = translateModePurpose(activeMode.id, activeMode.purpose);
   const isAcademyMode = activeMode.id === 'academy';
+  const isWorkspaceMode = activeMode.id === 'project';
   const isAdminConsoleMode = activeMode.id === 'admin-console';
-  const showThemeControl = !isAcademyMode;
+  const showAccountMenu = isAcademyMode || isWorkspaceMode;
+  const showBrandText = !isWorkspaceMode;
+  const workspaceTopBarTitle = 'Workspace';
+  const showThemeControl = !isAcademyMode && !isWorkspaceMode;
+  const accountDisplayName =
+    authSession?.displayName?.trim() ||
+    authSession?.email?.trim() ||
+    authSession?.loginId?.trim() ||
+    dictionary.accountFallbackName;
+  const accountId =
+    authSession?.loginId?.trim() ||
+    authSession?.email?.trim() ||
+    dictionary.notSet;
+  const accountInitials = getAccountInitials(accountDisplayName || accountId);
   const fallbackBrandLogoSrc = '/brand/INCOS%20New%20Logo_Crop.png';
   const defaultAcademyLogoSrc = '/brand/SFU_block_colour_rgb.png';
   const brandLogoAlt = isAcademyMode ? 'SFU' : 'INCOS';
   const isAcademyLogoHidden = isAcademyMode && academyLogoSrc === 'none';
   const brandLogoSrc = isAcademyMode ? (academyLogoSrc || defaultAcademyLogoSrc) : fallbackBrandLogoSrc;
   const brandTitle = isAcademyMode ? dictionary.academyManagerName : dictionary.workspaceName;
-  const canCollapseTopBar = (isAcademyMode || isAdminConsoleMode) && Boolean(onToggleTopBarCollapsed);
+  const canCollapseTopBar = (isAcademyMode || isWorkspaceMode || isAdminConsoleMode) && Boolean(onToggleTopBarCollapsed);
   const showCollapsedTopBar = canCollapseTopBar && isTopBarCollapsed;
   const searchPlaceholder =
     language === 'ko'
@@ -157,7 +194,11 @@ export function TopBar({
                 src={brandLogoSrc}
               />
             ) : null}
-            <span className="truncate text-sm font-black">{brandTitle}</span>
+            {showBrandText ? (
+              <span className="truncate text-sm font-black">{brandTitle}</span>
+            ) : isWorkspaceMode ? (
+              <span className="truncate text-sm font-black">{workspaceTopBarTitle}</span>
+            ) : null}
           </div>
           <button
             aria-label={dictionary.academyTopBarExpand}
@@ -173,6 +214,62 @@ export function TopBar({
             </span>
             <span className="h-1 min-w-8 flex-1 rounded-full bg-border transition-colors group-hover:bg-muted-foreground/60" />
           </button>
+          {showAccountMenu ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  aria-label={dictionary.accountMenu}
+                  className="flex h-8 max-w-[180px] shrink-0 items-center gap-2 rounded-lg border bg-muted/60 px-2 text-left outline-none transition hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
+                  type="button"
+                >
+                  <span className="grid size-6 shrink-0 place-items-center overflow-hidden rounded-full bg-primary text-[10px] font-black text-primary-foreground">
+                    {authSession?.pictureUrl ? (
+                      <img
+                        alt=""
+                        className="size-full object-cover"
+                        referrerPolicy="no-referrer"
+                        src={authSession.pictureUrl}
+                      />
+                    ) : (
+                      accountInitials
+                    )}
+                  </span>
+                  <span className="min-w-0 truncate text-xs font-black max-[520px]:hidden">
+                    {accountDisplayName}
+                  </span>
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-64">
+                <div className="flex min-w-0 items-center gap-3 px-2 py-2">
+                  <span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-full bg-primary text-sm font-black text-primary-foreground">
+                    {authSession?.pictureUrl ? (
+                      <img
+                        alt=""
+                        className="size-full object-cover"
+                        referrerPolicy="no-referrer"
+                        src={authSession.pictureUrl}
+                      />
+                    ) : (
+                      accountInitials
+                    )}
+                  </span>
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-black">{accountDisplayName}</div>
+                    <div className="truncate text-xs font-semibold text-muted-foreground">{accountId}</div>
+                  </div>
+                </div>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem disabled={!onOpenProfile} onSelect={() => onOpenProfile?.()}>
+                  <Pencil className="size-4" />
+                  <span>{dictionary.editProfile}</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={!onSignOut} onSelect={() => onSignOut?.()} variant="destructive">
+                  <LogOut className="size-4" />
+                  <span>{dictionary.signOut}</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
         </div>
       ) : (
         <div className="relative flex min-h-[74px] flex-wrap items-center justify-between gap-4 px-4 py-2 lg:flex-nowrap xl:h-[74px] xl:px-5">
@@ -197,10 +294,20 @@ export function TopBar({
               />
             ) : null}
             <div className="min-w-0">
-              <h1 className="truncate text-base font-black leading-none max-[520px]:text-sm">{brandTitle}</h1>
-              <p className="mt-1 hidden max-w-[280px] truncate text-xs text-muted-foreground sm:block">
-                {activeModePurpose}
-              </p>
+              {showBrandText ? (
+                <>
+                  <h1 className="truncate text-base font-black leading-none max-[520px]:text-sm">{brandTitle}</h1>
+                  {!isAcademyMode ? (
+                    <p className="mt-1 hidden max-w-[280px] truncate text-xs text-muted-foreground sm:block">
+                      {activeModePurpose}
+                    </p>
+                  ) : null}
+                </>
+              ) : isWorkspaceMode ? (
+                <h1 className="truncate text-base font-black leading-none max-[520px]:text-sm">
+                  {workspaceTopBarTitle}
+                </h1>
+              ) : null}
             </div>
           </div>
 
@@ -215,63 +322,127 @@ export function TopBar({
           </div>
 
           <div className="flex min-w-0 items-center justify-end gap-2 max-[520px]:absolute max-[520px]:right-3 max-[520px]:top-2 max-[520px]:gap-1 lg:min-w-[260px]">
-            <label className="hidden w-[240px] max-w-[24vw] items-center gap-2 rounded-lg border bg-muted/60 px-3 py-1.5 text-muted-foreground lg:flex">
-              <WorkspaceIcon name="search" size={16} />
-              <Input
-                className="h-7 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
-                placeholder={searchPlaceholder}
-              />
-            </label>
-            <div className="w-[132px] shrink-0 max-[520px]:w-[78px]">
-              <Select value={language} onValueChange={(value) => setLanguage(value as Language)}>
-                <SelectTrigger
-                  aria-label={dictionary.language}
-                  className="h-10 w-full rounded-lg bg-muted/60 px-2 text-xs font-black max-[520px]:h-8 max-[520px]:rounded-md max-[520px]:px-1.5"
-                >
-                  <Languages aria-hidden="true" className="mr-1 size-4 text-muted-foreground max-[520px]:mr-0 max-[520px]:size-3.5" />
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent align="end" className="min-w-[132px]" position="popper">
-                  {languageOptions.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            {showThemeControl ? (
+            {showAccountMenu ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    aria-label={dictionary.accountMenu}
+                    className="flex h-12 max-w-[260px] items-center gap-2 rounded-lg border bg-muted/60 px-2 text-left outline-none transition hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 max-[520px]:h-9 max-[520px]:max-w-[150px]"
+                    type="button"
+                  >
+                    <span className="grid size-8 shrink-0 place-items-center overflow-hidden rounded-full bg-primary text-xs font-black text-primary-foreground max-[520px]:size-7">
+                      {authSession?.pictureUrl ? (
+                        <img
+                          alt=""
+                          className="size-full object-cover"
+                          referrerPolicy="no-referrer"
+                          src={authSession.pictureUrl}
+                        />
+                      ) : (
+                        accountInitials
+                      )}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-black leading-tight max-[520px]:text-xs">
+                        {accountDisplayName}
+                      </span>
+                      <span className="block truncate text-[11px] font-bold leading-tight text-muted-foreground max-[520px]:hidden">
+                        {accountId}
+                      </span>
+                    </span>
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-64">
+                  <div className="flex min-w-0 items-center gap-3 px-2 py-2">
+                    <span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-full bg-primary text-sm font-black text-primary-foreground">
+                      {authSession?.pictureUrl ? (
+                        <img
+                          alt=""
+                          className="size-full object-cover"
+                          referrerPolicy="no-referrer"
+                          src={authSession.pictureUrl}
+                        />
+                      ) : (
+                        accountInitials
+                      )}
+                    </span>
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-black">{accountDisplayName}</div>
+                      <div className="truncate text-xs font-semibold text-muted-foreground">{accountId}</div>
+                    </div>
+                  </div>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem disabled={!onOpenProfile} onSelect={() => onOpenProfile?.()}>
+                    <Pencil className="size-4" />
+                    <span>{dictionary.editProfile}</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem disabled={!onSignOut} onSelect={() => onSignOut?.()} variant="destructive">
+                    <LogOut className="size-4" />
+                    <span>{dictionary.signOut}</span>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : (
               <>
-                <div className="hidden items-center gap-2 rounded-lg border bg-muted/60 px-3 py-2 md:flex">
-                  <Sun aria-hidden="true" className="text-muted-foreground" size={15} />
-                  <Switch
-                    aria-label={dictionary.darkMode}
-                    checked={isDark}
-                    onCheckedChange={(checked) => onThemeChange(checked ? 'dark' : 'light')}
+                <label className="hidden w-[240px] max-w-[24vw] items-center gap-2 rounded-lg border bg-muted/60 px-3 py-1.5 text-muted-foreground lg:flex">
+                  <WorkspaceIcon name="search" size={16} />
+                  <Input
+                    className="h-7 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
+                    placeholder={searchPlaceholder}
                   />
-                  <Moon aria-hidden="true" className={isDark ? 'text-primary' : 'text-muted-foreground'} size={15} />
-                  <Label className="sr-only">{dictionary.darkMode}</Label>
+                </label>
+                <div className="w-[132px] shrink-0 max-[520px]:w-[78px]">
+                  <Select value={language} onValueChange={(value) => setLanguage(value as Language)}>
+                    <SelectTrigger
+                      aria-label={dictionary.language}
+                      className="h-10 w-full rounded-lg bg-muted/60 px-2 text-xs font-black max-[520px]:h-8 max-[520px]:rounded-md max-[520px]:px-1.5"
+                    >
+                      <Languages aria-hidden="true" className="mr-1 size-4 text-muted-foreground max-[520px]:mr-0 max-[520px]:size-3.5" />
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent align="end" className="min-w-[132px]" position="popper">
+                      {languageOptions.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
+                {showThemeControl ? (
+                  <>
+                    <div className="hidden items-center gap-2 rounded-lg border bg-muted/60 px-3 py-2 md:flex">
+                      <Sun aria-hidden="true" className="text-muted-foreground" size={15} />
+                      <Switch
+                        aria-label={dictionary.darkMode}
+                        checked={isDark}
+                        onCheckedChange={(checked) => onThemeChange(checked ? 'dark' : 'light')}
+                      />
+                      <Moon aria-hidden="true" className={isDark ? 'text-primary' : 'text-muted-foreground'} size={15} />
+                      <Label className="sr-only">{dictionary.darkMode}</Label>
+                    </div>
+                    <Button
+                      aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+                      className="md:hidden max-[520px]:size-8 max-[520px]:rounded-md"
+                      onClick={() => onThemeChange(isDark ? 'light' : 'dark')}
+                      size="icon-lg"
+                      type="button"
+                      variant="outline"
+                    >
+                      {isDark ? <Moon aria-hidden="true" /> : <Sun aria-hidden="true" />}
+                    </Button>
+                  </>
+                ) : null}
                 <Button
-                  aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-                  className="md:hidden max-[520px]:size-8 max-[520px]:rounded-md"
-                  onClick={() => onThemeChange(isDark ? 'light' : 'dark')}
-                  size="icon-lg"
+                  className="h-10 rounded-lg bg-primary px-4 font-black text-primary-foreground shadow-none hover:bg-primary/90 max-[520px]:hidden"
+                  onClick={onOpenAddItem}
                   type="button"
-                  variant="outline"
                 >
-                  {isDark ? <Moon aria-hidden="true" /> : <Sun aria-hidden="true" />}
+                  <Plus aria-hidden="true" size={18} />
+                  <span className="hidden sm:inline">{dictionary.add}</span>
                 </Button>
               </>
-            ) : null}
-            <Button
-              className="h-10 rounded-lg bg-primary px-4 font-black text-primary-foreground shadow-none hover:bg-primary/90 max-[520px]:hidden"
-              onClick={onOpenAddItem}
-              type="button"
-            >
-              <Plus aria-hidden="true" size={18} />
-              <span className="hidden sm:inline">{dictionary.add}</span>
-            </Button>
+            )}
           </div>
           {canCollapseTopBar ? (
             <button

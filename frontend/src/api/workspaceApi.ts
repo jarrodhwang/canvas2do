@@ -2,6 +2,7 @@ import { getMockDataForMode } from '../data/mockWorkspaceData';
 import { modeRegistry } from '../modes/ModeRegistry';
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '/api';
+const canvasCalendarRequests = new Map<string, Promise<CanvasCalendarItems>>();
 
 function getDownloadFileName(contentDisposition: string | null) {
   if (!contentDisposition) {
@@ -208,9 +209,19 @@ export interface AcademyCredentialSignupResult {
   canvasTokenConfigured: boolean;
 }
 
+export interface UpdateAcademyProfileRequest {
+  displayName?: string;
+  loginId?: string;
+  contactEmail?: string;
+  password?: string;
+  profileImageDataUrl?: string;
+  removeProfileImage?: boolean;
+}
+
 export interface AdminUser {
   id: string;
   email: string;
+  contactEmail?: string;
   displayName: string;
   photoUrl?: string;
   role?: string;
@@ -236,6 +247,7 @@ export interface UpdateAdminUserRequest {
   photoUrl?: string;
   role?: string;
   loginId?: string;
+  contactEmail?: string;
   password?: string;
   status?: AdminUserStatus;
   apiAccessEnabled?: boolean;
@@ -622,6 +634,15 @@ export interface SaveAcademyPreferencesRequest {
   calendarSettings?: unknown;
 }
 
+export interface WorkspacePreferences {
+  settings?: unknown;
+  exists: boolean;
+}
+
+export interface SaveWorkspacePreferencesRequest {
+  settings?: unknown;
+}
+
 export interface MicrosoftIntegrationStatus {
   provider: 'outlook';
   label: string;
@@ -996,6 +1017,22 @@ export const workspaceApi = {
     return response.json() as Promise<AcademyCredentialSignupResult>;
   },
 
+  async updateAcademyProfile(request: UpdateAcademyProfileRequest) {
+    const response = await fetch(`${apiBaseUrl}/auth/academy/profile`, {
+      body: JSON.stringify(request),
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'PATCH',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to update Academy profile.');
+      throw new Error(message);
+    }
+  },
+
   async getGoogleIntegrations() {
     const response = await fetch(`${apiBaseUrl}/google/integrations`, {
       credentials: 'include',
@@ -1297,6 +1334,7 @@ export const workspaceApi = {
 
   async getCanvasCourseAssignment(courseId: string, assignmentId: string) {
     const response = await fetch(`${apiBaseUrl}/canvas/courses/${encodeURIComponent(courseId)}/assignments/${encodeURIComponent(assignmentId)}`, {
+      cache: 'no-store',
       credentials: 'include',
     });
 
@@ -1422,9 +1460,12 @@ export const workspaceApi = {
     return response.json() as Promise<CanvasCourseModuleItem>;
   },
 
-  async getCanvasCalendarItems(options: { startDate?: string; endDate?: string; pageSize?: number } = {}) {
-    const timeout = createRequestTimeout(30000);
+  async getCanvasCalendarItems(options: { forceRefresh?: boolean; startDate?: string; endDate?: string; pageSize?: number } = {}) {
     const params = new URLSearchParams();
+
+    if (options.forceRefresh) {
+      params.set('forceRefresh', 'true');
+    }
 
     if (options.startDate) {
       params.set('startDate', options.startDate);
@@ -1439,30 +1480,50 @@ export const workspaceApi = {
     }
 
     const query = params.toString();
-    let response: Response;
+    const requestKey = query || 'default';
+    const pendingRequest = canvasCalendarRequests.get(requestKey);
 
-    try {
-      response = await fetch(`${apiBaseUrl}/canvas/calendar-items${query ? `?${query}` : ''}`, {
-        credentials: 'include',
-        signal: timeout.signal,
-      });
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        throw new Error('Canvas calendar took too long to respond. Check Canvas API status and try again.', { cause: error });
+    if (pendingRequest) {
+      return pendingRequest;
+    }
+
+    const request = (async () => {
+      const timeout = createRequestTimeout(30000);
+      let response: Response;
+
+      try {
+        response = await fetch(`${apiBaseUrl}/canvas/calendar-items${query ? `?${query}` : ''}`, {
+          credentials: 'include',
+          signal: timeout.signal,
+        });
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          throw new Error('Canvas calendar took too long to respond. Check Canvas API status and try again.', { cause: error });
+        }
+
+        throw new Error('Unable to reach the workspace API. Check that the API container is running.', { cause: error });
+      } finally {
+        timeout.cancel();
       }
 
-      throw new Error('Unable to reach the workspace API. Check that the API container is running.', { cause: error });
+      if (!response.ok) {
+        const { message } = await readErrorResponse(response, 'Unable to load Canvas calendar items.');
+
+        throw new Error(message);
+      }
+
+      return response.json() as Promise<CanvasCalendarItems>;
+    })();
+
+    canvasCalendarRequests.set(requestKey, request);
+
+    try {
+      return await request;
     } finally {
-      timeout.cancel();
+      if (canvasCalendarRequests.get(requestKey) === request) {
+        canvasCalendarRequests.delete(requestKey);
+      }
     }
-
-    if (!response.ok) {
-      const { message } = await readErrorResponse(response, 'Unable to load Canvas calendar items.');
-
-      throw new Error(message);
-    }
-
-    return response.json() as Promise<CanvasCalendarItems>;
   },
 
   async getCanvasInboxItems(pageSize = 50, options: { courseId?: string } = {}) {
@@ -1516,6 +1577,39 @@ export const workspaceApi = {
     }
 
     return response.json() as Promise<AcademyPreferences>;
+  },
+
+  async getWorkspacePreferences() {
+    const response = await fetch(`${apiBaseUrl}/workspace/preferences`, {
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to load Workspace preferences.');
+
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<WorkspacePreferences>;
+  },
+
+  async saveWorkspacePreferences(preferences: SaveWorkspacePreferencesRequest) {
+    const response = await fetch(`${apiBaseUrl}/workspace/preferences`, {
+      body: JSON.stringify(preferences),
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'PUT',
+    });
+
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to save Workspace preferences.');
+
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<WorkspacePreferences>;
   },
 
   async getMicrosoftIntegrations() {

@@ -39,7 +39,7 @@ interface LoginPageProps {
   theme: AppTheme;
 }
 
-const profileImageMaxBytes = 750 * 1024;
+const profileImageMaxBytes = 256 * 1024;
 
 function readFileAsDataUrl(file: File) {
   return new Promise<string>((resolve, reject) => {

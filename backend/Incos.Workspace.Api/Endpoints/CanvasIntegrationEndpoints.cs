@@ -312,6 +312,7 @@ public static class CanvasIntegrationEndpoints
         string? startDate,
         string? endDate,
         int? pageSize,
+        bool? forceRefresh,
         CancellationToken cancellationToken)
     {
         var connection = await ResolveCanvasConnectionAsync(
@@ -344,7 +345,8 @@ public static class CanvasIntegrationEndpoints
             endAt.UtcDateTime.ToString("O", CultureInfo.InvariantCulture),
             safePageSize.ToString(CultureInfo.InvariantCulture));
 
-        if (memoryCache.TryGetValue(cacheKey, out CanvasCalendarItemsDto? cachedCalendarItems) &&
+        if (forceRefresh != true &&
+            memoryCache.TryGetValue(cacheKey, out CanvasCalendarItemsDto? cachedCalendarItems) &&
             cachedCalendarItems is not null)
         {
             return Results.Ok(cachedCalendarItems);
@@ -406,6 +408,7 @@ public static class CanvasIntegrationEndpoints
                 courses,
                 startAt,
                 endAt,
+                submissionLookup,
                 cancellationToken);
             var items = assignmentEvents
                 .Select(calendarEvent => ParseCanvasCalendarItem(calendarEvent, "assignment", courseLookup, submissionLookup))
@@ -419,17 +422,18 @@ public static class CanvasIntegrationEndpoints
                 .ToArray();
             var response = new CanvasCalendarItemsDto(items);
 
-            if (submissionLookupResult.IsComplete)
-            {
-                memoryCache.Set(
-                    cacheKey,
-                    response,
-                    new MemoryCacheEntryOptions
-                    {
-                        AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(3),
-                        SlidingExpiration = TimeSpan.FromSeconds(45),
-                    });
-            }
+            memoryCache.Set(
+                cacheKey,
+                response,
+                new MemoryCacheEntryOptions
+                {
+                    AbsoluteExpirationRelativeToNow = submissionLookupResult.IsComplete
+                        ? TimeSpan.FromMinutes(3)
+                        : TimeSpan.FromSeconds(45),
+                    SlidingExpiration = submissionLookupResult.IsComplete
+                        ? TimeSpan.FromSeconds(45)
+                        : TimeSpan.FromSeconds(20),
+                });
 
             return Results.Ok(response);
         }
@@ -591,7 +595,7 @@ public static class CanvasIntegrationEndpoints
                 tabsTask.Result.Select(ParseCanvasCourseTab).Where(tab => tab is not null).Select(tab => tab!).ToArray(),
                 modulesTask.Result.Select(ParseCanvasCourseModule).Where(module => module is not null).Select(module => module!).ToArray(),
                 announcementsTask.Result.Select(ParseCanvasCourseAnnouncement).Where(announcement => announcement is not null).Select(announcement => announcement!).ToArray(),
-                assignmentsTask.Result.Select(ParseCanvasCourseAssignment).Where(assignment => assignment is not null).Select(assignment => assignment!).ToArray(),
+                assignmentsTask.Result.Select(assignment => ParseCanvasCourseAssignment(assignment)).Where(assignment => assignment is not null).Select(assignment => assignment!).ToArray(),
                 quizzesTask.Result.Select(ParseCanvasCourseQuiz).Where(quiz => quiz is not null).Select(quiz => quiz!).ToArray(),
                 discussionsTask.Result.Select(discussion => ParseCanvasCourseDiscussion(discussion, false)).Where(discussion => discussion is not null).Select(discussion => discussion!).ToArray(),
                 pagesTask.Result.Select(ParseCanvasCoursePage).Where(page => page is not null).Select(page => page!).ToArray(),
@@ -802,7 +806,14 @@ public static class CanvasIntegrationEndpoints
                 accessToken,
                 requestUri,
                 cancellationToken);
-            var parsedAssignment = ParseCanvasCourseAssignment(assignment);
+            var directSubmissionStatus = await GetCanvasSingleAssignmentSubmissionStatusAsync(
+                httpClientFactory,
+                instanceUrl,
+                accessToken,
+                courseId,
+                assignmentId,
+                cancellationToken);
+            var parsedAssignment = ParseCanvasCourseAssignment(assignment, directSubmissionStatus);
 
             return parsedAssignment is null
                 ? Results.Problem(
@@ -1918,6 +1929,7 @@ public static class CanvasIntegrationEndpoints
         CanvasCourseDto[] courses,
         DateTimeOffset startAt,
         DateTimeOffset endAt,
+        IReadOnlyDictionary<string, CanvasSubmissionStatus> submissionLookup,
         CancellationToken cancellationToken)
     {
         using var concurrencyGate = new SemaphoreSlim(4);
@@ -1936,6 +1948,7 @@ public static class CanvasIntegrationEndpoints
                         course,
                         startAt,
                         endAt,
+                        submissionLookup,
                         cancellationToken);
                 }
                 catch (CanvasApiRequestException)
@@ -1959,6 +1972,7 @@ public static class CanvasIntegrationEndpoints
         CanvasCourseDto course,
         DateTimeOffset startAt,
         DateTimeOffset endAt,
+        IReadOnlyDictionary<string, CanvasSubmissionStatus> submissionLookup,
         CancellationToken cancellationToken)
     {
         var assignments = new List<CanvasCalendarItemDto>();
@@ -1992,7 +2006,7 @@ public static class CanvasIntegrationEndpoints
 
             assignments.AddRange(document.RootElement
                 .EnumerateArray()
-                .Select(assignment => ParseCanvasAssignmentCalendarItem(assignment, course, startAt, endAt))
+                .Select(assignment => ParseCanvasAssignmentCalendarItem(assignment, course, startAt, endAt, submissionLookup))
                 .Where(item => item is not null)
                 .Select(item => item!));
 
@@ -2006,7 +2020,8 @@ public static class CanvasIntegrationEndpoints
         JsonElement assignment,
         CanvasCourseDto course,
         DateTimeOffset startAt,
-        DateTimeOffset endAt)
+        DateTimeOffset endAt,
+        IReadOnlyDictionary<string, CanvasSubmissionStatus> submissionLookup)
     {
         var assignmentId = GetJsonStringOrNumber(assignment, "id");
         var title = GetJsonString(assignment, "name");
@@ -2022,6 +2037,10 @@ public static class CanvasIntegrationEndpoints
         }
 
         var submissionStatus = GetCanvasAssignmentSubmissionStatus(assignment);
+        if (submissionLookup.TryGetValue(GetAssignmentSubmissionLookupKey(course.Id, assignmentId), out var lookupStatus))
+        {
+            submissionStatus = lookupStatus;
+        }
         var contextCode = $"course_{course.Id}";
 
         return new CanvasCalendarItemDto(
@@ -2123,7 +2142,8 @@ public static class CanvasIntegrationEndpoints
         string accessToken,
         string courseId,
         string[] assignmentIds,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool ignoreRequestFailures = true)
     {
         var lookup = new Dictionary<string, CanvasSubmissionStatus>(StringComparer.OrdinalIgnoreCase);
 
@@ -2179,11 +2199,38 @@ public static class CanvasIntegrationEndpoints
             }
             catch (CanvasApiRequestException)
             {
+                if (!ignoreRequestFailures)
+                {
+                    throw;
+                }
+
                 // Submission status is a helpful enhancement, but calendar data should still render without it.
             }
         }
 
         return lookup;
+    }
+
+    private static async Task<CanvasSubmissionStatus> GetCanvasSingleAssignmentSubmissionStatusAsync(
+        IHttpClientFactory httpClientFactory,
+        string instanceUrl,
+        string accessToken,
+        string courseId,
+        string assignmentId,
+        CancellationToken cancellationToken)
+    {
+        var lookup = await GetCanvasCourseSubmissionLookupAsync(
+            httpClientFactory,
+            instanceUrl,
+            accessToken,
+            courseId,
+            [assignmentId],
+            cancellationToken,
+            ignoreRequestFailures: false);
+
+        return lookup.TryGetValue(GetAssignmentSubmissionLookupKey(courseId, assignmentId), out var status)
+            ? status
+            : new CanvasSubmissionStatus(false, null);
     }
 
     private static CanvasAssignmentReference? GetCanvasAssignmentReference(JsonElement calendarEvent)
@@ -2228,9 +2275,7 @@ public static class CanvasIntegrationEndpoints
         if (!string.IsNullOrWhiteSpace(courseId) && !string.IsNullOrWhiteSpace(assignmentId) &&
             submissionLookup.TryGetValue(GetAssignmentSubmissionLookupKey(courseId, assignmentId), out var lookupStatus))
         {
-            submissionStatus = new CanvasSubmissionStatus(
-                submissionStatus.IsSubmitted || lookupStatus.IsSubmitted,
-                submissionStatus.SubmittedAt ?? lookupStatus.SubmittedAt);
+            submissionStatus = lookupStatus;
         }
 
         var title =
@@ -2399,7 +2444,9 @@ public static class CanvasIntegrationEndpoints
             GetJsonString(announcement, "html_url"));
     }
 
-    private static CanvasCourseAssignmentDto? ParseCanvasCourseAssignment(JsonElement assignment)
+    private static CanvasCourseAssignmentDto? ParseCanvasCourseAssignment(
+        JsonElement assignment,
+        CanvasSubmissionStatus? directSubmissionStatus = null)
     {
         var id = GetJsonStringOrNumber(assignment, "id");
         var name = GetJsonString(assignment, "name");
@@ -2410,6 +2457,7 @@ public static class CanvasIntegrationEndpoints
         }
 
         var submission = GetJsonObject(assignment, "submission");
+        var submissionStatus = directSubmissionStatus ?? GetCanvasAssignmentSubmissionStatus(assignment);
 
         return new CanvasCourseAssignmentDto(
             id,
@@ -2419,10 +2467,10 @@ public static class CanvasIntegrationEndpoints
             GetJsonDouble(assignment, "points_possible"),
             GetJsonString(assignment, "html_url"),
             GetJsonStringArray(assignment, "submission_types"),
-            IsCanvasAssignmentSubmitted(assignment),
+            submissionStatus.IsSubmitted,
             submission.HasValue ? GetJsonDouble(submission.Value, "score") : null,
             submission.HasValue ? GetJsonString(submission.Value, "grade") : null,
-            submission.HasValue ? GetJsonDateTimeOffset(submission.Value, "submitted_at") : null,
+            submissionStatus.SubmittedAt ?? (submission.HasValue ? GetJsonDateTimeOffset(submission.Value, "submitted_at") : null),
             submission.HasValue ? GetJsonString(submission.Value, "workflow_state") : null,
             GetJsonBool(assignment, "use_rubric_for_grading"),
             ParseCanvasRubricSettings(GetJsonObject(assignment, "rubric_settings")),

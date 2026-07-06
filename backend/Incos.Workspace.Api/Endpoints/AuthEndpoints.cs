@@ -127,6 +127,19 @@ public static class AuthEndpoints
                 grants = isAcademyCredentialAccount
                     ? FilterAcademyOnlyGrants(grants)
                     : grants;
+                var academyProfile = isAuthenticated && isAcademyCredentialAccount
+                    ? await GetAcademyAccountProfileAsync(db, email, cancellationToken)
+                    : null;
+                var sessionEmail = isAuthenticated
+                    ? isAcademyCredentialAccount
+                        ? academyProfile?.ContactEmail
+                        : email
+                    : null;
+                var pictureUrl = isAuthenticated
+                    ? isAcademyCredentialAccount
+                        ? academyProfile?.PhotoUrl
+                        : user.FindFirstValue("urn:google:picture")
+                    : null;
 
                 return Results.Ok(new
                 {
@@ -135,9 +148,9 @@ public static class AuthEndpoints
                         ? isAcademyCredentialAccount ? AcademyCredentialProvider : "google"
                         : null,
                     displayName = isAuthenticated ? user.FindFirstValue(ClaimTypes.Name) : null,
-                    email,
+                    email = sessionEmail,
                     loginId = isAuthenticated ? user.FindFirstValue("incos:login_id") : null,
-                    pictureUrl = isAuthenticated ? user.FindFirstValue("urn:google:picture") : null,
+                    pictureUrl,
                     hostedDomain,
                     accountStatus,
                     requiresApproval = (isWorkspaceAccount || isAcademyCredentialAccount) && accountStatus == "pending",
@@ -206,6 +219,9 @@ public static class AuthEndpoints
         auth.MapPost("/academy/login", LoginAcademyAccountAsync)
             .AllowAnonymous()
             .WithName("LoginAcademyAccount");
+
+        auth.MapPatch("/academy/profile", UpdateAcademyProfileAsync)
+            .WithName("UpdateAcademyProfile");
 
         auth.MapGet("/google/login", RedirectLegacyGoogleLogin)
             .WithName("RedirectLegacyGoogleLogin");
@@ -451,10 +467,11 @@ public static class AuthEndpoints
             return Results.BadRequest(new
             {
                 title = "Profile image is invalid.",
-                detail = "Upload a PNG, JPEG, GIF, or WebP image under 750 KB.",
+                detail = "Upload a PNG, JPEG, GIF, or WebP image under 256 KB.",
             });
         }
 
+        await GoogleIntegrationEndpoints.EnsureAdminUsersTableAsync(db, cancellationToken);
         await EnsureAcademyCredentialAccountsTableAsync(db, cancellationToken);
 
         var accountKey = GetAcademyAccountKey(loginId);
@@ -555,6 +572,7 @@ public static class AuthEndpoints
             return Results.Unauthorized();
         }
 
+        await GoogleIntegrationEndpoints.EnsureAdminUsersTableAsync(db, cancellationToken);
         await EnsureAcademyCredentialAccountsTableAsync(db, cancellationToken);
 
         var account = await db.AcademyCredentialAccounts
@@ -601,6 +619,197 @@ public static class AuthEndpoints
             requiresApproval = status == "pending",
             canAccessWorkspace = status == "active",
         });
+    }
+
+    private static async Task<IResult> UpdateAcademyProfileAsync(
+        HttpContext context,
+        IncosWorkspaceDbContext db,
+        UpdateAcademyProfileRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (context.User.Identity?.IsAuthenticated != true ||
+            !IsAcademyCredentialProvider(context.User.FindFirstValue("incos:auth_provider")))
+        {
+            return Results.Problem(
+                title: "Academy profile cannot be changed.",
+                detail: "Only Academy ID/password accounts can update this profile here.",
+                statusCode: StatusCodes.Status403Forbidden);
+        }
+
+        var currentLoginId = NormalizeAcademyLoginId(context.User.FindFirstValue("incos:login_id"));
+
+        if (!IsValidAcademyLoginId(currentLoginId))
+        {
+            return Results.Unauthorized();
+        }
+
+        await GoogleIntegrationEndpoints.EnsureAdminUsersTableAsync(db, cancellationToken);
+        await EnsureAcademyCredentialAccountsTableAsync(db, cancellationToken);
+
+        var account = await db.AcademyCredentialAccounts
+            .Include(credentialAccount => credentialAccount.AdminUser)
+            .FirstOrDefaultAsync(
+                credentialAccount => credentialAccount.LoginId == currentLoginId,
+                cancellationToken);
+
+        if (account?.AdminUser is null)
+        {
+            return Results.NotFound();
+        }
+
+        if (account.AdminUser.Status != "active")
+        {
+            return Results.Problem(
+                title: "Account inactive.",
+                detail: "This Academy account is not active.",
+                statusCode: StatusCodes.Status403Forbidden);
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var oldUserKey = account.AdminUser.Email;
+
+        if (request.DisplayName is not null)
+        {
+            var nextDisplayName = request.DisplayName.Trim();
+
+            if (string.IsNullOrWhiteSpace(nextDisplayName) || nextDisplayName.Length > 160)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]>
+                {
+                    ["displayName"] = ["Display name is required and must be 160 characters or less."],
+                });
+            }
+
+            account.AdminUser.DisplayName = nextDisplayName;
+        }
+
+        if (request.LoginId is not null)
+        {
+            var nextLoginId = NormalizeAcademyLoginId(request.LoginId);
+
+            if (!IsValidAcademyLoginId(nextLoginId))
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]>
+                {
+                    ["loginId"] = ["Use 3-64 lowercase letters, numbers, dot, hyphen, or underscore. Start with a letter or number."],
+                });
+            }
+
+            if (!string.Equals(nextLoginId, account.LoginId, StringComparison.OrdinalIgnoreCase))
+            {
+                var nextAccountKey = GetAcademyAccountKey(nextLoginId);
+                var duplicateExists = await db.AcademyCredentialAccounts
+                        .AnyAsync(
+                            credentialAccount => credentialAccount.Id != account.Id &&
+                                credentialAccount.LoginId == nextLoginId,
+                            cancellationToken) ||
+                    await db.AdminUsers
+                        .AnyAsync(
+                            adminUser => adminUser.Id != account.AdminUserId &&
+                                adminUser.Email == nextAccountKey,
+                            cancellationToken);
+
+                if (duplicateExists)
+                {
+                    return Results.Problem(
+                        title: "ID is already used.",
+                        detail: "Choose a different Academy ID.",
+                        statusCode: StatusCodes.Status409Conflict);
+                }
+
+                account.LoginId = nextLoginId;
+                account.AdminUser.Email = nextAccountKey;
+                account.AdminUser.HostedDomain = AcademyAccountDomain;
+            }
+        }
+
+        if (request.ContactEmail is not null)
+        {
+            var nextContactEmail = NormalizeContactEmail(request.ContactEmail);
+
+            if (!string.IsNullOrWhiteSpace(nextContactEmail))
+            {
+                if (!IsValidContactEmail(nextContactEmail))
+                {
+                    return Results.ValidationProblem(new Dictionary<string, string[]>
+                    {
+                        ["contactEmail"] = ["Enter a valid email address."],
+                    });
+                }
+
+                var duplicateEmailExists = await db.AdminUsers
+                    .AsNoTracking()
+                    .AnyAsync(
+                        adminUser => adminUser.Id != account.AdminUserId &&
+                            (adminUser.Email == nextContactEmail || adminUser.ContactEmail == nextContactEmail),
+                        cancellationToken);
+
+                if (duplicateEmailExists)
+                {
+                    return Results.Problem(
+                        title: "Email is already used.",
+                        detail: "Choose a different email address.",
+                        statusCode: StatusCodes.Status409Conflict);
+                }
+            }
+
+            account.AdminUser.ContactEmail = nextContactEmail;
+        }
+
+        if (request.RemoveProfileImage == true)
+        {
+            account.AdminUser.PhotoUrl = null;
+        }
+        else if (request.ProfileImageDataUrl is not null)
+        {
+            var profileImageDataUrl = NormalizeProfileImageDataUrl(request.ProfileImageDataUrl);
+
+            if (profileImageDataUrl is null)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]>
+                {
+                    ["profileImageDataUrl"] = ["Upload a valid image file under the allowed size."],
+                });
+            }
+
+            account.AdminUser.PhotoUrl = profileImageDataUrl;
+        }
+
+        if (request.Password is not null)
+        {
+            if (request.Password.Length < 8 || request.Password.Length > 256)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]>
+                {
+                    ["password"] = ["Use a password between 8 and 256 characters."],
+                });
+            }
+
+            account.PasswordHash = HashPassword(request.Password);
+            account.UpdatedAt = now;
+        }
+
+        account.AdminUser.UpdatedAt = now;
+        account.UpdatedAt = now;
+        await db.SaveChangesAsync(cancellationToken);
+
+        if (!string.Equals(oldUserKey, account.AdminUser.Email, StringComparison.OrdinalIgnoreCase))
+        {
+            await MoveAcademyUserSettingsKeyAsync(db, oldUserKey, account.AdminUser.Email, cancellationToken);
+        }
+
+        var authenticateResult = await context.AuthenticateAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+        var authenticationProperties = authenticateResult.Properties ?? new AuthenticationProperties
+        {
+            IsPersistent = true,
+        };
+
+        await context.SignInAsync(
+            CookieAuthenticationDefaults.AuthenticationScheme,
+            CreateAcademyCredentialPrincipal(account.AdminUser, account.LoginId),
+            authenticationProperties);
+
+        return Results.NoContent();
     }
 
     private static async Task<IResult> StartUserPreviewAsync(
@@ -824,15 +1033,64 @@ public static class AuthEndpoints
         await WorkspaceEndpoints.EnsureUserSettingsTableAsync(db, cancellationToken);
 
         var normalizedUserKey = userKey.Trim().ToLowerInvariant();
-        var setting = await db.UserSettings
+        var settings = await db.UserSettings
             .AsNoTracking()
-            .FirstOrDefaultAsync(
+            .Where(
                 userSetting =>
                     userSetting.UserKey.ToLower() == normalizedUserKey &&
-                    userSetting.SettingKey == WorkspaceEndpoints.AcademyPreferencesSettingKey,
+                    (
+                        userSetting.SettingKey == WorkspaceEndpoints.WorkspacePreferencesSettingKey ||
+                        userSetting.SettingKey == WorkspaceEndpoints.AcademyPreferencesSettingKey
+                    ))
+            .ToListAsync(
                 cancellationToken);
 
-        return GetSessionDurationFromAcademyPreferencesJson(setting?.SettingJson, fallback);
+        var workspaceSetting = settings.FirstOrDefault(
+            setting => setting.SettingKey == WorkspaceEndpoints.WorkspacePreferencesSettingKey);
+
+        if (workspaceSetting is not null)
+        {
+            return GetSessionDurationFromWorkspacePreferencesJson(workspaceSetting.SettingJson, fallback);
+        }
+
+        var academySetting = settings.FirstOrDefault(
+            setting => setting.SettingKey == WorkspaceEndpoints.AcademyPreferencesSettingKey);
+
+        return GetSessionDurationFromAcademyPreferencesJson(academySetting?.SettingJson, fallback);
+    }
+
+    public static TimeSpan GetSessionDurationFromWorkspacePreferencesJson(string? settingJson, TimeSpan fallback)
+    {
+        if (string.IsNullOrWhiteSpace(settingJson))
+        {
+            return fallback;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(settingJson);
+            var root = document.RootElement;
+            var configuredHours = TryGetJsonDouble(root, "sessionDurationHours");
+
+            if (!configuredHours.HasValue && TryGetJsonDouble(root, "sessionDurationDays") is { } days)
+            {
+                configuredHours = days * 24;
+            }
+
+            if (!configuredHours.HasValue)
+            {
+                return fallback;
+            }
+
+            return TimeSpan.FromHours(Math.Clamp(
+                configuredHours.Value,
+                MinimumWorkspaceSessionHours,
+                MaximumWorkspaceSessionHours));
+        }
+        catch (JsonException)
+        {
+            return fallback;
+        }
     }
 
     public static TimeSpan GetSessionDurationFromAcademyPreferencesJson(string? settingJson, TimeSpan fallback)
@@ -1100,9 +1358,9 @@ public static class AuthEndpoints
             claims.Add(new Claim("hd", user.HostedDomain));
         }
 
-        if (!string.IsNullOrWhiteSpace(user.PhotoUrl))
+        if (IsCookieSafePictureUrl(user.PhotoUrl))
         {
-            claims.Add(new Claim("urn:google:picture", user.PhotoUrl));
+            claims.Add(new Claim("urn:google:picture", user.PhotoUrl!));
         }
 
         return new ClaimsPrincipal(new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme));
@@ -1115,6 +1373,8 @@ public static class AuthEndpoints
     {
         var properties = authResult.Properties ?? new AuthenticationProperties();
         var claims = (authResult.Principal?.Claims ?? [])
+            .Where(claim => !string.Equals(claim.Type, "urn:google:picture", StringComparison.OrdinalIgnoreCase) ||
+                IsCookieSafePictureUrl(claim.Value))
             .Select(claim => new StoredPreviewClaim(
                 claim.Type,
                 claim.Value,
@@ -1166,12 +1426,15 @@ public static class AuthEndpoints
         }
 
         var identity = new ClaimsIdentity(
-            storedSession.Claims.Select(claim => new Claim(
-                claim.Type,
-                claim.Value,
-                claim.ValueType,
-                claim.Issuer,
-                claim.OriginalIssuer)),
+            storedSession.Claims
+                .Where(claim => !string.Equals(claim.Type, "urn:google:picture", StringComparison.OrdinalIgnoreCase) ||
+                    IsCookieSafePictureUrl(claim.Value))
+                .Select(claim => new Claim(
+                    claim.Type,
+                    claim.Value,
+                    claim.ValueType,
+                    claim.Issuer,
+                    claim.OriginalIssuer)),
             CookieAuthenticationDefaults.AuthenticationScheme);
 
         principal = new ClaimsPrincipal(identity);
@@ -1220,11 +1483,6 @@ public static class AuthEndpoints
             new("incos:login_id", loginId),
         };
 
-        if (!string.IsNullOrWhiteSpace(user.PhotoUrl))
-        {
-            claims.Add(new Claim("urn:google:picture", user.PhotoUrl));
-        }
-
         return new ClaimsPrincipal(new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme));
     }
 
@@ -1253,11 +1511,86 @@ public static class AuthEndpoints
             ? string.Empty
             : loginId.Trim().ToLowerInvariant();
 
+    public static string? NormalizeContactEmail(string? email) =>
+        string.IsNullOrWhiteSpace(email)
+            ? null
+            : email.Trim().ToLowerInvariant();
+
+    public static bool IsValidContactEmail(string email)
+    {
+        if (string.IsNullOrWhiteSpace(email) || email.Length > 320)
+        {
+            return false;
+        }
+
+        return Regex.IsMatch(
+            email,
+            "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+            RegexOptions.CultureInvariant,
+            TimeSpan.FromMilliseconds(250));
+    }
+
     public static bool IsValidAcademyLoginId(string loginId) =>
         AcademyLoginIdRegex.IsMatch(loginId);
 
     public static string GetAcademyAccountKey(string loginId) =>
         $"{NormalizeAcademyLoginId(loginId)}@{AcademyAccountDomain}";
+
+    private static async Task MoveAcademyUserSettingsKeyAsync(
+        IncosWorkspaceDbContext db,
+        string oldUserKey,
+        string newUserKey,
+        CancellationToken cancellationToken)
+    {
+        var oldNormalizedKey = oldUserKey.Trim().ToLowerInvariant();
+        var newNormalizedKey = newUserKey.Trim().ToLowerInvariant();
+
+        if (string.Equals(oldNormalizedKey, newNormalizedKey, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        await WorkspaceEndpoints.EnsureUserSettingsTableAsync(db, cancellationToken);
+        await db.UserSettings
+            .Where(setting => setting.UserKey == oldNormalizedKey)
+            .ExecuteUpdateAsync(
+                setters => setters.SetProperty(setting => setting.UserKey, newNormalizedKey),
+                cancellationToken);
+    }
+
+    private static async Task<AcademyAccountProfile?> GetAcademyAccountProfileAsync(
+        IncosWorkspaceDbContext db,
+        string? accountKey,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(accountKey))
+        {
+            return null;
+        }
+
+        var normalizedAccountKey = accountKey.Trim().ToLowerInvariant();
+
+        return await db.AdminUsers
+            .AsNoTracking()
+            .Where(user => user.Email == normalizedAccountKey)
+            .Select(user => new AcademyAccountProfile(user.ContactEmail, user.PhotoUrl))
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
+    private sealed record AcademyAccountProfile(string? ContactEmail, string? PhotoUrl);
+
+    private static bool IsCookieSafePictureUrl(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var normalized = value.Trim();
+
+        return normalized.Length <= 2048 &&
+            !normalized.StartsWith("data:", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static string? NormalizeProfileImageDataUrl(string? value)
     {
@@ -1268,7 +1601,7 @@ public static class AuthEndpoints
 
         var normalized = value.Trim();
 
-        if (normalized.Length > 1_100_000 ||
+        if (normalized.Length > 360_000 ||
             !normalized.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase) ||
             normalized.IndexOf(";base64,", StringComparison.OrdinalIgnoreCase) < 0)
         {

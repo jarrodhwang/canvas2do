@@ -2,7 +2,7 @@ import type { WorkspaceModeMockData } from '../data/mockWorkspaceData';
 import { ChevronLeft, ChevronRight, LoaderCircle, Maximize2, Minimize2 } from 'lucide-react';
 import { useRef, useState, type WheelEvent } from 'react';
 import { useLanguage } from '../context/LanguageContext';
-import { formatMonthHeading, getViewLabel } from '../i18n';
+import { formatMonthHeading, getViewLabel, type AcademyNation } from '../i18n';
 import { cn } from '../lib/utils';
 import type { WorkspaceModeConfig, WorkspaceView } from '../modes/types';
 import { AgendaView } from './AgendaView';
@@ -47,6 +47,8 @@ interface CalendarShellProps {
   emptyMessage?: string;
   fillHeight?: boolean;
   focusedBoardItemId?: string | null;
+  holidayNation?: AcademyNation;
+  holidayNations?: AcademyNation[];
   isCompactMonth?: boolean;
   isExpanded?: boolean;
   isSelectedDateToday?: boolean;
@@ -75,6 +77,7 @@ interface CalendarShellProps {
   progressDisplay: CalendarProgressDisplay;
   progressThresholds: CalendarProgressThresholds;
   showCurrentTime?: boolean;
+  todayIso?: string;
 }
 
 export function CalendarShell({
@@ -87,6 +90,8 @@ export function CalendarShell({
   emptyMessage,
   fillHeight = false,
   focusedBoardItemId,
+  holidayNation,
+  holidayNations,
   isCompactMonth = false,
   isExpanded = false,
   isSelectedDateToday = false,
@@ -115,6 +120,7 @@ export function CalendarShell({
   progressDisplay,
   progressThresholds,
   showCurrentTime = false,
+  todayIso,
 }: CalendarShellProps) {
   const { dictionary, language } = useLanguage();
   const monthWheelLockRef = useRef(0);
@@ -412,6 +418,8 @@ export function CalendarShell({
               >
                 <MonthCalendar
                   days={data.days}
+                  holidayNation={holidayNation}
+                  holidayNations={holidayNations}
                   isCompact={isCompactMonth}
                   isExpanded={isExpanded}
                   mobileScope={mobileCalendarScope}
@@ -419,6 +427,7 @@ export function CalendarShell({
                   onSelectItem={onSelectItem}
                   progressDisplay={progressDisplay}
                   progressThresholds={progressThresholds}
+                  todayIso={todayIso}
                 />
               </div>
             ) : null}

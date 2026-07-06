@@ -1,7 +1,7 @@
 import type { CalendarDay } from '../data/mockWorkspaceData';
 import { forwardRef, useCallback, useEffect, useRef, useState } from 'react';
 import { useLanguage } from '../context/LanguageContext';
-import { getHolidayForDate } from '../i18n';
+import { getHolidayForDateByNation, type AcademyNation } from '../i18n';
 import { badgeColorClasses, dotColorClasses, timelineTextClasses } from '@/lib/colorStyles';
 import { cn } from '@/lib/utils';
 import {
@@ -13,12 +13,15 @@ import {
 
 interface DayCellProps {
   day: CalendarDay;
+  holidayNation?: AcademyNation;
+  holidayNations?: AcademyNation[];
   isCompact?: boolean;
   isExpanded?: boolean;
   isSelected?: boolean;
   onSelect: () => void;
   progressDisplay?: CalendarProgressDisplay;
   progressThresholds?: CalendarProgressThresholds;
+  todayIso?: string;
 }
 
 function getDateIsoFromDayId(dayId: string) {
@@ -70,12 +73,15 @@ function getDesktopVisibleEventCount(height: number, isExpanded: boolean, hasTim
 
 export const DayCell = forwardRef<HTMLButtonElement, DayCellProps>(function DayCell({
   day,
+  holidayNation,
+  holidayNations,
   isCompact = false,
   isExpanded = false,
   isSelected = false,
   onSelect,
   progressDisplay = 'linear',
   progressThresholds = defaultCalendarProgressThresholds,
+  todayIso,
 }, ref) {
   const { language } = useLanguage();
   const [cellHeight, setCellHeight] = useState(0);
@@ -112,9 +118,18 @@ export const DayCell = forwardRef<HTMLButtonElement, DayCellProps>(function DayC
     return () => observer.disconnect();
   }, []);
   const dateIso = day.dateIso ?? getDateIsoFromDayId(day.id);
-  const holiday = dateIso ? getHolidayForDate(language, dateIso) : undefined;
-  const isToday = day.isToday || dateIso === getTodayIsoDate();
-  const isRedDate = !day.outsideMonth && Boolean(holiday || day.isSunday || (dateIso && isSundayIsoDate(dateIso)));
+  const effectiveHolidayNations = holidayNations && holidayNations.length > 0
+    ? holidayNations
+    : [holidayNation ?? (language === 'ko' ? 'kr' : 'ca')];
+  const holidays = dateIso
+    ? effectiveHolidayNations
+        .map((nation) => getHolidayForDateByNation(nation, dateIso))
+        .filter((holiday): holiday is NonNullable<typeof holiday> => Boolean(holiday))
+    : [];
+  const holiday = holidays[0];
+  const holidayTitle = holidays.map((currentHoliday) => currentHoliday.label).join(' / ');
+  const isToday = day.isToday || (todayIso ? dateIso === todayIso : dateIso === getTodayIsoDate());
+  const isRedDate = Boolean(holiday || day.isSunday || (dateIso && isSundayIsoDate(dateIso)));
   const todayLabel = language === 'ko' ? '오늘' : 'Today';
   const workloadLabel = language === 'ko' ? '업무량' : 'Workload';
   const mobileEvents = day.events.slice(0, 4);
@@ -160,7 +175,7 @@ export const DayCell = forwardRef<HTMLButtonElement, DayCellProps>(function DayC
                   className={cn(
                     'absolute size-[15px] rounded-[6px] shadow-sm',
                     mobileClusterPositions[index],
-                    dotColorClasses[event.color],
+                    event.isCanceledForHoliday ? 'bg-red-500' : dotColorClasses[event.color],
                     mobileEvents.length === 1 && 'left-1/2 top-1/2 size-5 -translate-x-1/2 -translate-y-1/2 rounded-[7px]',
                   )}
                   key={event.id}
@@ -192,7 +207,7 @@ export const DayCell = forwardRef<HTMLButtonElement, DayCellProps>(function DayC
             isSelected && !isToday && 'bg-muted text-foreground max-[520px]:bg-primary max-[520px]:text-primary-foreground max-[520px]:shadow-sm',
             isSelected && isToday && 'max-[520px]:ring-2 max-[520px]:ring-primary/70 max-[520px]:ring-offset-1 max-[520px]:ring-offset-background',
           )}
-          title={holiday ? `${todayLabel} · ${holiday.label}` : isToday ? todayLabel : undefined}
+          title={holiday ? `${isToday ? `${todayLabel} · ` : ''}${holidayTitle}` : isToday ? todayLabel : undefined}
         >
           {day.dateNumber}
         </span>
@@ -206,7 +221,7 @@ export const DayCell = forwardRef<HTMLButtonElement, DayCellProps>(function DayC
               isRedDate && 'text-red-500',
               isToday && 'bg-primary text-primary-foreground shadow-sm',
             )}
-            title={holiday ? `${todayLabel} · ${holiday.label}` : isToday ? todayLabel : undefined}
+            title={holiday ? `${isToday ? `${todayLabel} · ` : ''}${holidayTitle}` : isToday ? todayLabel : undefined}
           >
             {day.dateNumber}
           </span>
@@ -232,29 +247,40 @@ export const DayCell = forwardRef<HTMLButtonElement, DayCellProps>(function DayC
           {desktopEvents.map((event) => {
             const isStudyEvent = event.type.toLowerCase() === 'study';
             const isDotEvent = event.displayStyle === 'dot' || isStudyEvent;
+            const holidayBadgeLabel = language === 'ko' ? '공휴일' : 'Holiday';
 
             return isDotEvent ? (
               <span
                 className={cn(
-                  'flex min-h-[18px] min-w-0 items-center gap-1.5 px-0.5 py-0.5 text-[10px] font-extrabold leading-none text-foreground',
+                  'relative flex min-h-[18px] min-w-0 items-center gap-1.5 px-0.5 py-0.5 text-[10px] font-extrabold leading-none text-foreground',
                   isCompact && 'min-h-[15px] gap-1 py-0 text-[9px]',
+                  event.isCanceledForHoliday && 'text-red-600 line-through decoration-2 decoration-red-500',
                 )}
                 key={event.id}
+                title={event.isCanceledForHoliday && event.holidayName ? `${event.title} · ${event.holidayName}` : event.title}
               >
                 <span
                   aria-hidden="true"
-                  className={cn('size-2 shrink-0 rounded-full', dotColorClasses[event.color])}
+                  className={cn('size-2 shrink-0 rounded-full', event.isCanceledForHoliday ? 'bg-red-500' : dotColorClasses[event.color])}
                 />
                 <span className="truncate">{event.title}</span>
+                {event.isCanceledForHoliday ? (
+                  <span className="absolute -right-1 -top-1 z-10 rounded-full border border-red-500/35 bg-card px-1 py-0 text-[7px] font-black uppercase leading-none text-red-600 shadow-sm">
+                    {holidayBadgeLabel}
+                  </span>
+                ) : null}
               </span>
             ) : (
               <span
                 className={cn(
-                  'flex min-h-[18px] min-w-0 items-center gap-1 rounded-md border px-1 py-0.5 text-[10px] font-extrabold leading-none',
+                  'relative flex min-h-[18px] min-w-0 items-center gap-1 rounded-md border px-1 py-0.5 text-[10px] font-extrabold leading-none',
                   isCompact && 'min-h-[15px] rounded px-1 py-0 text-[9px]',
-                  badgeColorClasses[event.color],
+                  event.isCanceledForHoliday
+                    ? 'border-red-500/35 bg-red-500/5 text-red-600 line-through decoration-2 decoration-red-500'
+                    : badgeColorClasses[event.color],
                 )}
                 key={event.id}
+                title={event.isCanceledForHoliday && event.holidayName ? `${event.title} · ${event.holidayName}` : event.title}
               >
                 {event.courseLabel && !isCompact ? (
                   <span className="max-w-[58px] shrink-0 truncate rounded bg-background/40 px-1 text-[9px] font-black">
@@ -262,6 +288,11 @@ export const DayCell = forwardRef<HTMLButtonElement, DayCellProps>(function DayC
                   </span>
                 ) : null}
                 <span className="truncate">{event.title}</span>
+                {event.isCanceledForHoliday ? (
+                  <span className="absolute -right-1 -top-1 z-10 rounded-full border border-red-500/35 bg-card px-1 py-0 text-[7px] font-black uppercase leading-none text-red-600 shadow-sm">
+                    {holidayBadgeLabel}
+                  </span>
+                ) : null}
               </span>
             );
           })}

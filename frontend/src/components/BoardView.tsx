@@ -141,7 +141,8 @@ export function BoardView({
   onToggleItemDone,
   showCurrentTime = false,
 }: BoardViewProps) {
-  const { dictionary, translateBoardColumn } = useLanguage();
+  const { dictionary, language, translateBoardColumn } = useLanguage();
+  const holidayBadgeLabel = language === 'ko' ? '공휴일' : 'Holiday';
   const [, setPreferenceVersion] = useState(0);
   const tapTimeoutRef = useRef<{ itemId: string; timeoutId: number } | null>(null);
   const nowMinutes = getNowMinutes();
@@ -339,28 +340,44 @@ export function BoardView({
               >
                 {columnItems.map((item) => {
                   const complete = isComplete(item);
+                  const isCanceledForHoliday = Boolean(item.isCanceledForHoliday);
                   const isEditingTitle = Boolean(item.isTitleEditable && (focusedItemId === item.id || item.title.trim() === ''));
                   const itemTouchMenu = renderItemTouchMenu(item, complete, isDenseBoard);
                   const rowElement = (
                     <div key={item.id}>
                       {renderCurrentTimeIfNeeded(item)}
                       <div
-	                        className={cn(
-	                          'group flex w-full min-w-0 rounded-lg border bg-card text-left shadow-none transition hover:bg-muted/45',
-	                          isDenseBoard
-	                            ? 'relative min-h-12 items-end gap-1.5 px-2 pb-2 pt-5'
-	                            : 'min-h-12 items-center gap-2 p-2',
-	                          !item.isClassSession && complete && 'border-foreground/25 bg-muted/45',
-	                          !item.isLocked && 'cursor-pointer',
-	                        )}
+                        className={cn(
+                          'group flex w-full min-w-0 rounded-lg border bg-card text-left shadow-none transition hover:bg-muted/45',
+                          isDenseBoard
+                            ? 'relative min-h-12 items-end gap-1.5 px-2 pb-2 pt-6'
+                            : 'min-h-12 items-center gap-2 p-2',
+                          complete && !isCanceledForHoliday && 'border-foreground/25 bg-muted/45 opacity-80',
+                          !item.isLocked && 'cursor-pointer',
+                        )}
                         onClick={(event) => {
                           handleRowTap(event, item, isEditingTitle);
                         }}
                       >
+                        {isCanceledForHoliday ? (
+                          <span
+                            className="absolute -right-1 top-1 z-20 max-w-20 truncate rounded-full border border-red-500/35 bg-card px-1.5 py-0.5 text-[9px] font-black uppercase leading-none text-red-600 shadow-sm"
+                            title={item.holidayName}
+                          >
+                            {holidayBadgeLabel}
+                          </span>
+                        ) : null}
                         {item.isClassSession ? (
                           <span
                             aria-hidden="true"
-                            className={cn(isDenseBoard ? 'size-3' : 'size-3', 'shrink-0 rounded-full', dotColorClasses[item.color])}
+                            className={cn(
+                              'shrink-0 rounded-full',
+                              isCanceledForHoliday
+                                ? 'size-3 bg-muted-foreground/35'
+                                : complete
+                                  ? 'size-3 bg-muted-foreground/35'
+                                : cn(isDenseBoard ? 'size-3' : 'size-3', dotColorClasses[item.color]),
+                            )}
                           />
                         ) : (
                           <button
@@ -434,26 +451,33 @@ export function BoardView({
                           ) : (
 	                            <span
 	                              className={cn(
-	                                'block min-w-0 truncate font-semibold leading-snug text-foreground',
-	                                isDenseBoard ? 'text-sm' : 'text-sm',
-	                                !item.isClassSession &&
-	                                  complete &&
-	                                  'text-muted-foreground line-through decoration-2',
-	                              )}
-	                            >
-	                              {item.title || dictionary.boardAddTodoItem}
-	                            </span>
+                                'block min-w-0 truncate font-semibold leading-snug text-foreground',
+                                isDenseBoard ? 'text-sm' : 'text-sm',
+                                complete && !isCanceledForHoliday && 'text-muted-foreground line-through decoration-2',
+                                isCanceledForHoliday && 'text-foreground line-through decoration-2 decoration-red-500',
+                              )}
+                            >
+                              {item.title || dictionary.boardAddTodoItem}
+                            </span>
                           )}
                         </div>
                         {isDenseBoard ? (
                           <EventPill
-                            className="absolute -top-2 -right-1 z-10 max-w-20 shrink-0 px-1.5 text-[10px] shadow-sm"
+                            className={cn(
+                              'absolute -right-0.5 top-1 z-10 max-w-[72px] shrink-0 bg-card/95 px-1.5 text-[10px] shadow-sm backdrop-blur',
+                              isCanceledForHoliday && 'hidden',
+                            )}
                             color={item.color}
                             label={item.type}
                             compact
                           />
                         ) : (
-                          <EventPill className="max-w-20 shrink-0" color={item.color} label={item.type} compact />
+                          <EventPill
+                            className={cn('max-w-20 shrink-0', isCanceledForHoliday && 'hidden')}
+                            color={item.color}
+                            label={item.type}
+                            compact
+                          />
                         )}
                         {itemTouchMenu}
                       </div>

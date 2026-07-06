@@ -97,6 +97,7 @@ public static class GoogleIntegrationEndpoints
         "academy-settings-page",
         "workspace",
         "workspace-dashboard",
+        "workspace-project",
         "workspace-calendar",
         "workspace-board",
         "workspace-timeline",
@@ -111,6 +112,7 @@ public static class GoogleIntegrationEndpoints
         "workspace-chat",
         "workspace-toptrack",
         "workspace-links",
+        "workspace-settings",
         "admin-console",
         "admin-dashboard",
         "admin-users",
@@ -435,6 +437,47 @@ public static class GoogleIntegrationEndpoints
                         user.Email = AuthEndpoints.GetAcademyAccountKey(nextLoginId);
                         user.HostedDomain = "academy.local";
                     }
+                }
+
+                if (request.ContactEmail is not null)
+                {
+                    if (academyAccount is null)
+                    {
+                        return Results.Problem(
+                            title: "Contact email cannot be changed.",
+                            detail: "Google Workspace email is managed by Google.",
+                            statusCode: StatusCodes.Status409Conflict);
+                    }
+
+                    var nextContactEmail = AuthEndpoints.NormalizeContactEmail(request.ContactEmail);
+
+                    if (!string.IsNullOrWhiteSpace(nextContactEmail))
+                    {
+                        if (!AuthEndpoints.IsValidContactEmail(nextContactEmail))
+                        {
+                            return Results.ValidationProblem(new Dictionary<string, string[]>
+                            {
+                                ["contactEmail"] = ["Enter a valid email address."],
+                            });
+                        }
+
+                        var duplicateEmailExists = await db.AdminUsers
+                            .AsNoTracking()
+                            .AnyAsync(
+                                adminUser => adminUser.Id != user.Id &&
+                                    (adminUser.Email == nextContactEmail || adminUser.ContactEmail == nextContactEmail),
+                                cancellationToken);
+
+                        if (duplicateEmailExists)
+                        {
+                            return Results.Problem(
+                                title: "Email is already used.",
+                                detail: "Choose a different email address.",
+                                statusCode: StatusCodes.Status409Conflict);
+                        }
+                    }
+
+                    user.ContactEmail = nextContactEmail;
                 }
 
                 if (!string.IsNullOrWhiteSpace(request.Password))
@@ -2256,6 +2299,7 @@ public static class GoogleIntegrationEndpoints
         return new AdminUserDto(
             user.Id,
             user.Email,
+            user.ContactEmail,
             string.IsNullOrWhiteSpace(user.DisplayName)
                 ? CreateDisplayNameFromEmail(user.Email)
                 : user.DisplayName,
@@ -3777,6 +3821,7 @@ public static class GoogleIntegrationEndpoints
                 "UpdatedAt" timestamp with time zone NOT NULL,
                 "GoogleUserId" character varying(120) NULL,
                 "Email" character varying(320) NOT NULL,
+                "ContactEmail" character varying(320) NULL,
                 "DisplayName" character varying(160) NOT NULL,
                 "PhotoUrl" text NULL,
                 "HostedDomain" character varying(160) NULL,
@@ -3790,8 +3835,12 @@ public static class GoogleIntegrationEndpoints
                 "SessionRevokedAt" timestamp with time zone NULL
             );
             ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS "SessionRevokedAt" timestamp with time zone NULL;
+            ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS "ContactEmail" character varying(320) NULL;
             CREATE UNIQUE INDEX IF NOT EXISTS "IX_admin_users_Email"
                 ON admin_users ("Email");
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_admin_users_ContactEmail"
+                ON admin_users ("ContactEmail")
+                WHERE "ContactEmail" IS NOT NULL;
             CREATE INDEX IF NOT EXISTS "IX_admin_users_GoogleUserId"
                 ON admin_users ("GoogleUserId");
             """,

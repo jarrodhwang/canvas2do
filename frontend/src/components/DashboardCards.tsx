@@ -133,6 +133,7 @@ function isLiveCanvasDashboardRow(row: RenderableDashboardRow) {
 }
 
 type CanvasCourseLoadStatus = 'idle' | 'loading' | 'loaded' | 'failed';
+type AcademyPreferenceLoadStatus = 'idle' | 'loading' | 'loaded' | 'failed';
 type DashboardSnackbar = {
   message: string;
   tone: 'success' | 'error';
@@ -194,6 +195,7 @@ interface ManualAssessmentItem {
   starred?: boolean;
 }
 type CanvasCourseworkPreferences = Record<string, {
+  assignmentId?: string;
   chipColor?: ColorToken;
   completed?: boolean;
   completedAt?: string;
@@ -215,6 +217,7 @@ type CanvasCourseworkPreferences = Record<string, {
   title?: string;
 }>;
 type CanvasAssessmentPreferences = Record<string, {
+  assignmentId?: string;
   assessmentType?: string;
   completed?: boolean;
   completedAt?: string;
@@ -251,9 +254,11 @@ type AcademyOpenCourseworkDialogDetail = Partial<Pick<
   'courseCode' | 'dueAt' | 'startAt' | 'title' | 'semester'
 >>;
 type AcademyRefreshRequestedDetail = {
+  forceRefresh?: boolean;
   registerTask?: (task: Promise<unknown>) => void;
 };
 let academyPreferencesSaveSequence = 0;
+const canvasSubmissionSyncProtectionMs = 15000;
 let academyCalendarSettingsCache: Record<string, unknown> = {};
 let academyCalendarSettingsProtectedUntil = 0;
 const academyCalendarSettingsProtectionMs = 15_000;
@@ -508,6 +513,172 @@ function mergeDefinedSnapshot<TPreference extends object>(
   });
 
   return { changed, nextPreference };
+}
+
+type CanvasSubmissionPreference = {
+  assignmentId?: string;
+  completed?: boolean;
+  completedAt?: string;
+  courseId?: string;
+  hidden?: boolean;
+  isSubmitted?: boolean;
+  submittedAt?: string;
+};
+type ProtectedCanvasSubmissionStatus = Pick<CanvasCalendarItem, 'isSubmitted' | 'submittedAt'> & {
+  expiresAt: number;
+};
+
+function syncCanvasSubmissionPreference<TPreference extends CanvasSubmissionPreference>(
+  preference: TPreference,
+  item: Pick<CanvasCalendarItem, 'isSubmitted' | 'submittedAt'>,
+) {
+  const isSubmitted = Boolean(item.isSubmitted);
+  const submittedAt = isSubmitted ? item.submittedAt : undefined;
+  const nextPreference = {
+    ...preference,
+    completed: isSubmitted,
+    isSubmitted,
+  } as TPreference;
+
+  if (submittedAt) {
+    nextPreference.completedAt = submittedAt;
+    nextPreference.submittedAt = submittedAt;
+  } else {
+    delete nextPreference.completedAt;
+    delete nextPreference.submittedAt;
+  }
+
+  const changed =
+    preference.completed !== nextPreference.completed ||
+    preference.completedAt !== nextPreference.completedAt ||
+    preference.isSubmitted !== nextPreference.isSubmitted ||
+    preference.submittedAt !== nextPreference.submittedAt;
+
+  return { changed, nextPreference };
+}
+
+function getCanvasAssignmentReference(
+  itemId: string,
+  preference: CanvasSubmissionPreference,
+  item?: CanvasCalendarItem,
+) {
+  const courseId = item?.courseId ?? preference.courseId;
+  const assignmentId = item?.assignmentId ?? preference.assignmentId;
+
+  if (courseId && assignmentId) {
+    return { assignmentId, courseId };
+  }
+
+  const idMatch = /^canvas-assignment-(?<courseId>[^-]+)-(?<assignmentId>[^-]+)$/i.exec(itemId);
+
+  if (!idMatch?.groups?.courseId || !idMatch.groups.assignmentId) {
+    return undefined;
+  }
+
+  return {
+    assignmentId: idMatch.groups.assignmentId,
+    courseId: idMatch.groups.courseId,
+  };
+}
+
+function addCanvasAssignmentReferenceKey(
+  keys: Set<string>,
+  itemId: string,
+  preference: CanvasSubmissionPreference,
+  item?: CanvasCalendarItem,
+) {
+  const reference = getCanvasAssignmentReference(itemId, preference, item);
+
+  if (reference) {
+    keys.add(`${reference.courseId}:${reference.assignmentId}`);
+  }
+}
+
+function isRecoverableCanvasSubmissionPreference(preference: CanvasSubmissionPreference) {
+  return Boolean(preference.hidden || (preference.completed && !preference.isSubmitted));
+}
+
+function addRecoverableCanvasAssignmentReferenceKey(
+  keys: Set<string>,
+  itemId: string,
+  preference: CanvasSubmissionPreference,
+  item?: CanvasCalendarItem,
+) {
+  if (!isRecoverableCanvasSubmissionPreference(preference)) {
+    return;
+  }
+
+  addCanvasAssignmentReferenceKey(keys, itemId, preference, item);
+}
+
+function getCanvasSubmissionProtectionKeys(
+  itemId: string,
+  preference: CanvasSubmissionPreference,
+  item?: CanvasCalendarItem,
+) {
+  const keys = [itemId];
+  const reference = getCanvasAssignmentReference(itemId, preference, item);
+
+  if (reference) {
+    keys.push(`${reference.courseId}:${reference.assignmentId}`);
+  }
+
+  return keys;
+}
+
+function protectCanvasSubmissionStatus(
+  protectedStatuses: Map<string, ProtectedCanvasSubmissionStatus>,
+  itemId: string,
+  preference: CanvasSubmissionPreference,
+  item: CanvasCalendarItem | undefined,
+  status: Pick<CanvasCalendarItem, 'isSubmitted' | 'submittedAt'>,
+) {
+  const protectedStatus = {
+    isSubmitted: status.isSubmitted,
+    submittedAt: status.submittedAt,
+    expiresAt: Date.now() + canvasSubmissionSyncProtectionMs,
+  };
+
+  getCanvasSubmissionProtectionKeys(itemId, preference, item).forEach((key) => {
+    protectedStatuses.set(key, protectedStatus);
+  });
+}
+
+function clearProtectedCanvasSubmissionStatus(
+  protectedStatuses: Map<string, ProtectedCanvasSubmissionStatus>,
+  itemId: string,
+  preference: CanvasSubmissionPreference,
+  item?: CanvasCalendarItem,
+) {
+  getCanvasSubmissionProtectionKeys(itemId, preference, item).forEach((key) => {
+    protectedStatuses.delete(key);
+  });
+}
+
+function getProtectedCanvasSubmissionStatus(
+  protectedStatuses: Map<string, ProtectedCanvasSubmissionStatus>,
+  itemId: string,
+  preference: CanvasSubmissionPreference,
+  item?: CanvasCalendarItem,
+) {
+  const now = Date.now();
+
+  for (const key of getCanvasSubmissionProtectionKeys(itemId, preference, item)) {
+    const protectedStatus = protectedStatuses.get(key);
+
+    if (!protectedStatus) {
+      continue;
+    }
+
+    if (protectedStatus.expiresAt <= now) {
+      protectedStatuses.delete(key);
+      continue;
+    }
+
+    return protectedStatus;
+  }
+
+  return undefined;
 }
 
 function getCourseChipColorForCode(
@@ -843,6 +1014,22 @@ function isAssessmentCanvasItem(item: CanvasCalendarItem) {
     ));
 }
 
+function getEffectiveCanvasSubmissionStatus(
+  item: Pick<CanvasCalendarItem, 'isSubmitted' | 'submittedAt'>,
+  preference: CanvasSubmissionPreference,
+) {
+  const isSubmitted = typeof preference.isSubmitted === 'boolean'
+    ? preference.isSubmitted
+    : Boolean(item.isSubmitted);
+
+  return {
+    isSubmitted,
+    submittedAt: isSubmitted
+      ? preference.submittedAt ?? item.submittedAt
+      : undefined,
+  };
+}
+
 function createCanvasAssessmentRows(
   items: CanvasCalendarItem[],
   preferences: CanvasAssessmentPreferences,
@@ -859,6 +1046,7 @@ function createCanvasAssessmentRows(
     .filter((item) => {
       const itemPreferences = preferences[item.id] ?? {};
       const dueAt = item.dueAt || item.startAt;
+      const submissionStatus = getEffectiveCanvasSubmissionStatus(item, itemPreferences);
       const semester = getCanvasItemSemester(
         item,
         itemPreferences,
@@ -871,8 +1059,8 @@ function createCanvasAssessmentRows(
         semesterMatches(semester, selectedSemester, fallbackSemester) &&
         shouldShowCourseworkItem(
           dueAt,
-          Boolean(item.isSubmitted) || Boolean(itemPreferences.completed),
-          item.submittedAt ?? itemPreferences.submittedAt ?? itemPreferences.completedAt,
+          submissionStatus.isSubmitted || Boolean(itemPreferences.completed),
+          submissionStatus.submittedAt ?? itemPreferences.completedAt,
           hideSettings,
         );
     })
@@ -890,7 +1078,7 @@ function createCanvasAssessmentRows(
         'Canvas';
       const dueAt = item.dueAt || item.startAt;
       const assessmentType = itemPreferences.assessmentType || item.type;
-      const isCanvasSubmitted = Boolean(item.isSubmitted);
+      const { isSubmitted: isCanvasSubmitted } = getEffectiveCanvasSubmissionStatus(item, itemPreferences);
       const isCompleted = isCanvasSubmitted || Boolean(itemPreferences.completed);
       const semester = getCanvasItemSemester(
         item,
@@ -981,6 +1169,7 @@ function createCanvasCourseworkRows(
     .filter((item) => {
       const itemPreferences = preferences[item.id] ?? {};
       const dueAt = item.dueAt || item.startAt;
+      const submissionStatus = getEffectiveCanvasSubmissionStatus(item, itemPreferences);
       const semester = getCanvasItemSemester(
         item,
         itemPreferences,
@@ -993,8 +1182,8 @@ function createCanvasCourseworkRows(
         semesterMatches(semester, selectedSemester, fallbackSemester) &&
         shouldShowCourseworkItem(
           dueAt,
-          Boolean(item.isSubmitted) || Boolean(itemPreferences.completed),
-          item.submittedAt ?? itemPreferences.submittedAt ?? itemPreferences.completedAt,
+          submissionStatus.isSubmitted || Boolean(itemPreferences.completed),
+          submissionStatus.submittedAt ?? itemPreferences.completedAt,
           hideSettings,
         );
     })
@@ -1013,7 +1202,7 @@ function createCanvasCourseworkRows(
         'Canvas';
       const dueAt = item.dueAt || item.startAt;
       const courseworkType = itemPreferences.courseworkType || item.type;
-      const isCanvasSubmitted = Boolean(item.isSubmitted);
+      const { isSubmitted: isCanvasSubmitted } = getEffectiveCanvasSubmissionStatus(item, itemPreferences);
       const isCompleted = isCanvasSubmitted || Boolean(itemPreferences.completed);
       const submissionType =
         formatSubmissionType(itemPreferences.submissionType?.trim()) ||
@@ -1586,6 +1775,23 @@ function isCanvasCourseworkPreferences(value: unknown): value is CanvasCoursewor
 
 function isCanvasAssessmentPreferences(value: unknown): value is CanvasAssessmentPreferences {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isCompleteAcademyPreferencePayload(value: unknown): value is AcademyPreferenceValues {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+
+  const preferences = value as Partial<AcademyPreferenceValues>;
+
+  return (
+    Array.isArray(preferences.manualLectures) &&
+    isCanvasLecturePreferences(preferences.canvasLecturePreferences) &&
+    Array.isArray(preferences.manualCoursework) &&
+    isCanvasCourseworkPreferences(preferences.canvasCourseworkPreferences) &&
+    Array.isArray(preferences.manualAssessments) &&
+    isCanvasAssessmentPreferences(preferences.canvasAssessmentPreferences)
+  );
 }
 
 function createCanvasEditableLecture(
@@ -3410,10 +3616,12 @@ interface DashboardCardsProps {
   academyRefocusRefreshThrottleMs?: number;
   compactAcademySummary?: boolean;
   courseworkHideSettings?: CourseworkHideSettings;
+  courseworkShowStudyItems?: boolean;
   effectiveWideSummaryCards?: boolean;
   hideSummaryCards?: boolean;
   onOpenAddItem?: () => void;
   onOpenCourse?: (courseRowId?: string | null, resourceUrl?: string | null) => void;
+  onToggleCourseworkStudyItems?: () => void;
   onPlanMeeting?: () => void;
   onStartMeetingNow?: () => void;
   onWriteInPersonMeetingReport?: () => void;
@@ -3425,10 +3633,12 @@ export function DashboardCards({
   academyRefocusRefreshThrottleMs = defaultAcademyRefocusRefreshThrottleMs,
   compactAcademySummary = false,
   courseworkHideSettings = defaultCourseworkHideSettings,
+  courseworkShowStudyItems = true,
   effectiveWideSummaryCards,
   hideSummaryCards = false,
   onOpenAddItem,
   onOpenCourse,
+  onToggleCourseworkStudyItems,
   onPlanMeeting,
   onStartMeetingNow,
   onWriteInPersonMeetingReport,
@@ -3443,6 +3653,7 @@ export function DashboardCards({
   const [canvasCourseworkItems, setCanvasCourseworkItems] = useState<CanvasCalendarItem[]>([]);
   const [canvasCourseworkLoadStatus, setCanvasCourseworkLoadStatus] = useState<CanvasCourseLoadStatus>('idle');
   const [isAcademyDashboardRefreshInProgress, setIsAcademyDashboardRefreshInProgress] = useState(false);
+  const [isSyncingCanvasCoursework, setIsSyncingCanvasCoursework] = useState(false);
   const [canvasTermName, setCanvasTermName] = useState<string | undefined>();
   const [selectedCourseSemester, setSelectedCourseSemester] = useState<string | undefined>();
   const [isManualLectureDialogOpen, setIsManualLectureDialogOpen] = useState(false);
@@ -3451,6 +3662,8 @@ export function DashboardCards({
   const [manualLectures, setManualLectures] = useState<ManualLecture[]>([]);
   const [canvasLecturePreferences, setCanvasLecturePreferences] = useState<CanvasLecturePreferences>({});
   const [hasLoadedAcademyPreferences, setHasLoadedAcademyPreferences] = useState(false);
+  const [academyPreferencesLoadStatus, setAcademyPreferencesLoadStatus] =
+    useState<AcademyPreferenceLoadStatus>('idle');
   const [manualCoursework, setManualCoursework] = useState<ManualCourseworkItem[]>([]);
   const [canvasCourseworkPreferences, setCanvasCourseworkPreferences] = useState<CanvasCourseworkPreferences>({});
   const [manualAssessments, setManualAssessments] = useState<ManualAssessmentItem[]>([]);
@@ -3477,15 +3690,40 @@ export function DashboardCards({
   const dashboardSnackbarTimeoutRef = useRef<number | null>(null);
   const academyRefreshLongPressTimeoutRef = useRef<number | null>(null);
   const academyRefreshLongPressTriggeredRef = useRef(false);
+  const canvasCourseworkRequestSequenceRef = useRef(0);
+  const protectedCanvasSubmissionStatusesRef = useRef(new Map<string, ProtectedCanvasSubmissionStatus>());
   const dateLocale = getDateLocale(language);
   const selectedManualLecture = selectedManualLectureId
     ? manualLectures.find((lecture) => lecture.id === selectedManualLectureId)
     : undefined;
-  const recoverableCanvasCourseworkCount = [
-    ...Object.values(canvasCourseworkPreferences),
-    ...Object.values(canvasAssessmentPreferences),
-  ].filter((preference) => preference.hidden || ('completed' in preference && preference.completed))
-    .length;
+  const recoverableCanvasCourseworkKeys = new Set<string>();
+  canvasCourseworkItems.forEach((item) => {
+    if (isCourseworkCanvasItem(item)) {
+      addRecoverableCanvasAssignmentReferenceKey(
+        recoverableCanvasCourseworkKeys,
+        item.id,
+        canvasCourseworkPreferences[item.id] ?? {},
+        item,
+      );
+      return;
+    }
+
+    if (isAssessmentCanvasItem(item)) {
+      addRecoverableCanvasAssignmentReferenceKey(
+        recoverableCanvasCourseworkKeys,
+        item.id,
+        canvasAssessmentPreferences[item.id] ?? {},
+        item,
+      );
+    }
+  });
+  Object.entries(canvasCourseworkPreferences).forEach(([itemId, preference]) => {
+    addRecoverableCanvasAssignmentReferenceKey(recoverableCanvasCourseworkKeys, itemId, preference);
+  });
+  Object.entries(canvasAssessmentPreferences).forEach(([itemId, preference]) => {
+    addRecoverableCanvasAssignmentReferenceKey(recoverableCanvasCourseworkKeys, itemId, preference);
+  });
+  const recoverableCanvasCourseworkCount = recoverableCanvasCourseworkKeys.size;
   const selectedCanvasCourse = selectedCanvasCourseId
     ? canvasCourses?.find((course) => course.id === selectedCanvasCourseId)
     : undefined;
@@ -3544,8 +3782,9 @@ export function DashboardCards({
           selectedCanvasAssessment?.type ??
           'quiz',
         completed:
-          Boolean(selectedCanvasAssessment?.isSubmitted) ||
-          Boolean(selectedCanvasAssessmentPreference?.isSubmitted) ||
+          (typeof selectedCanvasAssessmentPreference?.isSubmitted === 'boolean'
+            ? selectedCanvasAssessmentPreference.isSubmitted
+            : Boolean(selectedCanvasAssessment?.isSubmitted)) ||
           Boolean(selectedCanvasAssessmentPreference?.completed),
         hidden: selectedCanvasAssessmentPreference?.hidden,
         semester: selectedCanvasAssessmentPreference?.semester ?? activeCourseSemester,
@@ -3588,8 +3827,9 @@ export function DashboardCards({
           selectedCanvasCoursework?.submissionTypes?.[0] ??
           formatSubmissionType(selectedCanvasCoursework?.type),
         completed:
-          Boolean(selectedCanvasCoursework?.isSubmitted) ||
-          Boolean(selectedCanvasCourseworkPreference?.isSubmitted) ||
+          (typeof selectedCanvasCourseworkPreference?.isSubmitted === 'boolean'
+            ? selectedCanvasCourseworkPreference.isSubmitted
+            : Boolean(selectedCanvasCoursework?.isSubmitted)) ||
           Boolean(selectedCanvasCourseworkPreference?.completed),
         chipColor: selectedCanvasCourseworkPreference?.chipColor ?? 'green',
         hidden: selectedCanvasCourseworkPreference?.hidden,
@@ -3791,6 +4031,38 @@ export function DashboardCards({
   const dashboardCards: RenderableDashboardCard[] = activeMode.dashboardCards.map((card) => {
     const translatedCard = translateDashboardCard(activeMode.id, card);
     const maxRows = translatedCard.maxRows ?? 5;
+    const isWaitingForAcademyPreferences =
+      activeMode.id === 'academy' && !hasLoadedAcademyPreferences;
+
+    if (isWaitingForAcademyPreferences) {
+      if (translatedCard.id === 'semester-lectures') {
+        return {
+          ...translatedCard,
+          pill: activeCourseSemester ?? translatedCard.pill,
+          rows: academyPreferencesLoadStatus === 'failed'
+            ? createMessageRows(dictionary.canvasCoursesUnavailable)
+            : createLoadingRows(dictionary.canvasCoursesLoading),
+        };
+      }
+
+      if (translatedCard.id === 'upcoming-coursework') {
+        return {
+          ...translatedCard,
+          rows: academyPreferencesLoadStatus === 'failed'
+            ? createMessageRows(dictionary.canvasCourseworkUnavailable)
+            : createLoadingRows(dictionary.canvasCourseworkLoading),
+        };
+      }
+
+      if (translatedCard.id === 'upcoming-assessments') {
+        return {
+          ...translatedCard,
+          rows: academyPreferencesLoadStatus === 'failed'
+            ? createMessageRows(dictionary.canvasAssessmentsUnavailable)
+            : createLoadingRows(dictionary.canvasAssessmentsLoading),
+        };
+      }
+    }
 
     if (
       activeMode.id === 'academy' &&
@@ -3940,7 +4212,9 @@ export function DashboardCards({
         ...storedCanvasAssessmentRows,
         ...manualRows,
         ...manualAssessmentRows,
-      ].sort(compareCourseworkCompletionThenDue);
+      ]
+        .filter((row) => courseworkShowStudyItems || row.courseworkType?.toLowerCase() !== 'study')
+        .sort(compareCourseworkCompletionThenDue);
       const isLoadingCoursework =
         canvasCourseworkLoadStatus === 'idle' ||
         canvasCourseworkLoadStatus === 'loading';
@@ -4059,6 +4333,10 @@ export function DashboardCards({
       }
 
       applyAcademyPreferencePatch(event.detail);
+      if (isCompleteAcademyPreferencePayload(event.detail)) {
+        setHasLoadedAcademyPreferences(true);
+        setAcademyPreferencesLoadStatus('loaded');
+      }
     };
 
     const handleOpenCourseworkDialog = (event: Event) => {
@@ -4104,10 +4382,13 @@ export function DashboardCards({
       return undefined;
     }
 
+    const preferenceReadSequence = academyPreferencesSaveSequence;
+
+    setAcademyPreferencesLoadStatus('loading');
     workspaceApi
       .getAcademyPreferences()
       .then((preferences) => {
-        if (isCancelled) {
+        if (isCancelled || preferenceReadSequence !== academyPreferencesSaveSequence) {
           return;
         }
 
@@ -4120,10 +4401,12 @@ export function DashboardCards({
           setSelectedCourseSemester(serverSelectedSemester);
         }
         setHasLoadedAcademyPreferences(true);
+        setAcademyPreferencesLoadStatus('loaded');
       })
       .catch(() => {
         if (!isCancelled) {
           setHasLoadedAcademyPreferences(false);
+          setAcademyPreferencesLoadStatus('failed');
         }
       });
 
@@ -4135,6 +4418,7 @@ export function DashboardCards({
   useEffect(() => {
     if (activeMode.id !== 'academy') {
       setHasLoadedAcademyPreferences(false);
+      setAcademyPreferencesLoadStatus('idle');
       return undefined;
     }
 
@@ -4146,15 +4430,25 @@ export function DashboardCards({
       }
 
       isSyncing = true;
+      const preferenceReadSequence = academyPreferencesSaveSequence;
       workspaceApi
         .getAcademyPreferences()
         .then((preferences) => {
+          if (preferenceReadSequence !== academyPreferencesSaveSequence) {
+            return;
+          }
+
           if (preferences.exists) {
             cacheAcademyPreferencesResponse(preferences);
           }
           setHasLoadedAcademyPreferences(true);
+          setAcademyPreferencesLoadStatus('loaded');
         })
-        .catch(() => undefined)
+        .catch(() => {
+          if (!hasLoadedAcademyPreferences) {
+            setAcademyPreferencesLoadStatus('failed');
+          }
+        })
         .finally(() => {
           isSyncing = false;
         });
@@ -4184,7 +4478,7 @@ export function DashboardCards({
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.clearInterval(syncInterval);
     };
-  }, [academyAutoRefreshIntervalMs, academyRefocusRefreshThrottleMs, activeMode.id]);
+  }, [academyAutoRefreshIntervalMs, academyRefocusRefreshThrottleMs, activeMode.id, hasLoadedAcademyPreferences]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -4233,6 +4527,7 @@ export function DashboardCards({
     }
 
     setCanvasCourseworkLoadStatus('loading');
+    const requestSequence = ++canvasCourseworkRequestSequenceRef.current;
     workspaceApi
       .getCanvasCalendarItems({
         endDate: getFutureDateString(120),
@@ -4240,7 +4535,7 @@ export function DashboardCards({
         startDate: getPastDateString(30),
       })
       .then(({ items }) => {
-        if (isCancelled) {
+        if (isCancelled || canvasCourseworkRequestSequenceRef.current !== requestSequence) {
           return;
         }
 
@@ -4248,7 +4543,7 @@ export function DashboardCards({
         setCanvasCourseworkLoadStatus('loaded');
       })
       .catch(() => {
-        if (isCancelled) {
+        if (isCancelled || canvasCourseworkRequestSequenceRef.current !== requestSequence) {
           return;
         }
 
@@ -4632,7 +4927,8 @@ export function DashboardCards({
           canvasLecturePreferencesRef.current,
           fallbackCourseSemester,
         );
-        const { changed: preferenceChanged, nextPreference } = mergeDefinedSnapshot(preference, {
+        const { changed: snapshotChanged, nextPreference: snapshotPreference } = mergeDefinedSnapshot(preference, {
+          assignmentId: item.assignmentId ?? preference.assignmentId,
           courseCode,
           courseId: item.courseId,
           courseName: item.courseName,
@@ -4640,17 +4936,21 @@ export function DashboardCards({
           dueAt: item.dueAt ?? preference.dueAt,
           endAt: item.endAt ?? preference.endAt,
           htmlUrl: item.htmlUrl,
-          completedAt: item.isSubmitted ? item.submittedAt ?? preference.completedAt : preference.completedAt,
-          isSubmitted: Boolean(item.isSubmitted),
           originalCourseCode: item.courseCode?.trim() || courseCode,
           semester,
           startAt: item.startAt ?? preference.startAt,
-          submittedAt: item.submittedAt,
           submissionType: preference.submissionType ?? item.submissionTypes?.[0] ?? formatSubmissionType(item.type),
           title: preference.title ?? item.title,
         });
+        const submissionStatus =
+          getProtectedCanvasSubmissionStatus(protectedCanvasSubmissionStatusesRef.current, item.id, snapshotPreference, item) ??
+          item;
+        const { changed: submissionChanged, nextPreference } = syncCanvasSubmissionPreference(
+          snapshotPreference,
+          submissionStatus,
+        );
 
-        if (preferenceChanged) {
+        if (snapshotChanged || submissionChanged) {
           nextPreferences[item.id] = nextPreference;
           changed = true;
         }
@@ -4678,7 +4978,8 @@ export function DashboardCards({
           canvasLecturePreferencesRef.current,
           fallbackCourseSemester,
         );
-        const { changed: preferenceChanged, nextPreference } = mergeDefinedSnapshot(preference, {
+        const { changed: snapshotChanged, nextPreference: snapshotPreference } = mergeDefinedSnapshot(preference, {
+          assignmentId: item.assignmentId ?? preference.assignmentId,
           assessmentType: preference.assessmentType ?? item.type,
           courseCode,
           courseId: item.courseId,
@@ -4686,16 +4987,20 @@ export function DashboardCards({
           dueAt: item.dueAt ?? preference.dueAt,
           endAt: item.endAt ?? preference.endAt,
           htmlUrl: item.htmlUrl,
-          completedAt: item.isSubmitted ? item.submittedAt ?? preference.completedAt : preference.completedAt,
-          isSubmitted: Boolean(item.isSubmitted),
           originalCourseCode: item.courseCode?.trim() || courseCode,
           semester,
           startAt: item.startAt ?? preference.startAt,
-          submittedAt: item.submittedAt,
           title: preference.title ?? item.title,
         });
+        const submissionStatus =
+          getProtectedCanvasSubmissionStatus(protectedCanvasSubmissionStatusesRef.current, item.id, snapshotPreference, item) ??
+          item;
+        const { changed: submissionChanged, nextPreference } = syncCanvasSubmissionPreference(
+          snapshotPreference,
+          submissionStatus,
+        );
 
-        if (preferenceChanged) {
+        if (snapshotChanged || submissionChanged) {
           nextPreferences[item.id] = nextPreference;
           changed = true;
         }
@@ -5505,7 +5810,15 @@ export function DashboardCards({
     if (row.courseworkSource === 'canvas' && row.canvasCourseworkId) {
       updateStoredCanvasCourseworkPreferences((currentPreferences) => {
         const currentItemPreferences = currentPreferences[row.canvasCourseworkId!] ?? {};
+        const liveItem = canvasCourseworkItems.find((item) => item.id === row.canvasCourseworkId);
         const nextCompleted = !currentItemPreferences.completed;
+
+        clearProtectedCanvasSubmissionStatus(
+          protectedCanvasSubmissionStatusesRef.current,
+          row.canvasCourseworkId!,
+          currentItemPreferences,
+          liveItem,
+        );
 
         return {
           ...currentPreferences,
@@ -5513,6 +5826,8 @@ export function DashboardCards({
             ...currentItemPreferences,
             completed: nextCompleted,
             completedAt: nextCompleted ? checkedAt : undefined,
+            isSubmitted: false,
+            submittedAt: undefined,
           },
         };
       });
@@ -5544,7 +5859,15 @@ export function DashboardCards({
     if (row.assessmentSource === 'canvas' && row.canvasAssessmentId) {
       updateStoredCanvasAssessmentPreferences((currentPreferences) => {
         const currentItemPreferences = currentPreferences[row.canvasAssessmentId!] ?? {};
+        const liveItem = canvasCourseworkItems.find((item) => item.id === row.canvasAssessmentId);
         const nextCompleted = !currentItemPreferences.completed;
+
+        clearProtectedCanvasSubmissionStatus(
+          protectedCanvasSubmissionStatusesRef.current,
+          row.canvasAssessmentId!,
+          currentItemPreferences,
+          liveItem,
+        );
 
         return {
           ...currentPreferences,
@@ -5552,6 +5875,8 @@ export function DashboardCards({
             ...currentItemPreferences,
             completed: nextCompleted,
             completedAt: nextCompleted ? checkedAt : undefined,
+            isSubmitted: false,
+            submittedAt: undefined,
           },
         };
       });
@@ -5619,27 +5944,209 @@ export function DashboardCards({
     )));
   };
 
-  const handleRestoreCanvasCoursework = () => {
-    updateStoredCanvasCourseworkPreferences((currentPreferences) => (
-      Object.fromEntries(Object.entries(currentPreferences).map(([courseworkId, preference]) => [
-        courseworkId,
-        {
+  const handleSyncCanvasCoursework = async () => {
+    if (activeMode.id !== 'academy' || isSyncingCanvasCoursework) {
+      return;
+    }
+
+    const courseworkPreferencesSnapshot = canvasCourseworkPreferencesRef.current;
+    const assessmentPreferencesSnapshot = canvasAssessmentPreferencesRef.current;
+    const courseworkIdsToSync = new Set<string>();
+    const assessmentIdsToSync = new Set<string>();
+
+    canvasCourseworkItems.forEach((item) => {
+      const courseworkPreference = courseworkPreferencesSnapshot[item.id] ?? {};
+      const assessmentPreference = assessmentPreferencesSnapshot[item.id] ?? {};
+
+      if (
+        isCourseworkCanvasItem(item) &&
+        isRecoverableCanvasSubmissionPreference(courseworkPreference) &&
+        getCanvasAssignmentReference(item.id, courseworkPreference, item)
+      ) {
+        courseworkIdsToSync.add(item.id);
+        return;
+      }
+
+      if (
+        isAssessmentCanvasItem(item) &&
+        isRecoverableCanvasSubmissionPreference(assessmentPreference) &&
+        getCanvasAssignmentReference(item.id, assessmentPreference, item)
+      ) {
+        assessmentIdsToSync.add(item.id);
+      }
+    });
+    Object.entries(courseworkPreferencesSnapshot).forEach(([courseworkId, preference]) => {
+      if (isRecoverableCanvasSubmissionPreference(preference) && getCanvasAssignmentReference(courseworkId, preference)) {
+        courseworkIdsToSync.add(courseworkId);
+      }
+    });
+    Object.entries(assessmentPreferencesSnapshot).forEach(([assessmentId, preference]) => {
+      if (isRecoverableCanvasSubmissionPreference(preference) && getCanvasAssignmentReference(assessmentId, preference)) {
+        assessmentIdsToSync.add(assessmentId);
+      }
+    });
+
+    if (courseworkIdsToSync.size === 0 && assessmentIdsToSync.size === 0) {
+      return;
+    }
+
+    academyPreferencesSaveSequence += 1;
+    canvasCourseworkRequestSequenceRef.current += 1;
+    setIsSyncingCanvasCoursework(true);
+
+    const liveItemsById = new Map(
+      canvasCourseworkItems.map((item) => [item.id, item]),
+    );
+    const statusByItemId = new Map<string, Pick<CanvasCalendarItem, 'isSubmitted' | 'submittedAt'>>();
+    const metadataByItemId = new Map<string, { assignmentId?: string; courseId?: string }>();
+    let unresolvedCheckedItems = 0;
+
+    const syncStatusRequests = [
+      ...Array.from(courseworkIdsToSync).map((itemId) => ({
+        itemId,
+        preference: courseworkPreferencesSnapshot[itemId] ?? {},
+      })),
+      ...Array.from(assessmentIdsToSync).map((itemId) => ({
+        itemId,
+        preference: assessmentPreferencesSnapshot[itemId] ?? {},
+      })),
+    ];
+
+    try {
+      await Promise.all(syncStatusRequests.map(async ({ itemId, preference }) => {
+        if (!preference) {
+          return;
+        }
+
+        const liveItem = liveItemsById.get(itemId);
+        const assignmentReference = getCanvasAssignmentReference(itemId, preference, liveItem);
+
+        if (assignmentReference) {
+          metadataByItemId.set(itemId, assignmentReference);
+
+          try {
+            const assignment = await workspaceApi.getCanvasCourseAssignment(
+              assignmentReference.courseId,
+              assignmentReference.assignmentId,
+            );
+
+            statusByItemId.set(itemId, {
+              isSubmitted: assignment.isSubmitted,
+              submittedAt: assignment.submittedAt,
+            });
+            protectCanvasSubmissionStatus(
+              protectedCanvasSubmissionStatusesRef.current,
+              itemId,
+              {
+                ...preference,
+                assignmentId: assignmentReference.assignmentId,
+                courseId: assignmentReference.courseId,
+              },
+              liveItem,
+              {
+                isSubmitted: assignment.isSubmitted,
+                submittedAt: assignment.submittedAt,
+              },
+            );
+            return;
+          } catch {
+            if (preference.completed) {
+              unresolvedCheckedItems += 1;
+            }
+            return;
+          }
+        }
+
+        if (preference.completed) {
+          unresolvedCheckedItems += 1;
+        }
+      }));
+
+    if (statusByItemId.size > 0) {
+      setCanvasCourseworkItems((currentItems) => currentItems.map((item) => {
+        const status = statusByItemId.get(item.id);
+
+        if (!status) {
+          return item;
+        }
+
+        return {
+          ...item,
+          isSubmitted: status.isSubmitted,
+          submittedAt: status.submittedAt,
+        };
+      }));
+    }
+
+    updateStoredCanvasCourseworkPreferences((currentPreferences) => {
+      let changed = false;
+      const nextPreferences = { ...currentPreferences };
+
+      courseworkIdsToSync.forEach((courseworkId) => {
+        const preference = currentPreferences[courseworkId] ?? courseworkPreferencesSnapshot[courseworkId] ?? {};
+
+        if (!preference) {
+          return;
+        }
+
+        const status = statusByItemId.get(courseworkId);
+        const metadata = metadataByItemId.get(courseworkId);
+        const visiblePreference = {
           ...preference,
-          completed: false,
+          assignmentId: metadata?.assignmentId ?? preference.assignmentId,
+          courseId: metadata?.courseId ?? preference.courseId,
           hidden: false,
-        },
-      ]))
-    ));
-    updateStoredCanvasAssessmentPreferences((currentPreferences) => (
-      Object.fromEntries(Object.entries(currentPreferences).map(([assessmentId, preference]) => [
-        assessmentId,
-        {
+        };
+        const { changed: submissionChanged, nextPreference } = status
+          ? syncCanvasSubmissionPreference(visiblePreference, status)
+          : { changed: false, nextPreference: visiblePreference };
+
+        if (preference.hidden || submissionChanged) {
+          nextPreferences[courseworkId] = nextPreference;
+          changed = true;
+        }
+      });
+
+      return changed ? nextPreferences : currentPreferences;
+    });
+    updateStoredCanvasAssessmentPreferences((currentPreferences) => {
+      let changed = false;
+      const nextPreferences = { ...currentPreferences };
+
+      assessmentIdsToSync.forEach((assessmentId) => {
+        const preference = currentPreferences[assessmentId] ?? assessmentPreferencesSnapshot[assessmentId] ?? {};
+
+        if (!preference) {
+          return;
+        }
+
+        const status = statusByItemId.get(assessmentId);
+        const metadata = metadataByItemId.get(assessmentId);
+        const visiblePreference = {
           ...preference,
-          completed: false,
+          assignmentId: metadata?.assignmentId ?? preference.assignmentId,
+          courseId: metadata?.courseId ?? preference.courseId,
           hidden: false,
-        },
-      ]))
-    ));
+        };
+        const { changed: submissionChanged, nextPreference } = status
+          ? syncCanvasSubmissionPreference(visiblePreference, status)
+          : { changed: false, nextPreference: visiblePreference };
+
+        if (preference.hidden || submissionChanged) {
+          nextPreferences[assessmentId] = nextPreference;
+          changed = true;
+        }
+      });
+
+      return changed ? nextPreferences : currentPreferences;
+    });
+
+    if (unresolvedCheckedItems > 0) {
+      showDashboardSnackbar({ message: dictionary.academyDashboardRefreshFailed, tone: 'error' });
+    }
+    } finally {
+      setIsSyncingCanvasCoursework(false);
+    }
   };
 
   const handleRefreshMessages = () => {
@@ -5682,28 +6189,34 @@ export function DashboardCards({
       return;
     }
 
-    await refreshAcademyDashboardData();
+    await refreshAcademyDashboardData({ forceCanvasRefresh: true });
   };
 
-  const refreshAcademyDashboardData = async () => {
+  const refreshAcademyDashboardData = async (options: { forceCanvasRefresh?: boolean } = {}) => {
     if (activeMode.id !== 'academy') {
-      return;
+      return null;
     }
 
     setIsAcademyDashboardRefreshInProgress(true);
     setCanvasCourseLoadStatus('loading');
     setCanvasCourseworkLoadStatus('loading');
+    if (!hasLoadedAcademyPreferences) {
+      setAcademyPreferencesLoadStatus('loading');
+    }
+    const courseworkRequestSequence = ++canvasCourseworkRequestSequenceRef.current;
 
     const externalRefreshTasks: Promise<unknown>[] = [];
 
     window.dispatchEvent(new CustomEvent<AcademyRefreshRequestedDetail>(academyRefreshRequestedEvent, {
       detail: {
+        forceRefresh: Boolean(options.forceCanvasRefresh),
         registerTask: (task) => {
           externalRefreshTasks.push(task);
         },
       },
     }));
 
+    const preferenceReadSequence = academyPreferencesSaveSequence;
     const preferencesTask = workspaceApi.getAcademyPreferences();
     const coursesTask = workspaceApi.getCanvasCourses(20);
     const externalResultsTask = Promise.allSettled(externalRefreshTasks);
@@ -5715,6 +6228,7 @@ export function DashboardCards({
     const [courseworkResult, externalResults] = await Promise.all([
       workspaceApi.getCanvasCalendarItems({
         endDate: getFutureDateString(120),
+        forceRefresh: Boolean(options.forceCanvasRefresh),
         pageSize: 100,
         startDate: getPastDateString(30),
       }).then(
@@ -5724,7 +6238,10 @@ export function DashboardCards({
       externalResultsTask,
     ]);
 
-    if (preferencesResult.status === 'fulfilled') {
+    if (
+      preferencesResult.status === 'fulfilled' &&
+      preferenceReadSequence === academyPreferencesSaveSequence
+    ) {
       const values = getAcademyPreferenceValues(preferencesResult.value);
       const serverSelectedSemester = getSelectedSemesterFromSettings(preferencesResult.value.calendarSettings);
 
@@ -5735,8 +6252,12 @@ export function DashboardCards({
         setSelectedCourseSemester(serverSelectedSemester);
       }
       setHasLoadedAcademyPreferences(true);
-    } else {
-      setHasLoadedAcademyPreferences(false);
+      setAcademyPreferencesLoadStatus('loaded');
+    } else if (preferencesResult.status === 'rejected') {
+      if (!hasLoadedAcademyPreferences) {
+        setHasLoadedAcademyPreferences(false);
+        setAcademyPreferencesLoadStatus('failed');
+      }
     }
 
     if (coursesResult.status === 'fulfilled') {
@@ -5749,10 +6270,16 @@ export function DashboardCards({
       setCanvasCourseLoadStatus('failed');
     }
 
-    if (courseworkResult.status === 'fulfilled') {
-      setCanvasCourseworkItems(courseworkResult.value.items);
+    let syncedCanvasCourseworkItems: CanvasCalendarItem[] | null = null;
+
+    if (
+      courseworkResult.status === 'fulfilled' &&
+      canvasCourseworkRequestSequenceRef.current === courseworkRequestSequence
+    ) {
+      syncedCanvasCourseworkItems = courseworkResult.value.items;
+      setCanvasCourseworkItems(syncedCanvasCourseworkItems);
       setCanvasCourseworkLoadStatus('loaded');
-    } else {
+    } else if (canvasCourseworkRequestSequenceRef.current === courseworkRequestSequence) {
       setCanvasCourseworkItems([]);
       setCanvasCourseworkLoadStatus('failed');
     }
@@ -5769,6 +6296,8 @@ export function DashboardCards({
     } else {
       showDashboardSnackbar({ message: dictionary.academyDashboardRefreshFailed, tone: 'error' });
     }
+
+    return syncedCanvasCourseworkItems;
   };
 
   const startAcademyRefreshLongPress = () => {
@@ -5833,48 +6362,78 @@ export function DashboardCards({
     }
 
     if (card.id === 'upcoming-coursework') {
+      const studyToggleButton = (
+        <Button
+          aria-label={courseworkShowStudyItems ? dictionary.courseworkHideStudyItems : dictionary.courseworkShowStudyItems}
+          className={cn(
+            'size-7 border-border bg-background/70 text-muted-foreground hover:text-foreground',
+            !courseworkShowStudyItems && 'border-primary/45 bg-primary/10 text-primary',
+          )}
+          disabled={!onToggleCourseworkStudyItems}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleCourseworkStudyItems?.();
+          }}
+          size="icon-sm"
+          title={courseworkShowStudyItems ? dictionary.courseworkHideStudyItems : dictionary.courseworkShowStudyItems}
+          type="button"
+          variant="outline"
+        >
+          {courseworkShowStudyItems ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+        </Button>
+      );
+
       if (recoverableCanvasCourseworkCount === 0) {
         return (
-          <Button
-            aria-label={dictionary.courseworkAdd}
-            className="size-7 border-border bg-background/70 text-muted-foreground hover:text-foreground"
-            onClick={() => setIsCourseworkDialogOpen(true)}
-            size="icon-sm"
-            title={dictionary.courseworkAdd}
-            type="button"
-            variant="outline"
-          >
-            <Plus className="size-3.5" />
-          </Button>
-        );
-      }
-
-      return (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
+          <>
+            {studyToggleButton}
             <Button
-              aria-label={dictionary.courseworkActions}
-              className="h-7 gap-1 rounded-md border-border bg-background/70 px-2 text-muted-foreground hover:bg-muted hover:text-foreground"
-              size="sm"
-              title={dictionary.courseworkActions}
+              aria-label={dictionary.courseworkAdd}
+              className="size-7 border-border bg-background/70 text-muted-foreground hover:text-foreground"
+              onClick={() => setIsCourseworkDialogOpen(true)}
+              size="icon-sm"
+              title={dictionary.courseworkAdd}
               type="button"
               variant="outline"
             >
               <Plus className="size-3.5" />
-              <ChevronDown className="size-3.5" />
             </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-56">
-            <DropdownMenuItem onSelect={() => setIsCourseworkDialogOpen(true)}>
-              <Plus className="size-4" />
-              <span>{dictionary.courseworkAdd}</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={handleRestoreCanvasCoursework}>
-              <Eye className="size-4" />
-              <span>{dictionary.courseworkRestoreCanvas}</span>
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+          </>
+        );
+      }
+
+      return (
+        <>
+          {studyToggleButton}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                aria-label={dictionary.courseworkActions}
+                className="h-7 gap-1 rounded-md border-border bg-background/70 px-2 text-muted-foreground hover:bg-muted hover:text-foreground"
+                size="sm"
+                title={dictionary.courseworkActions}
+                type="button"
+                variant="outline"
+              >
+                <Plus className="size-3.5" />
+                <ChevronDown className="size-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-56">
+              <DropdownMenuItem onSelect={() => setIsCourseworkDialogOpen(true)}>
+                <Plus className="size-4" />
+                <span>{dictionary.courseworkAdd}</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={isSyncingCanvasCoursework}
+                onSelect={() => { void handleSyncCanvasCoursework(); }}
+              >
+                <RefreshCw className={cn('size-4', isSyncingCanvasCoursework && 'animate-spin')} />
+                <span>{dictionary.courseworkRestoreCanvas}</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </>
       );
     }
 

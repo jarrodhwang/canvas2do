@@ -111,6 +111,7 @@ export function AdminUsersView() {
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [userDetail, setUserDetail] = useState<AdminUserDetail | null>(null);
   const [detailDraft, setDetailDraft] = useState({
+    contactEmail: '',
     displayName: '',
     loginId: '',
     password: '',
@@ -188,6 +189,7 @@ export function AdminUsersView() {
     return users.filter((user) => (
       user.displayName.toLowerCase().includes(normalizedQuery) ||
       user.email.toLowerCase().includes(normalizedQuery) ||
+      (user.contactEmail ?? '').toLowerCase().includes(normalizedQuery) ||
       (groupNamesByUserId.get(user.id) ?? []).some((groupName) => (
         groupName.toLowerCase().includes(normalizedQuery)
       ))
@@ -203,6 +205,7 @@ export function AdminUsersView() {
     setSelectedUserId(userId);
     setUserDetail(null);
     setDetailDraft({
+      contactEmail: '',
       displayName: '',
       loginId: '',
       password: '',
@@ -216,6 +219,7 @@ export function AdminUsersView() {
       const detail = await workspaceApi.getAdminUserDetail(userId);
       setUserDetail(detail);
       setDetailDraft({
+        contactEmail: detail.user.contactEmail ?? '',
         displayName: detail.user.displayName,
         loginId: detail.academyLoginId ?? '',
         password: '',
@@ -286,6 +290,7 @@ export function AdminUsersView() {
 
     try {
       const updatedUser = await workspaceApi.updateAdminUser(selectedUser.id, {
+        contactEmail: selectedUser.isAcademyUser ? detailDraft.contactEmail : undefined,
         displayName: detailDraft.displayName,
         loginId: selectedUser.isAcademyUser ? detailDraft.loginId : undefined,
         password: selectedUser.isAcademyUser && detailDraft.password ? detailDraft.password : undefined,
@@ -529,7 +534,9 @@ export function AdminUsersView() {
                         <Badge className="rounded-md" variant="outline">Google</Badge>
                       )}
                     </div>
-                    <div className="truncate text-xs font-bold text-muted-foreground">{selectedUser.email}</div>
+                    <div className="truncate text-xs font-bold text-muted-foreground">
+                      {selectedUser.isAcademyUser ? selectedUser.contactEmail || 'No email set' : selectedUser.email}
+                    </div>
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -606,6 +613,17 @@ export function AdminUsersView() {
                         disabled={isDetailLoading || !selectedUser.isAcademyUser}
                         onChange={(event) => updateDetailDraft('loginId', event.target.value)}
                         value={selectedUser.isAcademyUser ? detailDraft.loginId : selectedUser.email}
+                      />
+                    </Label>
+                    <Label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                      <span>Actual email</span>
+                      <Input
+                        autoComplete="email"
+                        disabled={isDetailLoading || !selectedUser.isAcademyUser}
+                        onChange={(event) => updateDetailDraft('contactEmail', event.target.value)}
+                        placeholder={selectedUser.isAcademyUser ? 'Optional' : 'Managed by Google'}
+                        type="email"
+                        value={selectedUser.isAcademyUser ? detailDraft.contactEmail : selectedUser.email}
                       />
                     </Label>
                     <Label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">

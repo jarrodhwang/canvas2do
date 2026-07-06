@@ -2,7 +2,7 @@ import type { CalendarDay } from '../data/mockWorkspaceData';
 import { Plus } from 'lucide-react';
 import { useState } from 'react';
 import { useLanguage } from '../context/LanguageContext';
-import { getWeekdayLabels } from '../i18n';
+import { getWeekdayLabels, type AcademyNation } from '../i18n';
 import { cn } from '../lib/utils';
 import type { CalendarProgressDisplay, CalendarProgressThresholds } from './CalendarProgressIndicator';
 import { DayCell } from './DayCell';
@@ -17,6 +17,8 @@ import {
 
 interface MonthCalendarProps {
   days: CalendarDay[];
+  holidayNation?: AcademyNation;
+  holidayNations?: AcademyNation[];
   isCompact?: boolean;
   isExpanded?: boolean;
   mobileScope?: 'month' | 'week';
@@ -24,10 +26,13 @@ interface MonthCalendarProps {
   onSelectItem: (day: CalendarDay) => void;
   progressDisplay: CalendarProgressDisplay;
   progressThresholds: CalendarProgressThresholds;
+  todayIso?: string;
 }
 
 export function MonthCalendar({
   days,
+  holidayNation,
+  holidayNations,
   isCompact = false,
   isExpanded = false,
   mobileScope = 'month',
@@ -35,6 +40,7 @@ export function MonthCalendar({
   onSelectItem,
   progressDisplay,
   progressThresholds,
+  todayIso,
 }: MonthCalendarProps) {
   const { dictionary, language } = useLanguage();
   const weekdays = getWeekdayLabels(language);
@@ -52,6 +58,8 @@ export function MonthCalendar({
   const renderDayCell = (day: CalendarDay) => (
     <DayCell
       day={day}
+      holidayNation={holidayNation}
+      holidayNations={holidayNations}
       isCompact={isCompact}
       isExpanded={isExpanded}
       isSelected={day.id === selectedDayId}
@@ -62,6 +70,7 @@ export function MonthCalendar({
       }}
       progressDisplay={progressDisplay}
       progressThresholds={progressThresholds}
+      todayIso={todayIso}
     />
   );
 

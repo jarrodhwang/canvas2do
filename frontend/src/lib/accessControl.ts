@@ -31,6 +31,7 @@ const sidebarAccessKeys: Record<string, Record<string, string[]>> = {
   },
   project: {
     dashboard: ['workspace-dashboard'],
+    project: ['workspace-project', 'workspace'],
     calendar: ['workspace-calendar', 'workspace'],
     board: ['workspace-board'],
     timeline: ['workspace-timeline'],
@@ -45,6 +46,7 @@ const sidebarAccessKeys: Record<string, Record<string, string[]>> = {
     drive: ['workspace-drive'],
     toptrack: ['workspace-toptrack'],
     links: ['workspace-links'],
+    settings: ['workspace-settings'],
   },
 };
 

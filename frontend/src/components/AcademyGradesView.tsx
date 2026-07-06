@@ -575,9 +575,14 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
     ));
   }, [rows, selectedSemester]);
 
+  const hasLoadedAcademyPreferences = Boolean(academyPreferences);
   const visibleRows = useMemo(
-    () => rows.filter((row) => normalizeSemesterName(row.semester) === normalizeSemesterName(selectedSemester)),
-    [rows, selectedSemester],
+    () => (
+      hasLoadedAcademyPreferences
+        ? rows.filter((row) => normalizeSemesterName(row.semester) === normalizeSemesterName(selectedSemester))
+        : []
+    ),
+    [hasLoadedAcademyPreferences, rows, selectedSemester],
   );
 
   useEffect(() => {
@@ -636,7 +641,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
   const courseCountLabel = visibleRows.length === 1
     ? dictionary.courseOverviewCountLabel
     : dictionary.courseOverviewCountLabel;
-  const isLoading = loadStatus === 'loading';
+  const isLoading = loadStatus === 'loading' || (!hasLoadedAcademyPreferences && loadStatus !== 'failed');
   const toggleExpandedRow = (rowId: string) => {
     setExpandedRowIds((currentExpandedRowIds) => {
       const nextExpandedRowIds = new Set(currentExpandedRowIds);

@@ -6,6 +6,8 @@ export interface CalendarEvent {
   color: ColorToken;
   courseLabel?: string;
   displayStyle?: 'dot';
+  holidayName?: string;
+  isCanceledForHoliday?: boolean;
   type: string;
   time?: string;
 }
@@ -37,6 +39,8 @@ export interface AgendaItem {
   canOpenDetails?: boolean;
   isCanvasSource?: boolean;
   isArchivedCanvasItem?: boolean;
+  holidayName?: string;
+  isCanceledForHoliday?: boolean;
   isCompleted?: boolean;
   isLocked?: boolean;
   isStarred?: boolean;
@@ -50,8 +54,11 @@ export interface BoardItem {
   color: ColorToken;
   checklistProgress: string;
   dueAt?: string;
+  endAt?: string;
   isCompleted?: boolean;
   isClassSession?: boolean;
+  holidayName?: string;
+  isCanceledForHoliday?: boolean;
   isLocked?: boolean;
   isTitleEditable?: boolean;
   canOpenDetails?: boolean;

@@ -58,6 +58,13 @@ public sealed record SaveAcademyPreferencesRequest(
     JsonElement CanvasAssessmentPreferences,
     JsonElement CalendarSettings);
 
+public sealed record WorkspacePreferencesDto(
+    JsonElement Settings,
+    bool Exists);
+
+public sealed record SaveWorkspacePreferencesRequest(
+    JsonElement Settings);
+
 public sealed record StaticImageConfigDto(
     string PublicBasePath,
     string NginxVolumePath,
@@ -117,9 +124,18 @@ public sealed record AcademyCredentialSignupDto(
     string AccountStatus,
     bool CanvasTokenConfigured);
 
+public sealed record UpdateAcademyProfileRequest(
+    string? DisplayName,
+    string? LoginId,
+    string? ContactEmail,
+    string? Password,
+    string? ProfileImageDataUrl,
+    bool? RemoveProfileImage);
+
 public sealed record AdminUserDto(
     Guid Id,
     string Email,
+    string? ContactEmail,
     string DisplayName,
     string? PhotoUrl,
     string? Role,
@@ -143,6 +159,7 @@ public sealed record UpdateAdminUserRequest(
     string? PhotoUrl,
     string? Role,
     string? LoginId,
+    string? ContactEmail,
     string? Password,
     string? Status,
     bool? ApiAccessEnabled);

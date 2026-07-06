@@ -13,6 +13,7 @@ namespace Incos.Workspace.Api.Endpoints;
 public static class WorkspaceEndpoints
 {
     public const string AcademyPreferencesSettingKey = "academy.preferences";
+    public const string WorkspacePreferencesSettingKey = "workspace.preferences";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public static IEndpointRouteBuilder MapWorkspaceEndpoints(this IEndpointRouteBuilder app)
@@ -193,6 +194,12 @@ public static class WorkspaceEndpoints
         workspaceApi.MapPut("/academy/preferences", SaveAcademyPreferencesAsync)
             .WithName("SaveAcademyPreferences");
 
+        workspaceApi.MapGet("/workspace/preferences", GetWorkspacePreferencesAsync)
+            .WithName("GetWorkspacePreferences");
+
+        workspaceApi.MapPut("/workspace/preferences", SaveWorkspacePreferencesAsync)
+            .WithName("SaveWorkspacePreferences");
+
         return app;
     }
 
@@ -293,15 +300,104 @@ public static class WorkspaceEndpoints
         setting.UpdatedAt = now;
 
         await db.SaveChangesAsync(cancellationToken);
-        await RenewCurrentSessionAsync(context, configuration, setting.SettingJson);
+        await RenewCurrentSessionAsync(
+            context,
+            AuthEndpoints.GetSessionDurationFromAcademyPreferencesJson(
+                setting.SettingJson,
+                AuthEndpoints.GetWorkspaceSessionDuration(configuration)));
 
         return Results.Ok(ToAcademyPreferencesDto(setting.SettingJson, true));
     }
 
+    private static async Task<IResult> GetWorkspacePreferencesAsync(
+        HttpContext context,
+        IncosWorkspaceDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var userKey = GetUserKey(context);
+
+        if (string.IsNullOrWhiteSpace(userKey))
+        {
+            return Results.Unauthorized();
+        }
+
+        await EnsureUserSettingsTableAsync(db, cancellationToken);
+
+        var setting = await db.UserSettings
+            .FirstOrDefaultAsync(
+                userSetting =>
+                    userSetting.UserKey.ToLower() == userKey &&
+                    userSetting.SettingKey == WorkspacePreferencesSettingKey,
+                cancellationToken);
+
+        if (setting is not null)
+        {
+            var normalizedSettingJson = NormalizeWorkspacePreferencesJson(setting.SettingJson);
+
+            if (!string.Equals(normalizedSettingJson, setting.SettingJson, StringComparison.Ordinal))
+            {
+                setting.SettingJson = normalizedSettingJson;
+                setting.UpdatedAt = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync(cancellationToken);
+            }
+        }
+
+        return Results.Ok(ToWorkspacePreferencesDto(setting?.SettingJson, setting is not null));
+    }
+
+    private static async Task<IResult> SaveWorkspacePreferencesAsync(
+        HttpContext context,
+        SaveWorkspacePreferencesRequest request,
+        IConfiguration configuration,
+        IncosWorkspaceDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var userKey = GetUserKey(context);
+
+        if (string.IsNullOrWhiteSpace(userKey))
+        {
+            return Results.Unauthorized();
+        }
+
+        await EnsureUserSettingsTableAsync(db, cancellationToken);
+
+        var now = DateTimeOffset.UtcNow;
+        var setting = await db.UserSettings
+            .FirstOrDefaultAsync(
+                userSetting =>
+                    userSetting.UserKey.ToLower() == userKey &&
+                    userSetting.SettingKey == WorkspacePreferencesSettingKey,
+                cancellationToken);
+
+        if (setting is null)
+        {
+            setting = new UserSetting
+            {
+                Id = Guid.NewGuid(),
+                CreatedAt = now,
+                UserKey = userKey,
+                SettingKey = WorkspacePreferencesSettingKey,
+            };
+            db.UserSettings.Add(setting);
+        }
+
+        setting.UserKey = userKey;
+        setting.SettingJson = SerializeWorkspacePreferences(request);
+        setting.UpdatedAt = now;
+
+        await db.SaveChangesAsync(cancellationToken);
+        await RenewCurrentSessionAsync(
+            context,
+            AuthEndpoints.GetSessionDurationFromWorkspacePreferencesJson(
+                setting.SettingJson,
+                AuthEndpoints.GetWorkspaceSessionDuration(configuration)));
+
+        return Results.Ok(ToWorkspacePreferencesDto(setting.SettingJson, true));
+    }
+
     private static async Task RenewCurrentSessionAsync(
         HttpContext context,
-        IConfiguration configuration,
-        string settingJson)
+        TimeSpan sessionDuration)
     {
         var authenticateResult = await context.AuthenticateAsync(CookieAuthenticationDefaults.AuthenticationScheme);
 
@@ -311,9 +407,6 @@ public static class WorkspaceEndpoints
         }
 
         var properties = authenticateResult.Properties ?? new AuthenticationProperties();
-        var sessionDuration = AuthEndpoints.GetSessionDurationFromAcademyPreferencesJson(
-            settingJson,
-            AuthEndpoints.GetWorkspaceSessionDuration(configuration));
 
         properties.IsPersistent = true;
         properties.ExpiresUtc = DateTimeOffset.UtcNow.Add(sessionDuration);
@@ -367,6 +460,34 @@ public static class WorkspaceEndpoints
         }, JsonOptions);
 
         return NormalizeAcademyPreferencesJson(serialized);
+    }
+
+    private static string SerializeWorkspacePreferences(SaveWorkspacePreferencesRequest request)
+    {
+        var settings = request.Settings.ValueKind == JsonValueKind.Object
+            ? request.Settings
+            : EmptyObjectElement();
+
+        return NormalizeWorkspacePreferencesJson(settings.GetRawText());
+    }
+
+    private static string NormalizeWorkspacePreferencesJson(string? settingJson)
+    {
+        if (string.IsNullOrWhiteSpace(settingJson))
+        {
+            return EmptyObjectElement().GetRawText();
+        }
+
+        try
+        {
+            var root = JsonNode.Parse(settingJson) as JsonObject ?? [];
+
+            return root.ToJsonString(JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return EmptyObjectElement().GetRawText();
+        }
     }
 
     private static string NormalizeAcademyPreferencesJson(string? settingJson)
@@ -694,6 +815,29 @@ public static class WorkspaceEndpoints
             EmptyObjectElement(),
             EmptyObjectElement(),
             exists);
+
+    private static WorkspacePreferencesDto ToWorkspacePreferencesDto(string? settingJson, bool exists)
+    {
+        if (string.IsNullOrWhiteSpace(settingJson))
+        {
+            return new WorkspacePreferencesDto(EmptyObjectElement(), exists);
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(settingJson);
+
+            return new WorkspacePreferencesDto(
+                document.RootElement.ValueKind == JsonValueKind.Object
+                    ? document.RootElement.Clone()
+                    : EmptyObjectElement(),
+                exists);
+        }
+        catch (JsonException)
+        {
+            return new WorkspacePreferencesDto(EmptyObjectElement(), exists);
+        }
+    }
 
     private static JsonElement EmptyArrayElement() =>
         JsonSerializer.SerializeToElement(Array.Empty<object>(), JsonOptions);

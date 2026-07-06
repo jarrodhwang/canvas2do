@@ -254,14 +254,18 @@ export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: Canva
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedCourseIds, setExpandedCourseIds] = useState<Set<string>>(() => new Set());
   const [canvasLecturePreferences, setCanvasLecturePreferences] = useState<CanvasLecturePreferences>({});
+  const [academyPreferencesLoadStatus, setAcademyPreferencesLoadStatus] = useState<LoadStatus>('idle');
+  const [hasLoadedAcademyPreferences, setHasLoadedAcademyPreferences] = useState(false);
   const [storedSelectedSemester, setStoredSelectedSemester] = useState(defaultAcademySemester);
   const effectiveSelectedSemester = normalizeSemesterName(selectedSemester ?? storedSelectedSemester);
   const visibleCourseIds = useMemo(() => new Set(
-    courses
-      .filter((course) => !isCourseHidden(course, canvasLecturePreferences) &&
-        courseMatchesSemester(course, canvasLecturePreferences, effectiveSelectedSemester))
-      .map((course) => course.id),
-  ), [canvasLecturePreferences, courses, effectiveSelectedSemester]);
+    hasLoadedAcademyPreferences
+      ? courses
+          .filter((course) => !isCourseHidden(course, canvasLecturePreferences) &&
+            courseMatchesSemester(course, canvasLecturePreferences, effectiveSelectedSemester))
+          .map((course) => course.id)
+      : [],
+  ), [canvasLecturePreferences, courses, effectiveSelectedSemester, hasLoadedAcademyPreferences]);
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
   const totalPeopleCount = useMemo(() => (
     Object.entries(coursePeople)
@@ -309,7 +313,9 @@ export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: Canva
           })
       ))
   ), [canvasLecturePreferences, coursePeople, courses, loadStatus, normalizedSearchQuery, visibleCourseIds]);
-  const isLoading = loadStatus === 'loading';
+  const isLoading =
+    loadStatus === 'loading' ||
+    (academyPreferencesLoadStatus !== 'failed' && !hasLoadedAcademyPreferences);
   const loadCoursePeople = (courseId: string, options?: { force?: boolean }) => {
     const currentState = coursePeople[courseId];
 
@@ -390,13 +396,22 @@ export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: Canva
     const applyAcademyPreferences = (preferences: AcademyPreferences) => {
       setCanvasLecturePreferences(getCanvasLecturePreferencesFromAcademyPreferences(preferences));
       setStoredSelectedSemester(getSelectedSemesterFromAcademyPreferences(preferences) ?? defaultAcademySemester);
+      setHasLoadedAcademyPreferences(true);
+      setAcademyPreferencesLoadStatus('loaded');
     };
 
     const reloadAcademyPreferences = () => {
+      if (!hasLoadedAcademyPreferences) {
+        setAcademyPreferencesLoadStatus('loading');
+      }
       workspaceApi
         .getAcademyPreferences()
         .then(applyAcademyPreferences)
-        .catch(() => undefined);
+        .catch(() => {
+          if (!hasLoadedAcademyPreferences) {
+            setAcademyPreferencesLoadStatus('failed');
+          }
+        });
     };
 
     const handleAcademyPreferencesUpdated = (event: Event) => {
@@ -405,6 +420,8 @@ export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: Canva
 
         if (isCanvasLecturePreferences(event.detail.canvasLecturePreferences)) {
           setCanvasLecturePreferences(event.detail.canvasLecturePreferences);
+          setHasLoadedAcademyPreferences(true);
+          setAcademyPreferencesLoadStatus('loaded');
         } else {
           shouldReloadPreferences = true;
         }
@@ -431,7 +448,7 @@ export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: Canva
     return () => {
       window.removeEventListener(academyPreferencesUpdatedEvent, handleAcademyPreferencesUpdated);
     };
-  }, []);
+  }, [hasLoadedAcademyPreferences]);
 
   return (
     <Card className="min-h-[620px] rounded-xl bg-card p-0 shadow-none xl:h-[calc(100vh_-_var(--top-bar-height)_-_1.5rem)] xl:min-h-0">

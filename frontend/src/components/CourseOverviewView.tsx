@@ -3323,6 +3323,7 @@ export function CourseOverviewView({
   const [canvasCourses, setCanvasCourses] = useState<CanvasCourse[]>([]);
   const [canvasLecturePreferences, setCanvasLecturePreferences] = useState<CanvasLecturePreferences>(() => getStoredCanvasLecturePreferences());
   const [courseLoadStatus, setCourseLoadStatus] = useState<LoadStatus>('idle');
+  const [academyPreferencesLoadStatus, setAcademyPreferencesLoadStatus] = useState<LoadStatus>('idle');
   const [hasLoadedAcademyPreferences, setHasLoadedAcademyPreferences] = useState(false);
   const [manualLectures, setManualLectures] = useState<ManualLecture[]>(() => getStoredManualLectures());
   const [notificationCounts, setNotificationCounts] = useState<Record<string, number>>({});
@@ -3352,6 +3353,7 @@ export function CourseOverviewView({
       setCanvasLecturePreferences(getCanvasLecturePreferencesFromAcademyPreferences(preferences));
       setGradeProgressThresholds(getGradeProgressThresholdsFromAcademyPreferences(preferences));
       setHasLoadedAcademyPreferences(true);
+      setAcademyPreferencesLoadStatus('loaded');
 
       const preferenceSemester = getSelectedSemesterFromAcademyPreferences(preferences);
 
@@ -3383,6 +3385,14 @@ export function CourseOverviewView({
           setGradeProgressThresholds((currentThresholds) => (
             normalizeGradeProgressColorThresholds(event.detail.calendarSettings, currentThresholds)
           ));
+        }
+
+        if (
+          Array.isArray(event.detail.manualLectures) &&
+          isCanvasLecturePreferences(event.detail.canvasLecturePreferences)
+        ) {
+          setHasLoadedAcademyPreferences(true);
+          setAcademyPreferencesLoadStatus('loaded');
         }
 
         const selectedSemesterFromEvent = selectedSemesterProp
@@ -3433,6 +3443,7 @@ export function CourseOverviewView({
     let isCancelled = false;
 
     setCourseLoadStatus('loading');
+    setAcademyPreferencesLoadStatus('loading');
 
     workspaceApi
       .getAcademyPreferences()
@@ -3454,6 +3465,7 @@ export function CourseOverviewView({
         }
 
         setHasLoadedAcademyPreferences(true);
+        setAcademyPreferencesLoadStatus('loaded');
       })
       .catch(() => {
         if (isCancelled) {
@@ -3463,6 +3475,7 @@ export function CourseOverviewView({
         setManualLectures(getStoredManualLectures());
         setCanvasLecturePreferences(getStoredCanvasLecturePreferences());
         setHasLoadedAcademyPreferences(false);
+        setAcademyPreferencesLoadStatus('failed');
       });
 
     const canvasCoursesTask = workspaceApi
@@ -3611,14 +3624,25 @@ export function CourseOverviewView({
   }, [canvasCourses, hasLoadedAcademyPreferences, selectedSemester]);
 
   const allRows = useMemo(
-    () => [
-      ...createCanvasRows(canvasCourses, canvasLecturePreferences, notificationCounts),
-      ...createStoredCanvasRows(canvasLecturePreferences, canvasCourses),
-      ...createManualRows(manualLectures.filter((lecture) => (
-        !isGeneratedArchivedCanvasLecture(lecture, canvasLecturePreferences)
-      ))),
-    ].sort(sortRows),
-    [canvasCourses, canvasLecturePreferences, manualLectures, notificationCounts, selectedSemester],
+    () => (
+      hasLoadedAcademyPreferences
+        ? [
+            ...createCanvasRows(canvasCourses, canvasLecturePreferences, notificationCounts),
+            ...createStoredCanvasRows(canvasLecturePreferences, canvasCourses),
+            ...createManualRows(manualLectures.filter((lecture) => (
+              !isGeneratedArchivedCanvasLecture(lecture, canvasLecturePreferences)
+            ))),
+          ].sort(sortRows)
+        : []
+    ),
+    [
+      canvasCourses,
+      canvasLecturePreferences,
+      hasLoadedAcademyPreferences,
+      manualLectures,
+      notificationCounts,
+      selectedSemester,
+    ],
   );
   const semesterOptions = useMemo(() => {
     const semesters = new Set<string>();
@@ -3652,8 +3676,14 @@ export function CourseOverviewView({
         normalizeSemesterName(selectedSemester),
       )
     : undefined;
-  const isLoading = courseLoadStatus === 'loading' && rows.length === 0;
-  const isUnavailable = courseLoadStatus === 'failed' && rows.length === 0;
+  const isLoading = (
+    courseLoadStatus === 'loading' ||
+    (academyPreferencesLoadStatus !== 'failed' && !hasLoadedAcademyPreferences)
+  ) && rows.length === 0;
+  const isUnavailable = (
+    courseLoadStatus === 'failed' ||
+    academyPreferencesLoadStatus === 'failed'
+  ) && rows.length === 0;
   const chipColorLabels: Partial<Record<ColorToken, string>> = {
     blue: dictionary.manualLectureChipColorBlue,
     sky: dictionary.manualLectureChipColorSky,

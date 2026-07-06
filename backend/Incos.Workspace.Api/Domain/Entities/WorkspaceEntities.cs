@@ -30,6 +30,7 @@ public sealed class AdminUser : AuditableEntity
 {
     public string? GoogleUserId { get; set; }
     public string Email { get; set; } = string.Empty;
+    public string? ContactEmail { get; set; }
     public string DisplayName { get; set; } = string.Empty;
     public string? PhotoUrl { get; set; }
     public string? HostedDomain { get; set; }

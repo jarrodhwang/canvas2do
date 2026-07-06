@@ -50,11 +50,6 @@
   --sidebar-ring: oklch(0.795 0.184 86.047);
 }
 
-.academy-magnifier {
-  width: calc(100% / var(--academy-magnifier-scale, 1));
-  zoom: var(--academy-magnifier-scale, 1);
-}
-
 .academy-typography {
   --font-sans: var(--academy-font-family, 'Inter Variable', sans-serif);
   --font-heading: var(--academy-font-family, var(--font-sans));
@@ -72,14 +67,6 @@
 
 .academy-typography :where(button, input, select, textarea) {
   font-family: inherit;
-}
-
-@supports not (zoom: 1) {
-  .academy-magnifier {
-    transform: scale(var(--academy-magnifier-scale, 1));
-    transform-origin: top left;
-    width: calc(100% / var(--academy-magnifier-scale, 1));
-  }
 }
 
 @theme inline {

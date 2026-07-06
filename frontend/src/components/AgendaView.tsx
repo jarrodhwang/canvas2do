@@ -64,7 +64,8 @@ export function AgendaView({
   onToggleItemStar,
   showCurrentTime = false,
 }: AgendaViewProps) {
-  const { dictionary } = useLanguage();
+  const { dictionary, language } = useLanguage();
+  const holidayBadgeLabel = language === 'ko' ? '공휴일' : 'Holiday';
   const nowMinutes = getNowMinutes();
   let hasRenderedCurrentTime = false;
   const renderCurrentTimeIfNeeded = (itemTime: string) => {
@@ -153,7 +154,9 @@ export function AgendaView({
         <div key={item.id}>
           {renderCurrentTimeIfNeeded(item.time)}
           <div
-            className="mb-2 grid h-auto w-full cursor-pointer grid-cols-[86px_minmax(0,1fr)_auto_auto] items-center gap-3 rounded-lg border bg-muted/35 p-3 text-left shadow-none transition hover:bg-muted max-sm:grid-cols-[70px_minmax(0,1fr)]"
+            className={cn(
+              'relative mb-2 grid h-auto w-full cursor-pointer grid-cols-[86px_minmax(0,1fr)_auto_auto] items-center gap-3 rounded-lg border bg-muted/35 p-3 text-left shadow-none transition hover:bg-muted max-sm:grid-cols-[70px_minmax(0,1fr)]',
+            )}
             onClick={onSelectItem}
             onKeyDown={(event) => {
               if (event.key === 'Enter' || event.key === ' ') {
@@ -164,11 +167,23 @@ export function AgendaView({
             role="button"
             tabIndex={0}
           >
-            <div className="text-base font-black text-primary">{item.time}</div>
+            {item.isCanceledForHoliday ? (
+              <span
+                className="absolute -right-1 -top-2 z-10 max-w-24 truncate rounded-full border border-red-500/35 bg-card px-1.5 py-0.5 text-[9px] font-black uppercase leading-none text-red-600 shadow-sm"
+                title={item.holidayName}
+              >
+                {holidayBadgeLabel}
+              </span>
+            ) : null}
+            <div className={cn('text-base font-black text-primary', item.isCanceledForHoliday && 'text-foreground line-through decoration-2 decoration-red-500')}>
+              {item.time}
+            </div>
             <div className="min-w-0">
-              <div className="truncate font-black text-foreground">{item.title}</div>
+              <div className={cn('truncate font-black text-foreground', item.isCanceledForHoliday && 'line-through decoration-2 decoration-red-500')}>
+                {item.title}
+              </div>
               <div className="truncate text-xs font-semibold text-muted-foreground">
-                {item.subtitle}
+                {item.isCanceledForHoliday && item.holidayName ? item.holidayName : item.subtitle}
               </div>
             </div>
             <div className="max-sm:col-start-2 max-sm:justify-self-start">

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   Activity,
   BarChart3,
@@ -10,6 +10,7 @@ import {
   ClipboardCheck,
   Clock3,
   ExternalLink,
+  Eye,
   EyeOff,
   Image as ImageIcon,
   KeyRound,
@@ -27,10 +28,10 @@ import {
   Sun,
   Trash2,
   Type as TypeIcon,
-  ZoomIn,
+  UserRound,
 } from 'lucide-react';
 import { workspaceApi } from './api/workspaceApi';
-import type { AcademyPreferences, AuthSession, CanvasCalendarItem, CanvasTokenStatus, GoogleDriveFile } from './api/workspaceApi';
+import type { AcademyPreferences, AuthSession, CanvasCalendarItem, CanvasTokenStatus, GoogleDriveFile, WorkspacePreferences } from './api/workspaceApi';
 import { AddItemModal } from './components/AddItemModal';
 import { AdminGroupsView } from './components/AdminGroupsView';
 import { AdminUsersView } from './components/AdminUsersView';
@@ -108,7 +109,13 @@ import { defaultGradeProgressColorThresholds } from './lib/gradeProgress';
 import { cn } from './lib/utils';
 import type { BoardColumnConfig, ColorToken, WorkspaceView } from './modes/types';
 import { applyTheme, getInitialTheme, type AppTheme } from './theme';
-import { languageOptions, type Language } from './i18n';
+import {
+  academyNationOptions,
+  getHolidayForDateByNation,
+  languageOptions,
+  type AcademyNation,
+  type Language,
+} from './i18n';
 
 interface WorkspaceNavigation {
   modeId: string;
@@ -127,6 +134,12 @@ interface DriveBrowserHistoryState {
 
 type CanvasCalendarLoadStatus = 'idle' | 'loading' | 'loaded' | 'failed';
 type CalendarTodoStyle = 'comfortable' | 'compact';
+
+const canvasCalendarLoadingTimeoutMs = 12_000;
+const academyProfileImageMaxBytes = 256 * 1024;
+const previewBannerPositionStorageKey = 'incos-preview-banner-position';
+const previewBannerDragHoldMs = 90;
+const previewBannerDragCancelDistance = 14;
 
 interface CanvasCalendarPage {
   items: CanvasCalendarItem[];
@@ -151,18 +164,20 @@ interface AcademyCalendarSettings {
   courseworkHideCompletedAfterHours: number;
   courseworkHideCompletedFrom: 'completedAt' | 'dueAt';
   courseworkHideUncompletedAfterHours: number;
+  courseworkShowStudyItems: boolean;
   fontFamily: AcademyFontFamily;
   fontSizePercent: number;
   hiddenCourseIds?: string[];
   gradeProgressGreenAt: number;
   gradeProgressYellowAt: number;
   language: Language;
+  nation: AcademyNation;
   calendarTodoStyle: CalendarTodoStyle;
+  skipClassOnHolidays: boolean;
   showPastTermCalendarItems: boolean;
   progressDisplay: CalendarProgressDisplay;
   progressGreenAt: number;
   progressYellowAt: number;
-  magnifierPercent: number;
   selectedSemester?: string;
   sessionDurationDays: number;
   themeMode: AppTheme;
@@ -176,6 +191,7 @@ interface AcademyCalendarSettings {
 type AcademyFontFamily =
   | 'aptos'
   | 'geist'
+  | 'gmarket-sans'
   | 'humanist'
   | 'inter'
   | 'mono'
@@ -191,6 +207,27 @@ type AcademyFontFamily =
   | 'serif'
   | 'sf-pro'
   | 'system';
+
+interface WorkspaceSettings {
+  accentColor: ColorToken;
+  autoRefreshIntervalMs: number;
+  fontFamily: AcademyFontFamily;
+  fontSizePercent: number;
+  holidayNations: AcademyNation[];
+  language: Language;
+  progressDisplay: CalendarProgressDisplay;
+  progressGreenAt: number;
+  progressYellowAt: number;
+  refocusRefreshThrottleMs: number;
+  sessionDurationDays: number;
+  themeMode: AppTheme;
+  themeTimerEnabled: boolean;
+  themeTimerEnd: string;
+  themeTimerMode: AppTheme;
+  themeTimerStart: string;
+  timeZone: string;
+  topBarDefaultCollapsed: boolean;
+}
 
 interface AdminConsoleSettings {
   topBarDefaultCollapsed: boolean;
@@ -414,10 +451,12 @@ interface CalendarSourceItem {
   startAt?: string;
   endAt?: string;
   htmlUrl?: string;
+  holidayName?: string;
   location?: string;
   semester?: string;
   color: ColorToken;
   displayStyle?: 'dot';
+  isCanceledForHoliday?: boolean;
   isCompleted?: boolean;
   isArchivedCanvasItem?: boolean;
   isLocked?: boolean;
@@ -451,6 +490,7 @@ const manualAssessmentsStorageKey = 'incos-academy-manual-assessments';
 const canvasAssessmentPreferencesStorageKey = 'incos-academy-canvas-assessment-preferences';
 const academyCalendarSettingsStorageKey = 'incos-academy-calendar-settings';
 const academyCalendarHiddenCoursesStorageKey = 'incos-academy-calendar-hidden-courses';
+const workspaceSettingsStorageKey = 'incos-workspace-settings';
 const adminConsoleSettingsStorageKey = 'incos-admin-console-settings';
 const academyPreferencesUpdatedEvent = 'incos-academy-preferences-updated';
 const academyOpenCourseworkDialogEvent = 'incos-academy-open-coursework-dialog';
@@ -462,6 +502,7 @@ type AcademyOpenCourseworkDialogDetail = {
   title?: string;
 };
 type AcademyRefreshRequestedDetail = {
+  forceRefresh?: boolean;
   registerTask?: (task: Promise<unknown>) => void;
 };
 const minimumAcademyAutoRefreshIntervalMs = 5_000;
@@ -490,6 +531,7 @@ const academyRefocusRefreshThrottleOptions = [
 ];
 const academyResumeAuthRetryDelays = [0, 1000, 2500];
 const academyFontFamilyOptions: Array<{ value: AcademyFontFamily; label: string; cssValue: string }> = [
+  { value: 'gmarket-sans', label: 'Gmarket Sans', cssValue: '"Gmarket Sans", "GmarketSansMedium", "Noto Sans KR", "Apple SD Gothic Neo", sans-serif' },
   { value: 'inter', label: 'Inter', cssValue: '"Inter Variable", sans-serif' },
   { value: 'geist', label: 'Geist', cssValue: '"Geist Variable", sans-serif' },
   { value: 'system', label: 'System', cssValue: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' },
@@ -509,6 +551,7 @@ const academyFontFamilyOptions: Array<{ value: AcademyFontFamily; label: string;
   { value: 'mono', label: 'Mono', cssValue: '"SFMono-Regular", Consolas, "Liberation Mono", monospace' },
 ];
 const academyFontFamilyValues = academyFontFamilyOptions.map((option) => option.value);
+const academyNationValues = academyNationOptions.map((option) => option.value);
 const academyFontFamilyCss = Object.fromEntries(
   academyFontFamilyOptions.map((option) => [option.value, option.cssValue]),
 ) as Record<AcademyFontFamily, string>;
@@ -637,14 +680,16 @@ const defaultAcademyCalendarSettings: AcademyCalendarSettings = {
   courseworkHideCompletedAfterHours: 12,
   courseworkHideCompletedFrom: 'dueAt',
   courseworkHideUncompletedAfterHours: 16,
+  courseworkShowStudyItems: true,
   fontFamily: 'inter',
   fontSizePercent: 100,
   gradeProgressGreenAt: defaultGradeProgressColorThresholds.greenAt,
   gradeProgressYellowAt: defaultGradeProgressColorThresholds.yellowAt,
   language: 'en',
+  nation: 'ca',
   calendarTodoStyle: 'compact',
+  skipClassOnHolidays: true,
   showPastTermCalendarItems: false,
-  magnifierPercent: 100,
   progressDisplay: 'linear',
   progressGreenAt: defaultCalendarProgressThresholds.greenAt,
   progressYellowAt: defaultCalendarProgressThresholds.yellowAt,
@@ -654,6 +699,40 @@ const defaultAcademyCalendarSettings: AcademyCalendarSettings = {
   themeTimerEnd: '18:00',
   themeTimerMode: 'light',
   themeTimerStart: '08:00',
+  topBarDefaultCollapsed: false,
+};
+const workspaceTimeZoneOptions: Array<{
+  label: string;
+  nation: AcademyNation | null;
+  value: string;
+}> = [
+  { value: 'Asia/Seoul', label: 'Korea / Seoul', nation: 'kr' },
+  { value: 'America/Vancouver', label: 'Canada / Vancouver', nation: 'ca' },
+  { value: 'America/New_York', label: 'US / New York', nation: 'us' },
+  { value: 'Europe/Paris', label: 'France / Paris', nation: 'fr' },
+  { value: 'Europe/London', label: 'UK / London', nation: 'uk' },
+  { value: 'Australia/Sydney', label: 'Australia / Sydney', nation: 'au' },
+  { value: 'UTC', label: 'UTC', nation: null },
+];
+const workspaceTimeZoneValues = workspaceTimeZoneOptions.map((option) => option.value);
+const defaultWorkspaceSettings: WorkspaceSettings = {
+  accentColor: 'gold',
+  autoRefreshIntervalMs: defaultAcademyAutoRefreshIntervalMs,
+  fontFamily: 'gmarket-sans',
+  fontSizePercent: 100,
+  holidayNations: ['kr'],
+  language: 'ko',
+  progressDisplay: 'linear',
+  progressGreenAt: defaultCalendarProgressThresholds.greenAt,
+  progressYellowAt: defaultCalendarProgressThresholds.yellowAt,
+  refocusRefreshThrottleMs: defaultAcademyRefocusRefreshThrottleMs,
+  sessionDurationDays: 14,
+  themeMode: 'dark',
+  themeTimerEnabled: false,
+  themeTimerEnd: '18:00',
+  themeTimerMode: 'light',
+  themeTimerStart: '08:00',
+  timeZone: 'Asia/Seoul',
   topBarDefaultCollapsed: false,
 };
 const defaultAdminConsoleSettings: AdminConsoleSettings = {
@@ -818,11 +897,7 @@ function semesterMatches(value: string | undefined, selectedSemester: string | u
   return normalizeSemesterName(value, fallback) === normalizeSemesterName(selectedSemester, fallback);
 }
 
-function getEffectiveAcademyViewport(magnifierScale = 1) {
-  const safeScale = Number.isFinite(magnifierScale) && magnifierScale > 0
-    ? magnifierScale
-    : 1;
-
+function getEffectiveAcademyViewport() {
   if (typeof window === 'undefined') {
     return {
       height: 900,
@@ -831,13 +906,13 @@ function getEffectiveAcademyViewport(magnifierScale = 1) {
   }
 
   return {
-    height: window.innerHeight / safeScale,
-    width: window.innerWidth / safeScale,
+    height: window.innerHeight,
+    width: window.innerWidth,
   };
 }
 
-function getAcademyResponsiveState(magnifierScale = 1): AcademyResponsiveState {
-  const viewport = getEffectiveAcademyViewport(magnifierScale);
+function getAcademyResponsiveState(): AcademyResponsiveState {
+  const viewport = getEffectiveAcademyViewport();
 
   return {
     isCalendarAutoExpanded:
@@ -929,6 +1004,60 @@ function getCalendarMonthRange(monthDate: Date) {
 
 function getCalendarMonthKey(monthDate: Date) {
   return formatDateParam(getCalendarMonthRange(monthDate).startDate);
+}
+
+function getCalendarGridStartDate(monthDate: Date) {
+  const monthRange = getCalendarMonthRange(monthDate);
+  const firstWeekday = monthRange.startDate.getUTCDay();
+  const mondayOffset = (firstWeekday + 6) % 7;
+
+  return new Date(Date.UTC(monthRange.year, monthRange.monthIndex, 1 - mondayOffset));
+}
+
+function getCalendarGridRange(monthDate: Date) {
+  const startDate = getCalendarGridStartDate(monthDate);
+  const endDate = new Date(Date.UTC(
+    startDate.getUTCFullYear(),
+    startDate.getUTCMonth(),
+    startDate.getUTCDate() + 41,
+  ));
+
+  return { endDate, startDate };
+}
+
+function getVisibleCalendarMonths(monthDate: Date) {
+  const gridStartDate = getCalendarGridStartDate(monthDate);
+  const visibleMonths = new Map<string, Date>();
+
+  for (let index = 0; index < 42; index += 1) {
+    const date = new Date(Date.UTC(
+      gridStartDate.getUTCFullYear(),
+      gridStartDate.getUTCMonth(),
+      gridStartDate.getUTCDate() + index,
+    ));
+    const monthStartDate = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
+
+    visibleMonths.set(getCalendarMonthKey(monthStartDate), monthStartDate);
+  }
+
+  return [...visibleMonths.values()].sort((firstMonth, secondMonth) => (
+    firstMonth.getTime() - secondMonth.getTime()
+  ));
+}
+
+function getCanvasCalendarItemsForMonthKeys(
+  pages: Record<string, CanvasCalendarPage>,
+  monthKeys: string[],
+) {
+  const itemsById = new Map<string, CanvasCalendarItem>();
+
+  monthKeys.forEach((monthKey) => {
+    pages[monthKey]?.items.forEach((item) => {
+      itemsById.set(item.id, item);
+    });
+  });
+
+  return [...itemsById.values()];
 }
 
 function addCalendarMonths(monthDate: Date, amount: number) {
@@ -1088,6 +1217,9 @@ function normalizeAcademyCalendarSettings(
     (settings.courseworkHideCompletedFrom !== 'dueAt' && fallback.courseworkHideCompletedFrom === 'completedAt')
     ? 'completedAt'
     : 'dueAt';
+  const courseworkShowStudyItems = typeof settings.courseworkShowStudyItems === 'boolean'
+    ? settings.courseworkShowStudyItems
+    : fallback.courseworkShowStudyItems;
   const hiddenCourseIds = Array.isArray(settings.hiddenCourseIds)
     ? settings.hiddenCourseIds.filter((value): value is string => typeof value === 'string')
     : fallback.hiddenCourseIds;
@@ -1112,6 +1244,15 @@ function normalizeAcademyCalendarSettings(
   const language: Language = settings.language === 'en' || settings.language === 'ko'
     ? settings.language
     : fallback.language;
+  const nation: AcademyNation = typeof settings.nation === 'string' &&
+    academyNationValues.includes(settings.nation as AcademyNation)
+    ? settings.nation as AcademyNation
+    : settings.language === 'ko'
+      ? 'kr'
+      : fallback.nation;
+  const skipClassOnHolidays = typeof settings.skipClassOnHolidays === 'boolean'
+    ? settings.skipClassOnHolidays
+    : fallback.skipClassOnHolidays;
   const fontFamily = typeof settings.fontFamily === 'string' &&
     academyFontFamilyValues.includes(settings.fontFamily as AcademyFontFamily)
     ? settings.fontFamily as AcademyFontFamily
@@ -1119,9 +1260,6 @@ function normalizeAcademyCalendarSettings(
   const fontSizePercent = Number.isFinite(settings.fontSizePercent)
     ? Math.min(Math.max(Math.round(Number(settings.fontSizePercent)), 80), 130)
     : fallback.fontSizePercent;
-  const magnifierPercent = Number.isFinite(settings.magnifierPercent)
-    ? Math.min(Math.max(Math.round(Number(settings.magnifierPercent)), 50), 150)
-    : fallback.magnifierPercent;
   const sessionDurationDays = Number.isFinite(settings.sessionDurationDays)
     ? Math.min(Math.max(Math.round(Number(settings.sessionDurationDays)), 1), 14)
     : fallback.sessionDurationDays;
@@ -1146,15 +1284,17 @@ function normalizeAcademyCalendarSettings(
     courseworkHideCompletedAfterHours,
     courseworkHideCompletedFrom,
     courseworkHideUncompletedAfterHours,
+    courseworkShowStudyItems,
     fontFamily,
     fontSizePercent,
     gradeProgressGreenAt,
     gradeProgressYellowAt,
     hiddenCourseIds,
     language,
+    nation,
     calendarTodoStyle,
+    skipClassOnHolidays,
     showPastTermCalendarItems,
-    magnifierPercent,
     progressDisplay,
     progressGreenAt,
     progressYellowAt,
@@ -1216,6 +1356,19 @@ function getAcademyEffectiveTheme(settings: AcademyCalendarSettings, date = new 
   return isTimerWindow ? settings.themeTimerMode : getOppositeThemeMode(settings.themeTimerMode);
 }
 
+function getWorkspaceEffectiveTheme(settings: WorkspaceSettings, date = new Date()): AppTheme {
+  if (!settings.themeTimerEnabled) {
+    return settings.themeMode;
+  }
+
+  const startMinute = getThemeTimerMinutes(settings.themeTimerStart);
+  const endMinute = getThemeTimerMinutes(settings.themeTimerEnd);
+  const currentMinute = (date.getHours() * 60) + date.getMinutes();
+  const isTimerWindow = isMinuteInThemeWindow(currentMinute, startMinute, endMinute);
+
+  return isTimerWindow ? settings.themeTimerMode : getOppositeThemeMode(settings.themeTimerMode);
+}
+
 function getStoredAcademyCalendarSettings() {
   return normalizeAcademyCalendarSettings(
     readStoredJson<unknown>(academyCalendarSettingsStorageKey, defaultAcademyCalendarSettings),
@@ -1224,6 +1377,123 @@ function getStoredAcademyCalendarSettings() {
 
 function areAcademyCalendarSettingsEqual(first: AcademyCalendarSettings, second: AcademyCalendarSettings) {
   return JSON.stringify(first) === JSON.stringify(second);
+}
+
+function normalizeWorkspaceSettings(
+  value: unknown,
+  fallback: WorkspaceSettings = defaultWorkspaceSettings,
+): WorkspaceSettings {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return fallback;
+  }
+
+  const settings = value as Partial<WorkspaceSettings>;
+  const accentColor = typeof settings.accentColor === 'string' &&
+    academyAccentColorOptions.includes(settings.accentColor as ColorToken)
+    ? settings.accentColor as ColorToken
+    : fallback.accentColor;
+  const autoRefreshIntervalMs = Number.isFinite(settings.autoRefreshIntervalMs)
+    ? Math.min(
+        Math.max(Math.round(Number(settings.autoRefreshIntervalMs)), minimumAcademyAutoRefreshIntervalMs),
+        maximumAcademyAutoRefreshIntervalMs,
+      )
+    : fallback.autoRefreshIntervalMs;
+  const fontFamily = typeof settings.fontFamily === 'string' &&
+    academyFontFamilyValues.includes(settings.fontFamily as AcademyFontFamily)
+    ? settings.fontFamily as AcademyFontFamily
+    : fallback.fontFamily;
+  const fontSizePercent = Number.isFinite(settings.fontSizePercent)
+    ? Math.min(Math.max(Math.round(Number(settings.fontSizePercent)), 80), 130)
+    : fallback.fontSizePercent;
+  const holidayNations = Array.isArray(settings.holidayNations)
+    ? Array.from(new Set(settings.holidayNations.filter(
+        (nation): nation is AcademyNation => academyNationValues.includes(nation as AcademyNation),
+      )))
+    : fallback.holidayNations;
+  const progressDisplay = settings.progressDisplay === 'circular' || settings.progressDisplay === 'linear'
+    ? settings.progressDisplay
+    : fallback.progressDisplay;
+  const progressGreenAt = Number.isFinite(settings.progressGreenAt)
+    ? Math.min(Math.max(Number(settings.progressGreenAt), 0), 100)
+    : fallback.progressGreenAt;
+  const progressYellowAt = Number.isFinite(settings.progressYellowAt)
+    ? Math.min(Math.max(Number(settings.progressYellowAt), 0), progressGreenAt)
+    : Math.min(fallback.progressYellowAt, progressGreenAt);
+  const refocusRefreshThrottleMs = Number.isFinite(settings.refocusRefreshThrottleMs)
+    ? Math.min(
+        Math.max(Math.round(Number(settings.refocusRefreshThrottleMs)), minimumAcademyRefocusRefreshThrottleMs),
+        maximumAcademyRefocusRefreshThrottleMs,
+      )
+    : fallback.refocusRefreshThrottleMs;
+  const themeTimerEnabled = typeof settings.themeTimerEnabled === 'boolean'
+    ? settings.themeTimerEnabled
+    : fallback.themeTimerEnabled;
+  const themeTimerMode: AppTheme = settings.themeTimerMode === 'light' || settings.themeTimerMode === 'dark'
+    ? settings.themeTimerMode
+    : fallback.themeTimerMode;
+  const themeTimerStart = normalizeThemeTimerTime(settings.themeTimerStart, fallback.themeTimerStart);
+  const themeTimerEnd = normalizeThemeTimerTime(settings.themeTimerEnd, fallback.themeTimerEnd);
+
+  return {
+    accentColor,
+    autoRefreshIntervalMs,
+    fontFamily,
+    fontSizePercent,
+    holidayNations: holidayNations.length > 0 ? holidayNations : fallback.holidayNations,
+    language: settings.language === 'en' || settings.language === 'ko'
+      ? settings.language
+      : fallback.language,
+    progressDisplay,
+    progressGreenAt,
+    progressYellowAt,
+    refocusRefreshThrottleMs,
+    sessionDurationDays: Number.isFinite(settings.sessionDurationDays)
+      ? Math.min(Math.max(Math.round(Number(settings.sessionDurationDays)), 1), 14)
+      : fallback.sessionDurationDays,
+    themeMode: settings.themeMode === 'light' || settings.themeMode === 'dark'
+      ? settings.themeMode
+      : fallback.themeMode,
+    themeTimerEnabled,
+    themeTimerEnd,
+    themeTimerMode,
+    themeTimerStart,
+    timeZone: typeof settings.timeZone === 'string' && workspaceTimeZoneValues.includes(settings.timeZone)
+      ? settings.timeZone
+      : fallback.timeZone,
+    topBarDefaultCollapsed: typeof settings.topBarDefaultCollapsed === 'boolean'
+      ? settings.topBarDefaultCollapsed
+      : fallback.topBarDefaultCollapsed,
+  };
+}
+
+function getStoredWorkspaceSettings() {
+  return normalizeWorkspaceSettings(
+    readStoredJson<unknown>(workspaceSettingsStorageKey, defaultWorkspaceSettings),
+  );
+}
+
+function areWorkspaceSettingsEqual(first: WorkspaceSettings, second: WorkspaceSettings) {
+  return JSON.stringify(first) === JSON.stringify(second);
+}
+
+function formatWorkspaceDateTime(date: Date, timeZone: string, language: Language) {
+  return new Intl.DateTimeFormat(language === 'ko' ? 'ko-KR' : 'en-CA', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone,
+  }).format(date);
+}
+
+function getIsoDateInTimeZone(date: Date, timeZone: string) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    day: '2-digit',
+    month: '2-digit',
+    timeZone,
+    year: 'numeric',
+  }).formatToParts(date);
+  const partValue = (type: string) => parts.find((part) => part.type === type)?.value ?? '';
+
+  return `${partValue('year')}-${partValue('month')}-${partValue('day')}`;
 }
 
 function waitFor(milliseconds: number) {
@@ -1291,6 +1561,10 @@ function getStoredHiddenCalendarCourseIds() {
 
 function storeAcademyCalendarSettings(settings: AcademyCalendarSettings) {
   storeJson(academyCalendarSettingsStorageKey, settings);
+}
+
+function storeWorkspaceSettings(settings: WorkspaceSettings) {
+  storeJson(workspaceSettingsStorageKey, settings);
 }
 
 function storeAdminConsoleSettings(settings: AdminConsoleSettings) {
@@ -1926,7 +2200,12 @@ function getCalendarBoardItems(
         color: option.color,
         checklistProgress: item.source === 'class-session' ? '' : item.isCompleted ? '1 of 1' : '0 of 1',
         dueAt,
-        isCompleted: Boolean(item.isCompleted),
+        endAt: item.endAt,
+        holidayName: item.holidayName,
+        isCanceledForHoliday: Boolean(item.isCanceledForHoliday),
+        isCompleted: item.source === 'class-session'
+          ? isPastClassSession(item) || Boolean(item.isCanceledForHoliday)
+          : Boolean(item.isCompleted),
         isClassSession: item.source === 'class-session',
         isLocked: item.source === 'class-session' || Boolean(item.isLocked),
         isTitleEditable: item.source !== 'class-session' && !item.isLocked && !isLiveCanvasCalendarItem(item),
@@ -2169,6 +2448,10 @@ function getTodayIsoDate() {
   return `${year}-${month}-${day}`;
 }
 
+function getTodayIsoDateForTimeZone(timeZone: string) {
+  return getIsoDateInTimeZone(new Date(), timeZone);
+}
+
 function addDaysToIsoDate(value: string, amount: number) {
   const date = new Date(`${value}T00:00:00`);
 
@@ -2285,6 +2568,22 @@ function formatCalendarSourceItemSelectedDayTime(item: CalendarSourceItem) {
     : date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
+function getClassSessionCompletionTime(item: CalendarSourceItem) {
+  const completionDate = new Date(item.endAt ?? item.startAt ?? '');
+
+  return Number.isNaN(completionDate.getTime()) ? undefined : completionDate.getTime();
+}
+
+function isPastClassSession(item: CalendarSourceItem) {
+  if (item.source !== 'class-session') {
+    return false;
+  }
+
+  const completionTime = getClassSessionCompletionTime(item);
+
+  return typeof completionTime === 'number' && completionTime < Date.now();
+}
+
 function parseManualLectureScheduleDays(entry: ManualLectureScheduleEntry): ManualLectureWeekday[] {
   if (Array.isArray(entry.days) && entry.days.length > 0) {
     return entry.days.filter((day): day is ManualLectureWeekday => day in manualLectureWeekdayIndexes);
@@ -2351,6 +2650,49 @@ function createDateTimeIso(date: Date, time?: string) {
   return nextDate.toISOString();
 }
 
+function getClassSessionWeekOfMonth(date: Date) {
+  return Math.floor((date.getDate() - 1) / 7);
+}
+
+function shouldIncludeClassSessionDate(
+  entry: ManualLectureScheduleEntry,
+  currentDate: Date,
+  startDate: Date,
+) {
+  const recurrence = entry.recurrence ?? 'weekly';
+  const offset = entry.recurrenceOffset === 1 ? 1 : 0;
+
+  if (recurrence === 'weekly') {
+    return true;
+  }
+
+  if (recurrence === 'biweekly') {
+    const weeksSinceStart = Math.floor(
+      (currentDate.getTime() - startDate.getTime()) / (7 * 86_400_000),
+    );
+
+    return Math.max(weeksSinceStart, 0) % 2 === offset;
+  }
+
+  const monthsSinceStart = (
+    (currentDate.getFullYear() - startDate.getFullYear()) * 12
+  ) + currentDate.getMonth() - startDate.getMonth();
+
+  if (getClassSessionWeekOfMonth(currentDate) !== getClassSessionWeekOfMonth(startDate)) {
+    return false;
+  }
+
+  if (recurrence === 'monthly') {
+    return monthsSinceStart >= 0;
+  }
+
+  if (recurrence === 'bimonthly') {
+    return Math.max(monthsSinceStart, 0) % 2 === offset;
+  }
+
+  return true;
+}
+
 function getClassSessionCourseLabel(course: StoredCoursePreference) {
   return course.friendlyCourseCode?.trim() ||
     course.code?.trim() ||
@@ -2363,7 +2705,12 @@ function getClassSessionCourseLabel(course: StoredCoursePreference) {
 
 function createClassSessionItemsFromCourse(
   course: StoredCoursePreference,
-  options: { courseId?: string; sourceId: string },
+  options: {
+    courseId?: string;
+    holidayNation?: AcademyNation;
+    skipClassOnHolidays?: boolean;
+    sourceId: string;
+  },
 ): CalendarSourceItem[] {
   if (course.hidden) {
     return [];
@@ -2389,11 +2736,15 @@ function createClassSessionItemsFromCourse(
       let guard = 0;
 
       while (currentDate.getTime() <= endDate.getTime() && guard < 370) {
-        if (dayIndexes.has(currentDate.getDay())) {
+        if (dayIndexes.has(currentDate.getDay()) && shouldIncludeClassSessionDate(entry, currentDate, startDate)) {
           const classLabel = manualLectureClassTypeLabels[entry.classType] ?? 'Class';
           const startAt = createDateTimeIso(currentDate, entry.startTime);
           const endAt = entry.endTime ? createDateTimeIso(currentDate, entry.endTime) : undefined;
           const dateKey = getLocalIsoDate(startAt) ?? currentDate.toISOString().slice(0, 10);
+          const holiday = options.holidayNation
+            ? getHolidayForDateByNation(options.holidayNation, dateKey)
+            : undefined;
+          const isCanceledForHoliday = Boolean(options.skipClassOnHolidays && holiday);
 
           sessions.push({
             color,
@@ -2402,7 +2753,9 @@ function createClassSessionItemsFromCourse(
             courseName,
             displayStyle: 'dot',
             endAt,
+            holidayName: holiday?.label,
             id: `class:${options.sourceId}:${entry.id}:${dateKey}`,
+            isCanceledForHoliday,
             isLocked: true,
             location: entry.location,
             semester: course.semester ?? course.termName,
@@ -2445,6 +2798,8 @@ function getCalendarSourceEvent(
     color: courseDisplay.color,
     courseLabel: courseDisplay.label || undefined,
     displayStyle: item.displayStyle,
+    holidayName: item.holidayName,
+    isCanceledForHoliday: Boolean(item.isCanceledForHoliday),
     type: item.type,
     time: formatCalendarSourceItemTime(item),
   };
@@ -2468,15 +2823,49 @@ function getCalendarSourceAgendaItem(
     canOpenDetails: item.source !== 'class-session',
     isCanvasSource: item.source === 'canvas',
     isArchivedCanvasItem: Boolean(item.isArchivedCanvasItem),
-    isCompleted: Boolean(item.isCompleted),
+    holidayName: item.holidayName,
+    isCanceledForHoliday: Boolean(item.isCanceledForHoliday),
+    isCompleted: item.source === 'class-session'
+      ? isPastClassSession(item) || Boolean(item.isCanceledForHoliday)
+      : Boolean(item.isCompleted),
     isLocked: item.source === 'class-session' || Boolean(item.isLocked),
     isStarred: Boolean(item.isStarred),
   };
 }
 
-function getCalendarSourceItems(canvasItems: CanvasCalendarItem[], preferenceVersion = 0): CalendarSourceItem[] {
+function applyHolidayCancellationToClassSession(
+  item: CalendarSourceItem,
+  settings: AcademyCalendarSettings,
+): CalendarSourceItem {
+  if (item.source !== 'class-session' || !settings.skipClassOnHolidays) {
+    return item;
+  }
+
+  const dateKey = getLocalIsoDate(item.startAt ?? item.dueAt ?? item.endAt);
+  const holiday = dateKey ? getHolidayForDateByNation(settings.nation, dateKey) : undefined;
+
+  if (!holiday) {
+    return item;
+  }
+
+  return {
+    ...item,
+    holidayName: item.holidayName ?? holiday.label,
+    isCanceledForHoliday: true,
+  };
+}
+
+function getCalendarSourceItems(
+  canvasItems: CanvasCalendarItem[],
+  preferenceVersion = 0,
+  calendarSettings: AcademyCalendarSettings = getStoredAcademyCalendarSettings(),
+): CalendarSourceItem[] {
   void preferenceVersion;
 
+  const classSessionCalendarOptions = {
+    holidayNation: calendarSettings.nation,
+    skipClassOnHolidays: calendarSettings.skipClassOnHolidays,
+  };
   const canvasCourseworkPreferences = getStoredCanvasCourseworkPreferences();
   const canvasAssessmentPreferences = getStoredCanvasAssessmentPreferences();
   const canvasLecturePreferences = getStoredCanvasLecturePreferences();
@@ -2605,15 +2994,17 @@ function getCalendarSourceItems(canvasItems: CanvasCalendarItem[], preferenceVer
     ...getStoredManualLectures()
       .filter((lecture) => !lecture.hidden && !lecture.deleted)
       .flatMap((lecture) => createClassSessionItemsFromCourse(lecture, {
+        ...classSessionCalendarOptions,
         sourceId: lecture.id ?? lecture.code ?? lecture.courseCode ?? lecture.courseName ?? 'manual',
       })),
     ...Object.entries(canvasLecturePreferences)
       .filter(([, preference]) => !preference.hidden && !preference.deleted && !preference.archivedAsManualLectureId)
       .flatMap(([courseId, preference]) => createClassSessionItemsFromCourse(preference, {
+        ...classSessionCalendarOptions,
         courseId,
         sourceId: courseId,
       })),
-  ];
+  ].map((item) => applyHolidayCancellationToClassSession(item, calendarSettings));
 
   return [
     ...canvasSourceItems,
@@ -2632,9 +3023,7 @@ function createAcademyCalendarDays(
   activeCourseOptionIds?: Set<string>,
 ): CalendarDay[] {
   const monthRange = getCalendarMonthRange(monthDate);
-  const firstWeekday = monthRange.startDate.getUTCDay();
-  const mondayOffset = (firstWeekday + 6) % 7;
-  const gridStartDate = new Date(Date.UTC(monthRange.year, monthRange.monthIndex, 1 - mondayOffset));
+  const gridStartDate = getCalendarGridStartDate(monthDate);
   const todayIso = getTodayIsoDate();
   const itemsByDate = sourceItems.reduce<Record<string, CalendarSourceItem[]>>((nextItemsByDate, item) => {
       const date = getLocalIsoDate(getCalendarSourceItemDate(item));
@@ -2656,7 +3045,10 @@ function createAcademyCalendarDays(
     ));
     const dateIso = getIsoDateFromUtcDate(date);
     const dateItems = itemsByDate[dateIso] ?? [];
-    const events = dateItems.map((item) => getCalendarSourceEvent(item, activeCourseOptionIds));
+    const dayCellItems = dateItems.filter((item) => (
+      item.source !== 'class-session' || !item.isCanceledForHoliday
+    ));
+    const events = dayCellItems.map((item) => getCalendarSourceEvent(item, activeCourseOptionIds));
     const dayProgress = getDayTodoProgress(dateItems);
     const outsideMonth = date.getUTCMonth() !== monthRange.monthIndex;
     const status = outsideMonth
@@ -2710,6 +3102,67 @@ function createAcademyCalendarData(
     days: createAcademyCalendarDays(monthDate, sourceItems, loadStatus, activeCourseOptionIds),
     monthLabel: formatCalendarMonthLabel(monthDate),
     timeline: getCalendarTimelineItems(sourceItems, monthDate, fallbackCourseLabel),
+  };
+}
+
+function getHolidayItemsForDateByNations(nations: AcademyNation[], dateIso: string) {
+  return nations.flatMap((nation) => {
+    const holiday = getHolidayForDateByNation(nation, dateIso);
+    const nationOption = getAcademyNationOptionByValue(nation);
+
+    return holiday && nationOption
+      ? [{ holiday, nationOption }]
+      : [];
+  });
+}
+
+function createEmptyWorkspaceCalendarDays(
+  monthDate: Date,
+  settings: WorkspaceSettings,
+): CalendarDay[] {
+  const monthRange = getCalendarMonthRange(monthDate);
+  const gridStartDate = getCalendarGridStartDate(monthDate);
+  const todayIso = getTodayIsoDateForTimeZone(settings.timeZone);
+
+  return Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(Date.UTC(
+      gridStartDate.getUTCFullYear(),
+      gridStartDate.getUTCMonth(),
+      gridStartDate.getUTCDate() + index,
+    ));
+    const dateIso = getIsoDateFromUtcDate(date);
+    const holidayItems = getHolidayItemsForDateByNations(settings.holidayNations, dateIso);
+    const outsideMonth = date.getUTCMonth() !== monthRange.monthIndex;
+
+    return {
+      id: `workspace-${dateIso}`,
+      dateIso,
+      dateNumber: date.getUTCDate(),
+      isSunday: date.getUTCDay() === 0,
+      isToday: dateIso === todayIso,
+      outsideMonth,
+      status: holidayItems.length > 0
+        ? holidayItems.map(({ holiday, nationOption }) => `${nationOption.shortLabel} · ${holiday.label}`).join(' / ')
+        : '',
+      progress: 0,
+      progressLabel: '0%',
+      events: [],
+    };
+  });
+}
+
+function createEmptyWorkspaceCalendarData(
+  data: WorkspaceModeMockData,
+  monthDate: Date,
+  settings: WorkspaceSettings,
+): WorkspaceModeMockData {
+  return {
+    ...data,
+    agenda: [],
+    boardItems: [],
+    days: createEmptyWorkspaceCalendarDays(monthDate, settings),
+    monthLabel: formatCalendarMonthLabel(monthDate),
+    timeline: [],
   };
 }
 
@@ -2973,23 +3426,46 @@ function CalendarTodoDetailsDialog({
 }
 
 function AcademySettingsView({
+  authSession,
+  focusSection,
+  onFocusSectionConsumed,
   hasUnsavedChanges,
+  onProfileSaved,
   onRevertSettings,
   onSaveSettings,
   onSettingsChange,
+  onSignOut,
   settings,
   settingsSaveError,
   settingsSaveStatus,
 }: {
+  authSession: AuthSession | null;
+  focusSection?: 'profile' | null;
+  onFocusSectionConsumed?: () => void;
   hasUnsavedChanges: boolean;
+  onProfileSaved: () => Promise<void> | void;
   onRevertSettings: () => void;
   onSaveSettings: (settings: AcademyCalendarSettings) => void | Promise<void>;
   onSettingsChange: (settings: AcademyCalendarSettings) => void;
+  onSignOut: () => void;
   settings: AcademyCalendarSettings;
   settingsSaveError?: string;
   settingsSaveStatus?: 'idle' | 'saving' | 'saved' | 'failed';
 }) {
   const { dictionary, language, setLanguage } = useLanguage();
+  const profileDetailsRef = useRef<HTMLDetailsElement | null>(null);
+  const [isProfileSaving, setIsProfileSaving] = useState(false);
+  const [profileError, setProfileError] = useState('');
+  const [profileMessage, setProfileMessage] = useState('');
+  const [profileDraft, setProfileDraft] = useState(() => ({
+    confirmPassword: '',
+    contactEmail: authSession?.email ?? '',
+    displayName: authSession?.displayName ?? '',
+    loginId: authSession?.loginId ?? '',
+    password: '',
+    profileImageDataUrl: authSession?.pictureUrl ?? '',
+    removeProfileImage: false,
+  }));
   const [canvasTokenStatus, setCanvasTokenStatus] = useState<CanvasTokenStatus | null>(null);
   const [isCanvasTokenLoading, setIsCanvasTokenLoading] = useState(true);
   const [isCanvasTokenSaving, setIsCanvasTokenSaving] = useState(false);
@@ -3013,6 +3489,13 @@ function AcademySettingsView({
   const academyLogoPreviewSrc = isAcademyLogoHidden
     ? ''
     : settings.academyLogoSrc || defaultAcademyLogoSrc;
+  const canEditAcademyProfile = authSession?.provider === 'academy';
+  const updateProfileDraft = (field: keyof typeof profileDraft, value: string | boolean) => {
+    setProfileDraft((currentDraft) => ({
+      ...currentDraft,
+      [field]: value,
+    }));
+  };
   const updateSettings = (partialSettings: Partial<AcademyCalendarSettings>) => {
     onSettingsChange(normalizeAcademyCalendarSettings({
       ...settings,
@@ -3078,6 +3561,88 @@ function AcademySettingsView({
     };
     reader.onerror = () => setLogoUploadError(dictionary.academyTopBarLogoInvalid);
     reader.readAsDataURL(file);
+  };
+  const handleProfileImageUpload = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+
+    event.target.value = '';
+    setProfileError('');
+    setProfileMessage('');
+
+    if (!file) {
+      return;
+    }
+
+    if (!file.type.startsWith('image/') || file.size > academyProfileImageMaxBytes) {
+      setProfileError(dictionary.academyProfileImageInvalid);
+      return;
+    }
+
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      if (typeof reader.result !== 'string') {
+        setProfileError(dictionary.academyProfileImageInvalid);
+        return;
+      }
+
+      setProfileDraft((currentDraft) => ({
+        ...currentDraft,
+        profileImageDataUrl: reader.result as string,
+        removeProfileImage: false,
+      }));
+    };
+    reader.onerror = () => setProfileError(dictionary.academyProfileImageInvalid);
+    reader.readAsDataURL(file);
+  };
+  const handleProfileSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setProfileError('');
+    setProfileMessage('');
+
+    if (!canEditAcademyProfile) {
+      setProfileError(dictionary.academyProfileGoogleReadOnly);
+      return;
+    }
+
+    if (profileDraft.password || profileDraft.confirmPassword) {
+      if (profileDraft.password !== profileDraft.confirmPassword) {
+        setProfileError(dictionary.academyProfilePasswordMismatch);
+        return;
+      }
+
+      if (profileDraft.password.length < 8) {
+        setProfileError(dictionary.academyProfilePasswordInvalid);
+        return;
+      }
+    }
+
+    setIsProfileSaving(true);
+
+    workspaceApi
+      .updateAcademyProfile({
+        displayName: profileDraft.displayName,
+        loginId: profileDraft.loginId,
+        contactEmail: profileDraft.contactEmail,
+        password: profileDraft.password || undefined,
+        profileImageDataUrl: !profileDraft.removeProfileImage && profileDraft.profileImageDataUrl
+          ? profileDraft.profileImageDataUrl
+          : undefined,
+        removeProfileImage: profileDraft.removeProfileImage,
+      })
+      .then(async () => {
+        await onProfileSaved();
+        setProfileDraft((currentDraft) => ({
+          ...currentDraft,
+          confirmPassword: '',
+          password: '',
+        }));
+        setProfileMessage(dictionary.academyProfileSaved);
+      })
+      .catch((error: unknown) => {
+        setProfileError(error instanceof Error ? error.message : dictionary.academyProfileSaveFailed);
+      })
+      .finally(() => setIsProfileSaving(false));
   };
   const accentColorLabels: Partial<Record<ColorToken, string>> = {
     blue: dictionary.manualLectureChipColorBlue,
@@ -3219,6 +3784,35 @@ function AcademySettingsView({
     loadCanvasTokenStatus();
   }, []);
 
+  useEffect(() => {
+    setProfileDraft((currentDraft) => ({
+      ...currentDraft,
+      contactEmail: authSession?.email ?? '',
+      displayName: authSession?.displayName ?? '',
+      loginId: authSession?.loginId ?? '',
+      profileImageDataUrl: authSession?.pictureUrl ?? '',
+      removeProfileImage: false,
+    }));
+  }, [authSession?.displayName, authSession?.email, authSession?.loginId, authSession?.pictureUrl]);
+
+  useEffect(() => {
+    if (focusSection !== 'profile') {
+      return;
+    }
+
+    const profileDetails = profileDetailsRef.current;
+
+    if (!profileDetails) {
+      return;
+    }
+
+    profileDetails.open = true;
+    onFocusSectionConsumed?.();
+    window.setTimeout(() => {
+      profileDetails.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 0);
+  }, [focusSection, onFocusSectionConsumed]);
+
   return (
     <div className="h-full min-h-0 overflow-hidden pb-3 pr-1">
       <Card className="flex h-full min-h-0 flex-col rounded-xl bg-card shadow-none">
@@ -3274,6 +3868,159 @@ function AcademySettingsView({
           ) : null}
         </CardHeader>
         <CardContent className="grid min-h-0 flex-1 gap-3 overflow-y-auto overscroll-contain pr-2">
+          <details className="group rounded-lg border bg-muted/20 p-3" ref={profileDetailsRef}>
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-black text-foreground">
+              <span className="flex min-w-0 items-center gap-2">
+                <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-card text-primary">
+                  <UserRound className="size-4" />
+                </span>
+                <span className="truncate">{dictionary.academyProfileSettingsTitle}</span>
+              </span>
+              <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
+            </summary>
+            <form className="mt-3 grid gap-4 rounded-lg border bg-card p-3" onSubmit={handleProfileSubmit}>
+              {!canEditAcademyProfile ? (
+                <div className="rounded-md border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs font-bold text-amber-700 dark:text-amber-200">
+                  {dictionary.academyProfileGoogleReadOnly}
+                </div>
+              ) : null}
+              <div className="grid gap-4 lg:grid-cols-[auto_minmax(0,1fr)]">
+                <div className="grid content-start justify-items-center gap-2">
+                  <div className="grid size-20 place-items-center overflow-hidden rounded-full border bg-muted text-lg font-black text-muted-foreground">
+                    {profileDraft.profileImageDataUrl && !profileDraft.removeProfileImage ? (
+                      <img alt="" className="size-full object-cover" src={profileDraft.profileImageDataUrl} />
+                    ) : (
+                      <UserRound className="size-8" />
+                    )}
+                  </div>
+                  <label className={cn(
+                    'inline-flex h-8 cursor-pointer items-center justify-center rounded-md border bg-background px-2.5 text-xs font-black transition hover:bg-muted',
+                    !canEditAcademyProfile && 'pointer-events-none opacity-50',
+                  )}>
+                    <ImageIcon className="mr-1.5 size-3.5" />
+                    {dictionary.academyProfileImageChange}
+                    <input
+                      accept="image/*"
+                      className="sr-only"
+                      disabled={!canEditAcademyProfile || isProfileSaving}
+                      onChange={handleProfileImageUpload}
+                      type="file"
+                    />
+                  </label>
+                  <Button
+                    className="h-8 rounded-md px-2.5 text-xs font-black"
+                    disabled={!canEditAcademyProfile || isProfileSaving || (!profileDraft.profileImageDataUrl && profileDraft.removeProfileImage)}
+                    onClick={() => setProfileDraft((currentDraft) => ({
+                      ...currentDraft,
+                      profileImageDataUrl: '',
+                      removeProfileImage: true,
+                    }))}
+                    type="button"
+                    variant="outline"
+                  >
+                    {dictionary.academyProfileImageRemove}
+                  </Button>
+                </div>
+                <div className="grid gap-3">
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                      <span>{dictionary.academyName}</span>
+                      <Input
+                        autoComplete="name"
+                        disabled={!canEditAcademyProfile || isProfileSaving}
+                        onChange={(event) => updateProfileDraft('displayName', event.target.value)}
+                        required
+                        value={profileDraft.displayName}
+                      />
+                    </label>
+                    <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                      <span>{dictionary.academyLoginId}</span>
+                      <Input
+                        autoCapitalize="none"
+                        autoComplete="username"
+                        disabled={!canEditAcademyProfile || isProfileSaving}
+                        onChange={(event) => updateProfileDraft('loginId', event.target.value)}
+                        required
+                        value={profileDraft.loginId}
+                      />
+                    </label>
+                    <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground md:col-span-2">
+                      <span>{dictionary.academyContactEmail}</span>
+                      <Input
+                        autoCapitalize="none"
+                        autoComplete="email"
+                        disabled={!canEditAcademyProfile || isProfileSaving}
+                        onChange={(event) => updateProfileDraft('contactEmail', event.target.value)}
+                        placeholder={dictionary.academyContactEmailPlaceholder}
+                        type="email"
+                        value={profileDraft.contactEmail}
+                      />
+                    </label>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                      <span>{dictionary.academyProfileNewPassword}</span>
+                      <Input
+                        autoComplete="new-password"
+                        disabled={!canEditAcademyProfile || isProfileSaving}
+                        onChange={(event) => updateProfileDraft('password', event.target.value)}
+                        type="password"
+                        value={profileDraft.password}
+                      />
+                    </label>
+                    <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                      <span>{dictionary.academyConfirmPassword}</span>
+                      <Input
+                        autoComplete="new-password"
+                        disabled={!canEditAcademyProfile || isProfileSaving}
+                        onChange={(event) => updateProfileDraft('confirmPassword', event.target.value)}
+                        type="password"
+                        value={profileDraft.confirmPassword}
+                      />
+                    </label>
+                  </div>
+                  <div className="grid gap-2 rounded-md border bg-muted/25 px-3 py-2 text-xs font-semibold text-muted-foreground">
+                    <div className="flex min-w-0 justify-between gap-3">
+                      <span>{dictionary.accountMenu}</span>
+                      <span className="min-w-0 truncate text-right text-foreground">{authSession?.provider ?? dictionary.notSet}</span>
+                    </div>
+                    <div className="flex min-w-0 justify-between gap-3">
+                      <span>{dictionary.accountEmail}</span>
+                      <span className="min-w-0 truncate text-right text-foreground">{authSession?.email ?? dictionary.notSet}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              {profileError ? (
+                <div className="rounded-md border border-red-500/35 bg-red-500/10 px-3 py-2 text-xs font-bold text-red-700 dark:text-red-200">
+                  {profileError}
+                </div>
+              ) : null}
+              {profileMessage ? (
+                <div className="rounded-md border border-emerald-500/35 bg-emerald-500/10 px-3 py-2 text-xs font-bold text-emerald-700 dark:text-emerald-200">
+                  {profileMessage}
+                </div>
+              ) : null}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Button
+                  className="rounded-md"
+                  onClick={onSignOut}
+                  type="button"
+                  variant="outline"
+                >
+                  <LogOut className="size-4" />
+                  {dictionary.signOut}
+                </Button>
+                <Button
+                  className="rounded-md"
+                  disabled={!canEditAcademyProfile || isProfileSaving}
+                  type="submit"
+                >
+                  {isProfileSaving ? dictionary.academyProfileSaving : dictionary.academyProfileSave}
+                </Button>
+              </div>
+            </form>
+          </details>
           <details className="group rounded-lg border bg-muted/20 p-3">
             <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-black text-foreground">
               <span className="flex min-w-0 items-center gap-2">
@@ -3431,10 +4178,13 @@ function AcademySettingsView({
                     <Button
                       className={cn(
                         'h-9 rounded-lg px-3 text-xs font-black',
-                        settings.themeMode === mode
+                        settings.themeTimerEnabled
+                          ? 'cursor-not-allowed opacity-45'
+                          : settings.themeMode === mode
                           ? 'bg-primary text-primary-foreground hover:bg-primary/90'
                           : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
                       )}
+                      disabled={settings.themeTimerEnabled}
                       key={mode}
                       onClick={() => updateSettings({ themeMode: mode })}
                       type="button"
@@ -3636,7 +4386,7 @@ function AcademySettingsView({
               </span>
               <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
             </summary>
-            <div className="mt-3 grid gap-3 rounded-lg border bg-card p-3 md:grid-cols-3">
+            <div className="mt-3 grid gap-3 rounded-lg border bg-card p-3 md:grid-cols-4">
               <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
                 <span>{dictionary.academyLanguageSelection}</span>
                 <Select onValueChange={handleAcademyLanguageChange} value={settings.language}>
@@ -3651,6 +4401,31 @@ function AcademySettingsView({
                     ))}
                   </SelectContent>
                 </Select>
+              </label>
+              <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                <span>{dictionary.academyNationSelection}</span>
+                <Select
+                  onValueChange={(value) => updateSettings({ nation: value as AcademyNation })}
+                  value={settings.nation}
+                >
+                  <SelectTrigger className="h-9 rounded-md bg-background">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {academyNationOptions.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        <span className="inline-flex min-w-0 items-center gap-2">
+                          <span aria-hidden="true">{option.flag}</span>
+                          <span>{option.label}</span>
+                          <span className="text-[10px] font-bold text-muted-foreground">{option.timeZone}</span>
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <span className="text-[11px] normal-case text-muted-foreground">
+                  {dictionary.academyNationSelectionHint}
+                </span>
               </label>
               <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
                 <span>{dictionary.academyFontFamily}</span>
@@ -3714,62 +4489,6 @@ function AcademySettingsView({
                     </Button>
                   ))}
                 </div>
-              </div>
-            </div>
-          </details>
-          <details className="group rounded-lg border bg-muted/20 p-3">
-            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-black text-foreground">
-              <span className="flex min-w-0 items-center gap-2">
-                <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-card text-primary">
-                  <ZoomIn className="size-4" />
-                </span>
-                <span className="truncate">{dictionary.academyMagnifierSettingsTitle}</span>
-              </span>
-              <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
-            </summary>
-            <div className="mt-3 grid gap-3">
-              <div className="grid gap-3 rounded-lg border bg-card p-3 sm:grid-cols-[minmax(0,1fr)_96px]">
-                <label className="grid gap-2 text-xs font-black uppercase text-muted-foreground">
-                  <span>{dictionary.academyMagnifierPercent}</span>
-                  <input
-                    aria-label={dictionary.academyMagnifierPercent}
-                    className="h-2 w-full cursor-pointer accent-primary"
-                    max={150}
-                    min={50}
-                    onChange={(event) => updateSettings({ magnifierPercent: Number(event.target.value) })}
-                    step={5}
-                    type="range"
-                    value={settings.magnifierPercent}
-                  />
-                </label>
-                <div className="grid place-items-center rounded-lg border bg-muted/30 px-3 py-2 text-lg font-black text-foreground">
-                  {settings.magnifierPercent}%
-                </div>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {[50, 75, 100, 125, 150].map((percent) => (
-                  <Button
-                    className={cn(
-                      'h-8 rounded-md px-2.5 text-xs font-black',
-                      settings.magnifierPercent === percent &&
-                        'border-primary bg-primary text-primary-foreground hover:bg-primary/90',
-                    )}
-                    key={percent}
-                    onClick={() => updateSettings({ magnifierPercent: percent })}
-                    type="button"
-                    variant="outline"
-                  >
-                    {percent}%
-                  </Button>
-                ))}
-                <Button
-                  className="h-8 rounded-md px-2.5 text-xs font-black"
-                  onClick={() => updateSettings({ magnifierPercent: 100 })}
-                  type="button"
-                  variant="outline"
-                >
-                  {dictionary.academyMagnifierReset}
-                </Button>
               </div>
             </div>
           </details>
@@ -3980,6 +4699,36 @@ function AcademySettingsView({
               <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
             </summary>
             <div className="mt-3 grid gap-3">
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card p-3">
+                <div className="min-w-0">
+                  <div className="inline-flex items-center gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                    {settings.courseworkShowStudyItems ? (
+                      <Eye className="size-3.5" />
+                    ) : (
+                      <EyeOff className="size-3.5" />
+                    )}
+                    {dictionary.courseworkShowStudyItems}
+                  </div>
+                  <div className="mt-1 text-xs font-bold text-muted-foreground">
+                    {dictionary.courseworkShowStudyItemsHint}
+                  </div>
+                </div>
+                <Button
+                  className={cn(
+                    'h-9 rounded-lg px-3 text-xs font-black',
+                    settings.courseworkShowStudyItems
+                      ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                      : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
+                  )}
+                  onClick={() => updateSettings({
+                    courseworkShowStudyItems: !settings.courseworkShowStudyItems,
+                  })}
+                  type="button"
+                  variant="outline"
+                >
+                  {settings.courseworkShowStudyItems ? dictionary.settingEnabled : dictionary.settingDisabled}
+                </Button>
+              </div>
               <div className="grid gap-3 sm:grid-cols-[minmax(160px,220px)_minmax(160px,220px)_minmax(0,1fr)]">
                 <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
                   <span>{dictionary.courseworkHideCompletedAfter}</span>
@@ -4106,6 +4855,33 @@ function AcademySettingsView({
                   variant="outline"
                 >
                   {settings.showPastTermCalendarItems ? dictionary.settingEnabled : dictionary.settingDisabled}
+                </Button>
+              </div>
+            </div>
+            <div className="grid gap-2 rounded-lg border bg-card p-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-xs font-black uppercase text-muted-foreground">
+                    {dictionary.calendarNoClassOnHoliday}
+                  </div>
+                  <div className="mt-1 text-xs font-bold text-muted-foreground">
+                    {dictionary.calendarNoClassOnHolidayHint}
+                  </div>
+                </div>
+                <Button
+                  className={cn(
+                    'h-9 rounded-lg px-3 text-xs font-black',
+                    settings.skipClassOnHolidays
+                      ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                      : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
+                  )}
+                  onClick={() => updateSettings({
+                    skipClassOnHolidays: !settings.skipClassOnHolidays,
+                  })}
+                  type="button"
+                  variant="outline"
+                >
+                  {settings.skipClassOnHolidays ? dictionary.settingEnabled : dictionary.settingDisabled}
                 </Button>
               </div>
             </div>
@@ -4299,6 +5075,961 @@ function AdminGeneralSettingsView({
   );
 }
 
+function getAcademyNationOptionByValue(nation: AcademyNation | null | undefined) {
+  return academyNationOptions.find((option) => option.value === nation);
+}
+
+function NationFlagIcon({
+  alt,
+  className,
+  label,
+  src,
+}: {
+  alt: string;
+  className?: string;
+  label?: string;
+  src?: string;
+}) {
+  if (!src) {
+    return (
+      <span
+        aria-label={alt}
+        className={cn(
+          'pointer-events-none inline-flex h-4 min-w-7 shrink-0 items-center justify-center rounded-sm border bg-muted px-1 text-[9px] font-black leading-none text-muted-foreground',
+          className,
+        )}
+        role="img"
+      >
+        {label ?? 'UTC'}
+      </span>
+    );
+  }
+
+  return (
+    <img
+      alt={alt}
+      className={cn('pointer-events-none h-4 w-6 shrink-0 rounded-sm object-cover ring-1 ring-border/70', className)}
+      loading="lazy"
+      onError={(event) => {
+        event.currentTarget.style.display = 'none';
+      }}
+      referrerPolicy="no-referrer"
+      src={src}
+    />
+  );
+}
+
+function WorkspaceSettingsView({
+  hasUnsavedChanges,
+  onRevertSettings,
+  onSaveSettings,
+  onSettingsChange,
+  settings,
+  settingsSaveError,
+  settingsSaveStatus,
+}: {
+  hasUnsavedChanges: boolean;
+  onRevertSettings: () => void;
+  onSaveSettings: (settings: WorkspaceSettings) => void | Promise<void>;
+  onSettingsChange: (settings: WorkspaceSettings) => void;
+  settings: WorkspaceSettings;
+  settingsSaveError?: string;
+  settingsSaveStatus?: 'idle' | 'saving' | 'saved' | 'failed';
+}) {
+  const { dictionary, setLanguage } = useLanguage();
+  const [showAccentVariants, setShowAccentVariants] = useState(false);
+  const [accentVariantPage, setAccentVariantPage] = useState(0);
+  const selectedFontFamilyOption = academyFontFamilyOptions.find((option) => option.value === settings.fontFamily) ??
+    academyFontFamilyOptions[0];
+  const selectedTimeZoneOption = workspaceTimeZoneOptions.find((option) => option.value === settings.timeZone) ??
+    workspaceTimeZoneOptions[0];
+  const previewDate = new Date();
+  const previewIsoDate = getIsoDateInTimeZone(previewDate, settings.timeZone);
+  const activeHolidayItems = settings.holidayNations.flatMap((nation) => {
+    const holiday = getHolidayForDateByNation(nation, previewIsoDate);
+    const nationOption = getAcademyNationOptionByValue(nation);
+
+    return holiday && nationOption
+      ? [{ holiday, nationOption }]
+      : [];
+  });
+  const updateSettings = (patch: Partial<WorkspaceSettings>) => {
+    onSettingsChange(normalizeWorkspaceSettings({
+      ...settings,
+      ...patch,
+    }));
+  };
+  const handleLanguageChange = (value: string) => {
+    const nextLanguage = value === 'en' ? 'en' : 'ko';
+
+    setLanguage(nextLanguage);
+    updateSettings({ language: nextLanguage });
+  };
+  const toggleHolidayNation = (nation: AcademyNation) => {
+    const nextNations = settings.holidayNations.includes(nation)
+      ? settings.holidayNations.filter((currentNation) => currentNation !== nation)
+      : [...settings.holidayNations, nation];
+
+    updateSettings({ holidayNations: nextNations });
+  };
+  const updateProgressThreshold = (
+    key: 'progressGreenAt' | 'progressYellowAt',
+    value: string,
+  ) => {
+    const parsedValue = Number.parseInt(value, 10);
+
+    updateSettings({
+      [key]: Number.isFinite(parsedValue) ? parsedValue : settings[key],
+    });
+  };
+  const accentVariantColors =
+    academyAccentColorVariantPages[accentVariantPage] ?? academyAccentColorVariantPages[0];
+  const isVariantAccentSelected = !academyAccentColors.includes(settings.accentColor);
+
+  return (
+    <div className="h-full min-h-0 overflow-hidden pb-3 pr-1">
+      <Card className="flex h-full min-h-0 flex-col rounded-xl bg-card shadow-none">
+        <CardHeader className="shrink-0">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <CardTitle className="text-xl font-black">{dictionary.workspaceSettingsTitle}</CardTitle>
+              <p className="mt-1 text-sm font-semibold text-muted-foreground">
+                {dictionary.workspaceSettingsSubtitle}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {hasUnsavedChanges ? (
+                <span className="rounded-md border border-amber-500/35 bg-amber-500/10 px-2 py-1 text-[10px] font-black uppercase text-amber-700 dark:text-amber-200">
+                  {dictionary.academySettingsUnsaved}
+                </span>
+              ) : settingsSaveStatus && settingsSaveStatus !== 'idle' ? (
+                <span className={cn(
+                  'rounded-md border px-2 py-1 text-[10px] font-black uppercase',
+                  settingsSaveStatus === 'failed'
+                    ? 'border-red-500/35 bg-red-500/10 text-red-700 dark:text-red-200'
+                    : settingsSaveStatus === 'saving'
+                      ? 'border-amber-500/35 bg-amber-500/10 text-amber-700 dark:text-amber-200'
+                      : 'border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200',
+                )}>
+                  {settingsSaveStatus === 'saving'
+                    ? dictionary.academySettingsSaving
+                    : settingsSaveStatus === 'failed'
+                      ? dictionary.academySettingsSaveFailed
+                      : dictionary.academySettingsSaved}
+                </span>
+              ) : null}
+              <Button
+                className="h-8 rounded-md px-2.5 text-xs font-black"
+                disabled={!hasUnsavedChanges || settingsSaveStatus === 'saving'}
+                onClick={onRevertSettings}
+                type="button"
+                variant="outline"
+              >
+                <RotateCcw className="mr-1.5 size-3.5" />
+                {dictionary.academySettingsRevert}
+              </Button>
+              <Button
+                className="h-8 rounded-md px-3 text-xs font-black"
+                disabled={!hasUnsavedChanges || settingsSaveStatus === 'saving'}
+                onClick={() => onSaveSettings(settings)}
+                type="button"
+              >
+                {settingsSaveStatus === 'saving' ? dictionary.academySettingsSaving : dictionary.academySettingsSave}
+              </Button>
+            </div>
+          </div>
+          {settingsSaveError ? (
+            <div className="mt-3 rounded-md border border-red-500/35 bg-red-500/10 px-3 py-2 text-xs font-bold text-red-700 dark:text-red-200">
+              {settingsSaveError}
+            </div>
+          ) : null}
+        </CardHeader>
+        <CardContent className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
+          <div className="grid gap-3">
+            <details className="group rounded-lg border bg-muted/20 p-3">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-black text-foreground">
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-card text-primary">
+                    <Palette className="size-4" />
+                  </span>
+                  <span className="truncate">{dictionary.academyThemeSettingsTitle}</span>
+                </span>
+                <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
+              </summary>
+              <div className="mt-3 grid gap-4">
+                <div className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                  <span>{dictionary.academyThemeMode}</span>
+                  <div className="flex flex-wrap gap-2">
+                    {(['dark', 'light'] as const).map((mode) => (
+                      <Button
+                        className={cn(
+                          'h-9 rounded-lg px-3 text-xs font-black',
+                          settings.themeTimerEnabled
+                            ? 'cursor-not-allowed opacity-45'
+                            : settings.themeMode === mode
+                              ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                              : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
+                        )}
+                        disabled={settings.themeTimerEnabled}
+                        key={mode}
+                        onClick={() => updateSettings({ themeMode: mode })}
+                        type="button"
+                        variant="outline"
+                      >
+                        {mode === 'dark' ? (
+                          <Moon className="mr-1.5 size-3.5" />
+                        ) : (
+                          <Sun className="mr-1.5 size-3.5" />
+                        )}
+                        {mode === 'dark'
+                          ? dictionary.academyThemeDark
+                          : dictionary.academyThemeLight}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+                <div className="grid gap-3 rounded-lg border bg-card p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="inline-flex items-center gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                        <Clock3 className="size-3.5" />
+                        {dictionary.academyThemeTimerEnabled}
+                      </div>
+                      <div className="mt-1 text-xs font-bold text-muted-foreground">
+                        {dictionary.academyThemeTimerHint}
+                      </div>
+                    </div>
+                    <Button
+                      className={cn(
+                        'h-9 rounded-lg px-3 text-xs font-black',
+                        settings.themeTimerEnabled
+                          ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                          : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
+                      )}
+                      onClick={() => updateSettings({ themeTimerEnabled: !settings.themeTimerEnabled })}
+                      type="button"
+                      variant="outline"
+                    >
+                      {settings.themeTimerEnabled ? dictionary.settingEnabled : dictionary.settingDisabled}
+                    </Button>
+                  </div>
+                  {settings.themeTimerEnabled ? (
+                    <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_120px_120px]">
+                      <div className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                        <span>{dictionary.academyThemeTimerMode}</span>
+                        <div className="flex flex-wrap gap-2">
+                          {(['light', 'dark'] as const).map((mode) => (
+                            <Button
+                              className={cn(
+                                'h-9 rounded-lg px-3 text-xs font-black',
+                                settings.themeTimerMode === mode
+                                  ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                                  : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
+                              )}
+                              key={mode}
+                              onClick={() => updateSettings({ themeTimerMode: mode })}
+                              type="button"
+                              variant="outline"
+                            >
+                              {mode === 'dark' ? (
+                                <Moon className="mr-1.5 size-3.5" />
+                              ) : (
+                                <Sun className="mr-1.5 size-3.5" />
+                              )}
+                              {mode === 'dark'
+                                ? dictionary.academyThemeDark
+                                : dictionary.academyThemeLight}
+                            </Button>
+                          ))}
+                        </div>
+                      </div>
+                      <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                        <span>{dictionary.academyThemeTimerStart}</span>
+                        <input
+                          className="h-9 rounded-md border bg-background px-3 text-sm font-bold text-foreground"
+                          onChange={(event) => updateSettings({ themeTimerStart: event.target.value })}
+                          type="time"
+                          value={settings.themeTimerStart}
+                        />
+                      </label>
+                      <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                        <span>{dictionary.academyThemeTimerEnd}</span>
+                        <input
+                          className="h-9 rounded-md border bg-background px-3 text-sm font-bold text-foreground"
+                          onChange={(event) => updateSettings({ themeTimerEnd: event.target.value })}
+                          type="time"
+                          value={settings.themeTimerEnd}
+                        />
+                      </label>
+                    </div>
+                  ) : null}
+                </div>
+                <div className="grid gap-2 text-xs font-black uppercase text-muted-foreground">
+                  <span>{dictionary.academyThemeAccentColor}</span>
+                  <div className="grid grid-cols-6 gap-2 sm:flex sm:flex-wrap">
+                    {academyAccentColors.map((color) => (
+                      <button
+                        aria-label={color}
+                        className={cn(
+                          'grid size-9 place-items-center rounded-lg border bg-card transition hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50',
+                          settings.accentColor === color && 'border-primary bg-primary/10 ring-2 ring-primary/45',
+                        )}
+                        key={color}
+                        onClick={() => updateSettings({ accentColor: color })}
+                        title={color}
+                        type="button"
+                      >
+                        <span
+                          aria-hidden="true"
+                          className={cn('size-4 rounded-full border border-foreground/10', dotColorClasses[color])}
+                        />
+                      </button>
+                    ))}
+                    <button
+                      aria-expanded={showAccentVariants}
+                      className={cn(
+                        'inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border bg-card px-2.5 text-xs font-black normal-case text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50',
+                        (showAccentVariants || isVariantAccentSelected) && 'border-primary bg-primary/10 text-primary ring-2 ring-primary/35',
+                      )}
+                      onClick={() => setShowAccentVariants((currentValue) => !currentValue)}
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        className="size-3 rounded-full"
+                        style={{
+                          background:
+                            'conic-gradient(from 90deg, #ef4444, #f97316, #facc15, #22c55e, #06b6d4, #3b82f6, #8b5cf6, #ec4899, #ef4444)',
+                        }}
+                      />
+                      {dictionary.manualLectureChipColorOther}
+                    </button>
+                  </div>
+                  {showAccentVariants ? (
+                    <div className="rounded-lg border bg-card p-2">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <Button
+                          aria-label={dictionary.manualLectureChipColorPrevious}
+                          className="size-8 rounded-md"
+                          disabled={accentVariantPage === 0}
+                          onClick={() => setAccentVariantPage((currentPage) => Math.max(0, currentPage - 1))}
+                          size="icon-sm"
+                          type="button"
+                          variant="outline"
+                        >
+                          <ChevronLeft className="size-4" />
+                        </Button>
+                        <span className="text-[11px] font-black text-muted-foreground">
+                          {accentVariantPage + 1}/{academyAccentColorVariantPages.length}
+                        </span>
+                        <Button
+                          aria-label={dictionary.manualLectureChipColorNext}
+                          className="size-8 rounded-md"
+                          disabled={accentVariantPage === academyAccentColorVariantPages.length - 1}
+                          onClick={() => setAccentVariantPage((currentPage) => Math.min(
+                            academyAccentColorVariantPages.length - 1,
+                            currentPage + 1,
+                          ))}
+                          size="icon-sm"
+                          type="button"
+                          variant="outline"
+                        >
+                          <ChevronRight className="size-4" />
+                        </Button>
+                      </div>
+                      <div className="grid grid-cols-6 gap-1.5 sm:grid-cols-12">
+                        {accentVariantColors.map((color) => (
+                          <button
+                            aria-label={color}
+                            className={cn(
+                              'grid size-8 place-items-center rounded-md transition hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50',
+                              settings.accentColor === color && 'bg-primary/12 ring-2 ring-primary/45',
+                            )}
+                            key={color}
+                            onClick={() => updateSettings({ accentColor: color })}
+                            title={color}
+                            type="button"
+                          >
+                            <span
+                              aria-hidden="true"
+                              className={cn('size-4 rounded-full border border-foreground/10', dotColorClasses[color])}
+                            />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </details>
+            <details className="group rounded-lg border bg-muted/20 p-3">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-black text-foreground">
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-card text-primary">
+                    <Languages className="size-4" />
+                  </span>
+                  <span className="truncate">{dictionary.workspaceLanguageSettingsTitle}</span>
+                </span>
+                <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
+              </summary>
+              <div className="mt-3 grid gap-3">
+                <div className="grid gap-3 rounded-lg border bg-card p-3 md:grid-cols-4">
+                  <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                    <span>{dictionary.academyLanguageSelection}</span>
+                    <Select onValueChange={handleLanguageChange} value={settings.language}>
+                      <SelectTrigger className="h-9 rounded-md bg-background">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {languageOptions.map((option) => (
+                          <SelectItem key={option.value} textValue={option.label} value={option.value}>
+                            <span className="inline-flex min-w-0 items-center gap-2">
+                              <NationFlagIcon alt={`${option.label} flag`} src={option.flagIconSrc} />
+                              <span className="truncate">{option.label}</span>
+                            </span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                    <span>{dictionary.workspaceTimeZone}</span>
+                    <Select
+                      onValueChange={(value) => updateSettings({ timeZone: value })}
+                      value={settings.timeZone}
+                    >
+                      <SelectTrigger className="h-9 rounded-md bg-background">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {workspaceTimeZoneOptions.map((option) => (
+                          <SelectItem key={option.value} textValue={option.label} value={option.value}>
+                            <span className="inline-flex min-w-0 items-center gap-2">
+                              <NationFlagIcon
+                                alt={`${option.label} time zone`}
+                                label="UTC"
+                                src={getAcademyNationOptionByValue(option.nation)?.flagIconSrc}
+                              />
+                              <span className="grid min-w-0">
+                                <span className="truncate">{option.label}</span>
+                                <span className="truncate text-[10px] font-bold text-muted-foreground">
+                                  {option.value}
+                                </span>
+                              </span>
+                            </span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                    <span>{dictionary.academyFontFamily}</span>
+                    <Select
+                      onValueChange={(value) => updateSettings({ fontFamily: value as AcademyFontFamily })}
+                      value={settings.fontFamily}
+                    >
+                      <SelectTrigger
+                        className="h-9 rounded-md bg-background"
+                        style={{ fontFamily: selectedFontFamilyOption.cssValue }}
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {academyFontFamilyOptions.map((option) => (
+                          <SelectItem
+                            key={option.value}
+                            style={{ fontFamily: option.cssValue }}
+                            value={option.value}
+                          >
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <div className="grid gap-2 text-xs font-black uppercase text-muted-foreground">
+                    <span className="inline-flex items-center gap-1.5">
+                      <TypeIcon className="size-3.5" />
+                      {dictionary.academyFontSize}
+                    </span>
+                    <div className="grid grid-cols-[minmax(0,1fr)_64px] items-center gap-2">
+                      <input
+                        aria-label={dictionary.academyFontSize}
+                        className="h-2 w-full cursor-pointer accent-primary"
+                        max={130}
+                        min={80}
+                        onChange={(event) => updateSettings({ fontSizePercent: Number(event.target.value) })}
+                        step={5}
+                        type="range"
+                        value={settings.fontSizePercent}
+                      />
+                      <div className="grid h-9 place-items-center rounded-md border bg-muted/30 text-sm font-black text-foreground">
+                        {settings.fontSizePercent}%
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div className="grid gap-3 rounded-lg border bg-card p-3">
+                  <div className="grid gap-1">
+                    <div className="text-xs font-black uppercase text-muted-foreground">
+                      {dictionary.workspaceHolidayNations}
+                    </div>
+                    <div className="text-xs font-bold text-muted-foreground">
+                      {dictionary.workspaceHolidayNationsHint}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {academyNationOptions.map((option) => {
+                      const isSelected = settings.holidayNations.includes(option.value);
+
+                      return (
+                        <Button
+                          className={cn(
+                            'h-9 rounded-lg px-3 text-xs font-black',
+                            isSelected
+                              ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                              : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
+                          )}
+                          key={option.value}
+                          onClick={() => toggleHolidayNation(option.value)}
+                          type="button"
+                          variant="outline"
+                        >
+                          <NationFlagIcon
+                            alt={`${option.shortLabel} flag`}
+                            className="mr-1.5"
+                            src={option.flagIconSrc}
+                          />
+                          {option.shortLabel}
+                        </Button>
+                      );
+                    })}
+                  </div>
+                  <div className="grid gap-2 rounded-lg border bg-muted/25 p-3 text-xs font-bold text-muted-foreground md:grid-cols-2">
+                    <div>
+                      <div className="font-black uppercase">{dictionary.workspaceUtcStoragePreview}</div>
+                      <div className="mt-1 text-foreground">{previewDate.toISOString()}</div>
+                    </div>
+                    <div>
+                      <div className="font-black uppercase">{dictionary.workspaceTimeZonePreview}</div>
+                      <div className="mt-1 text-foreground">
+                        {formatWorkspaceDateTime(previewDate, settings.timeZone, settings.language)}
+                      </div>
+                      <div className="mt-1 text-[11px] font-black uppercase text-muted-foreground">
+                        {previewIsoDate} · {selectedTimeZoneOption.label}
+                      </div>
+                      {activeHolidayItems.length > 0 ? (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {activeHolidayItems.map(({ holiday, nationOption }) => (
+                            <span
+                              className="inline-flex max-w-full items-center gap-1.5 rounded-md border bg-background px-2 py-1 text-xs font-black text-foreground"
+                              key={`${nationOption.value}-${holiday.date}-${holiday.label}`}
+                            >
+                              <NationFlagIcon
+                                alt={`${nationOption.shortLabel} flag`}
+                                src={nationOption.flagIconSrc}
+                              />
+                              <span className="truncate">
+                                {nationOption.shortLabel} · {holiday.label}
+                              </span>
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </details>
+            <details className="group rounded-lg border bg-muted/20 p-3">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-black text-foreground">
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-card text-primary">
+                    <Activity className="size-4" />
+                  </span>
+                  <span className="truncate">{dictionary.calendarProgressSettingsTitle}</span>
+                </span>
+                <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
+              </summary>
+              <div className="mt-3 grid gap-3">
+                <div className="flex flex-wrap gap-2">
+                  {(['linear', 'circular'] as const).map((display) => (
+                    <Button
+                      className={cn(
+                        'h-9 rounded-lg px-3 text-xs font-black',
+                        settings.progressDisplay === display
+                          ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                          : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
+                      )}
+                      key={display}
+                      onClick={() => updateSettings({ progressDisplay: display })}
+                      type="button"
+                      variant="outline"
+                    >
+                      {display === 'linear'
+                        ? dictionary.calendarProgressLinear
+                        : dictionary.calendarProgressCircular}
+                    </Button>
+                  ))}
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                    <span>{dictionary.calendarProgressGreenAt}</span>
+                    <input
+                      className="h-10 rounded-lg border bg-background px-3 text-sm font-bold text-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                      max={100}
+                      min={0}
+                      onChange={(event) => updateProgressThreshold('progressGreenAt', event.target.value)}
+                      type="number"
+                      value={settings.progressGreenAt}
+                    />
+                  </label>
+                  <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                    <span>{dictionary.calendarProgressYellowAt}</span>
+                    <input
+                      className="h-10 rounded-lg border bg-background px-3 text-sm font-bold text-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                      max={settings.progressGreenAt}
+                      min={0}
+                      onChange={(event) => updateProgressThreshold('progressYellowAt', event.target.value)}
+                      type="number"
+                      value={settings.progressYellowAt}
+                    />
+                  </label>
+                </div>
+                <div className="flex min-w-0 items-center gap-3 rounded-lg border bg-card p-3">
+                  <CalendarProgressIndicator
+                    className="flex-1"
+                    display={settings.progressDisplay}
+                    label={dictionary.calendarProgressLabel}
+                    thresholds={{
+                      greenAt: settings.progressGreenAt,
+                      yellowAt: settings.progressYellowAt,
+                    }}
+                    value={0}
+                  />
+                  <span className="text-xs font-black text-muted-foreground">
+                    {dictionary.calendarProgressRedBelow}
+                  </span>
+                </div>
+              </div>
+            </details>
+            <details className="group rounded-lg border bg-muted/20 p-3">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-black text-foreground">
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-card text-primary">
+                    <Clock3 className="size-4" />
+                  </span>
+                  <span className="truncate">{dictionary.academySessionSettingsTitle}</span>
+                </span>
+                <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
+              </summary>
+              <div className="mt-3 grid gap-3">
+                <div className="grid gap-3 rounded-lg border bg-card p-3 sm:grid-cols-[minmax(0,1fr)_96px]">
+                  <label className="grid gap-2 text-xs font-black uppercase text-muted-foreground">
+                    <span>{dictionary.academySessionDuration}</span>
+                    <input
+                      aria-label={dictionary.academySessionDuration}
+                      className="h-2 w-full cursor-pointer accent-primary"
+                      max={14}
+                      min={1}
+                      onChange={(event) => updateSettings({ sessionDurationDays: Number(event.target.value) })}
+                      step={1}
+                      type="range"
+                      value={settings.sessionDurationDays}
+                    />
+                  </label>
+                  <div className="grid place-items-center rounded-lg border bg-muted/30 px-3 py-2 text-lg font-black text-foreground">
+                    {settings.sessionDurationDays}d
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {[1, 3, 7, 14].map((days) => (
+                    <Button
+                      className={cn(
+                        'h-8 rounded-md px-2.5 text-xs font-black',
+                        settings.sessionDurationDays === days &&
+                          'border-primary bg-primary text-primary-foreground hover:bg-primary/90',
+                      )}
+                      key={days}
+                      onClick={() => updateSettings({ sessionDurationDays: days })}
+                      type="button"
+                      variant="outline"
+                    >
+                      {days}d
+                    </Button>
+                  ))}
+                </div>
+                <div className="grid gap-2 rounded-lg border bg-card p-3">
+                  <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                    <span>{dictionary.academyAutoRefreshInterval}</span>
+                    <Select
+                      onValueChange={(value) => updateSettings({ autoRefreshIntervalMs: Number(value) })}
+                      value={String(settings.autoRefreshIntervalMs)}
+                    >
+                      <SelectTrigger className="h-9 rounded-md bg-background">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {academyAutoRefreshIntervalOptions.map((intervalMs) => (
+                          <SelectItem key={intervalMs} value={String(intervalMs)}>
+                            {formatAcademyAutoRefreshInterval(intervalMs)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <div className="text-xs font-bold text-muted-foreground">
+                    {dictionary.academyAutoRefreshIntervalHint}
+                  </div>
+                </div>
+                <div className="grid gap-2 rounded-lg border bg-card p-3">
+                  <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                    <span>{dictionary.academyRefocusRefreshThrottle}</span>
+                    <Select
+                      onValueChange={(value) => updateSettings({ refocusRefreshThrottleMs: Number(value) })}
+                      value={String(settings.refocusRefreshThrottleMs)}
+                    >
+                      <SelectTrigger className="h-9 rounded-md bg-background">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {academyRefocusRefreshThrottleOptions.map((intervalMs) => (
+                          <SelectItem key={intervalMs} value={String(intervalMs)}>
+                            {formatAcademyAutoRefreshInterval(intervalMs)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <div className="text-xs font-bold text-muted-foreground">
+                    {dictionary.academyRefocusRefreshThrottleHint}
+                  </div>
+                </div>
+                <div className="rounded-lg border bg-muted/25 px-3 py-2 text-xs font-bold text-muted-foreground">
+                  {dictionary.workspaceSessionDurationHint}
+                </div>
+              </div>
+            </details>
+            <details className="group rounded-lg border bg-muted/20 p-3">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-black text-foreground">
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-card text-primary">
+                    <LayoutPanelTop className="size-4" />
+                  </span>
+                  <span className="truncate">{dictionary.academyTopBarSettingsTitle}</span>
+                </span>
+                <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
+              </summary>
+              <div className="mt-3 grid gap-3">
+                <div className="rounded-lg border bg-muted/25 px-3 py-2 text-xs font-bold text-muted-foreground">
+                  {dictionary.workspaceTopBarSettingsHint}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {([false, true] as const).map((collapsed) => (
+                    <Button
+                      className={cn(
+                        'h-9 rounded-lg px-3 text-xs font-black',
+                        settings.topBarDefaultCollapsed === collapsed
+                          ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                          : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
+                      )}
+                      key={String(collapsed)}
+                      onClick={() => updateSettings({ topBarDefaultCollapsed: collapsed })}
+                      type="button"
+                      variant="outline"
+                    >
+                      {collapsed
+                        ? dictionary.academyTopBarCollapsed
+                        : dictionary.academyTopBarExpanded}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            </details>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function WorkspaceProjectView({
+  data,
+  onOpenAddItem,
+  onOpenBoard,
+  onOpenCalendar,
+}: {
+  data: WorkspaceModeMockData;
+  onOpenAddItem: () => void;
+  onOpenBoard: () => void;
+  onOpenCalendar: () => void;
+}) {
+  const columnCounts = data.boardItems.reduce<Record<string, number>>((counts, item) => ({
+    ...counts,
+    [item.columnId]: (counts[item.columnId] ?? 0) + 1,
+  }), {});
+  const activeItems = data.boardItems.filter((item) => item.columnId === 'doing');
+  const backlogCount = (columnCounts.ideas ?? 0) + (columnCounts.todo ?? 0);
+  const solvedCount = columnCounts.solved ?? 0;
+  const projectRows = [
+    {
+      color: 'teal' as ColorToken,
+      name: 'Study App',
+      owner: 'Product',
+      progress: 68,
+      status: 'Doing',
+      summary: 'Calendar, coursework, and workspace tools.',
+    },
+    {
+      color: 'red' as ColorToken,
+      name: 'Login Reliability',
+      owner: 'Platform',
+      progress: 42,
+      status: 'Risk',
+      summary: 'Auth, account approval, and session behavior.',
+    },
+    {
+      color: 'orange' as ColorToken,
+      name: 'Customer Requests',
+      owner: 'Support',
+      progress: 55,
+      status: 'Review',
+      summary: 'Meeting follow-ups, issues, and release notes.',
+    },
+  ];
+
+  return (
+    <div className="grid min-h-0 content-start gap-3">
+      <section className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
+        <Card className="rounded-xl bg-card shadow-none">
+          <CardHeader className="gap-3 pb-3 md:flex-row md:items-center md:justify-between">
+            <div className="min-w-0">
+              <CardTitle className="flex items-center gap-2 text-xl font-black">
+                <WorkspaceIcon name="clipboard-list" size={20} />
+                Project
+              </CardTitle>
+              <p className="mt-1 text-sm font-semibold text-muted-foreground">
+                Workspace project status, active work, and delivery timeline.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button onClick={onOpenAddItem} size="sm" type="button">
+                <Plus className="size-4" />
+                Add item
+              </Button>
+              <Button onClick={onOpenBoard} size="sm" type="button" variant="outline">
+                <WorkspaceIcon name="columns-3" size={16} />
+                Board
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="grid gap-3">
+            <div className="grid gap-2 sm:grid-cols-3">
+              {[
+                { label: 'Backlog', value: backlogCount, icon: 'lightbulb' },
+                { label: 'In progress', value: activeItems.length, icon: 'wrench' },
+                { label: 'Solved', value: solvedCount, icon: 'list-checks' },
+              ].map((metric) => (
+                <div className="rounded-lg border bg-muted/20 p-3" key={metric.label}>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs font-black uppercase text-muted-foreground">{metric.label}</span>
+                    <WorkspaceIcon className="text-muted-foreground" name={metric.icon} size={16} />
+                  </div>
+                  <div className="mt-2 text-2xl font-black">{metric.value}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="grid gap-2">
+              {projectRows.map((project) => (
+                <div className="grid gap-3 rounded-lg border bg-background p-3 md:grid-cols-[minmax(0,1fr)_160px]" key={project.name}>
+                  <div className="min-w-0">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <span className="truncate text-sm font-black">{project.name}</span>
+                      <span className="rounded-md border px-2 py-0.5 text-[11px] font-black uppercase text-muted-foreground">
+                        {project.status}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-sm font-semibold text-muted-foreground">{project.summary}</p>
+                    <div className="mt-2 text-xs font-bold text-muted-foreground">Owner: {project.owner}</div>
+                  </div>
+                  <div className="grid content-center gap-1">
+                    <div className="flex items-center justify-between text-xs font-black uppercase text-muted-foreground">
+                      <span>Progress</span>
+                      <span>{project.progress}%</span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full bg-muted">
+                      <div
+                        className={cn('h-full rounded-full', dotColorClasses[project.color])}
+                        style={{ width: `${project.progress}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="rounded-xl bg-card shadow-none">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base font-black">Active Work</CardTitle>
+          </CardHeader>
+          <CardContent className="grid gap-2">
+            {activeItems.length === 0 ? (
+              <div className="rounded-lg border bg-muted/20 p-3 text-sm font-bold text-muted-foreground">
+                No items are currently in progress.
+              </div>
+            ) : activeItems.map((item) => (
+              <button
+                className="grid gap-1 rounded-lg border bg-background p-3 text-left transition hover:bg-muted/35"
+                key={item.id}
+                onClick={onOpenBoard}
+                type="button"
+              >
+                <div className="flex min-w-0 items-center justify-between gap-3">
+                  <span className="truncate text-sm font-black">{item.title}</span>
+                  <span className={cn('size-2 rounded-full', dotColorClasses[item.color])} />
+                </div>
+                <div className="flex flex-wrap gap-2 text-xs font-bold text-muted-foreground">
+                  <span>{item.type}</span>
+                  <span>{item.checklistProgress}</span>
+                </div>
+              </button>
+            ))}
+          </CardContent>
+        </Card>
+      </section>
+
+      <Card className="rounded-xl bg-card shadow-none">
+        <CardHeader className="gap-3 pb-3 md:flex-row md:items-center md:justify-between">
+          <CardTitle className="text-base font-black">Timeline</CardTitle>
+          <Button onClick={onOpenCalendar} size="sm" type="button" variant="outline">
+            <WorkspaceIcon name="calendar-days" size={16} />
+            Calendar
+          </Button>
+        </CardHeader>
+        <CardContent className="grid gap-3">
+          {data.timeline.map((item) => (
+            <div className="grid gap-1" key={item.id}>
+              <div className="flex items-center justify-between gap-3 text-sm">
+                <span className="font-black">{item.name}</span>
+                <span className="text-xs font-bold text-muted-foreground">{item.label}</span>
+              </div>
+              <div className="relative h-3 rounded-full bg-muted">
+                <div
+                  className={cn('absolute top-0 h-3 rounded-full', dotColorClasses[item.color])}
+                  style={{ left: `${item.offsetPercent}%`, width: `${item.widthPercent}%` }}
+                />
+              </div>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 function WaitingApprovalPage({
   isChecking,
   onRefresh,
@@ -4402,17 +6133,249 @@ function PreviewModeBanner({
 }) {
   const previewLabel = session?.loginId ?? session?.email ?? session?.displayName ?? 'user';
   const adminLabel = session?.previewAdminDisplayName ?? session?.previewAdminEmail;
+  const bannerRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{
+    height: number;
+    originX: number;
+    originY: number;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    width: number;
+  } | null>(null);
+  const pendingDragRef = useRef<{
+    height: number;
+    originX: number;
+    originY: number;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    target: HTMLDivElement;
+    width: number;
+  } | null>(null);
+  const dragHoldTimerRef = useRef<number | null>(null);
+  const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
+
+  const clampPosition = (x: number, y: number, width?: number, height?: number) => {
+    if (typeof window === 'undefined') {
+      return { x, y };
+    }
+
+    const margin = 12;
+    const bannerWidth = width ?? bannerRef.current?.offsetWidth ?? 320;
+    const bannerHeight = height ?? bannerRef.current?.offsetHeight ?? 72;
+    const maxX = Math.max(margin, window.innerWidth - bannerWidth - margin);
+    const maxY = Math.max(margin, window.innerHeight - bannerHeight - margin);
+
+    return {
+      x: Math.min(Math.max(x, margin), maxX),
+      y: Math.min(Math.max(y, margin), maxY),
+    };
+  };
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      const banner = bannerRef.current;
+
+      if (!banner) {
+        return;
+      }
+
+      const storedPosition = window.sessionStorage.getItem(previewBannerPositionStorageKey);
+      let parsedPosition: { x?: unknown; y?: unknown } | null = null;
+
+      try {
+        parsedPosition = storedPosition ? JSON.parse(storedPosition) as { x?: unknown; y?: unknown } : null;
+      } catch {
+        window.sessionStorage.removeItem(previewBannerPositionStorageKey);
+      }
+
+      const nextPosition = typeof parsedPosition?.x === 'number' && typeof parsedPosition?.y === 'number'
+        ? clampPosition(parsedPosition.x, parsedPosition.y, banner.offsetWidth, banner.offsetHeight)
+        : clampPosition(window.innerWidth - banner.offsetWidth - 12, 12, banner.offsetWidth, banner.offsetHeight);
+
+      setPosition(nextPosition);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+
+    const handleResize = () => {
+      setPosition((currentPosition) => {
+        if (!currentPosition) {
+          return currentPosition;
+        }
+
+        const nextPosition = clampPosition(currentPosition.x, currentPosition.y);
+        window.sessionStorage.setItem(previewBannerPositionStorageKey, JSON.stringify(nextPosition));
+        return nextPosition;
+      });
+    };
+
+    window.addEventListener('resize', handleResize);
+
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(() => () => {
+    if (dragHoldTimerRef.current !== null) {
+      window.clearTimeout(dragHoldTimerRef.current);
+      dragHoldTimerRef.current = null;
+    }
+  }, []);
+
+  const cancelPendingDrag = () => {
+    if (dragHoldTimerRef.current !== null) {
+      window.clearTimeout(dragHoldTimerRef.current);
+      dragHoldTimerRef.current = null;
+    }
+
+    pendingDragRef.current = null;
+  };
+
+  const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const banner = bannerRef.current;
+
+    if (!banner || event.button !== 0) {
+      return;
+    }
+
+    cancelPendingDrag();
+    dragRef.current = null;
+
+    const origin = position ?? clampPosition(
+      banner.getBoundingClientRect().left,
+      banner.getBoundingClientRect().top,
+      banner.offsetWidth,
+      banner.offsetHeight,
+    );
+
+    pendingDragRef.current = {
+      height: banner.offsetHeight,
+      originX: origin.x,
+      originY: origin.y,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      target: event.currentTarget,
+      width: banner.offsetWidth,
+    };
+
+    dragHoldTimerRef.current = window.setTimeout(() => {
+      const pendingDrag = pendingDragRef.current;
+
+      if (!pendingDrag || pendingDrag.pointerId !== event.pointerId) {
+        return;
+      }
+
+      dragRef.current = pendingDrag;
+      pendingDragRef.current = null;
+      dragHoldTimerRef.current = null;
+
+      if (!pendingDrag.target.hasPointerCapture(pendingDrag.pointerId)) {
+        pendingDrag.target.setPointerCapture(pendingDrag.pointerId);
+      }
+
+      setPosition({ x: pendingDrag.originX, y: pendingDrag.originY });
+    }, previewBannerDragHoldMs);
+  };
+
+  const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+
+    if (!drag) {
+      const pendingDrag = pendingDragRef.current;
+
+      if (
+        pendingDrag?.pointerId === event.pointerId &&
+        Math.hypot(event.clientX - pendingDrag.startX, event.clientY - pendingDrag.startY) > previewBannerDragCancelDistance
+      ) {
+        cancelPendingDrag();
+      }
+
+      return;
+    }
+
+    if (drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    setPosition(clampPosition(
+      drag.originX + event.clientX - drag.startX,
+      drag.originY + event.clientY - drag.startY,
+      drag.width,
+      drag.height,
+    ));
+  };
+
+  const handlePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+
+    if (pendingDragRef.current?.pointerId === event.pointerId) {
+      cancelPendingDrag();
+    }
+
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    dragRef.current = null;
+
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+
+    setPosition((currentPosition) => {
+      if (currentPosition && typeof window !== 'undefined') {
+        window.sessionStorage.setItem(previewBannerPositionStorageKey, JSON.stringify(currentPosition));
+      }
+
+      return currentPosition;
+    });
+  };
 
   return (
-    <div className="fixed right-3 top-3 z-[80] flex max-w-[calc(100vw-1.5rem)] items-center gap-2 rounded-xl border bg-background/95 p-2 text-foreground shadow-lg backdrop-blur">
-      <div className="hidden min-w-0 max-w-[260px] sm:block">
+    <div
+      className="fixed right-3 top-3 z-[80] flex max-w-[calc(100vw-1.5rem)] items-center gap-2 rounded-xl border-2 border-primary bg-background/95 p-2 text-foreground shadow-xl shadow-primary/20 ring-2 ring-primary/20 backdrop-blur"
+      ref={bannerRef}
+      style={position ? { left: position.x, right: 'auto', top: position.y } : undefined}
+    >
+      <div
+        className="min-w-0 max-w-[260px] cursor-move select-none rounded-lg bg-primary/10 px-2 py-1"
+        onPointerCancel={handlePointerUp}
+        onPointerDown={handlePointerDown}
+        onPointerLeave={() => {
+          if (!dragRef.current) {
+            cancelPendingDrag();
+          }
+        }}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        role="button"
+        tabIndex={0}
+        title="Drag preview banner"
+      >
         <div className="truncate text-xs font-black uppercase text-muted-foreground">Previewing</div>
         <div className="truncate text-sm font-black">{previewLabel}</div>
         {adminLabel ? (
           <div className="truncate text-[11px] font-semibold text-muted-foreground">Admin: {adminLabel}</div>
         ) : null}
       </div>
-      <Button disabled={isExiting} onClick={onExit} size="sm" type="button" variant="outline">
+      <Button
+        className="border-primary/60 bg-primary text-primary-foreground shadow-sm hover:bg-primary/90"
+        disabled={isExiting}
+        onClick={onExit}
+        onPointerDown={(event) => event.stopPropagation()}
+        size="sm"
+        type="button"
+      >
         {isExiting ? (
           <RefreshCw aria-hidden="true" className="size-4 animate-spin" />
         ) : (
@@ -4439,6 +6402,10 @@ function App() {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isWorkspaceSidebarCollapsed, setIsWorkspaceSidebarCollapsed] = useState(false);
   const [isAcademyTopBarCollapsed, setIsAcademyTopBarCollapsed] = useState(false);
+  const [isWorkspaceTopBarCollapsed, setIsWorkspaceTopBarCollapsed] = useState(
+    () => getStoredWorkspaceSettings().topBarDefaultCollapsed,
+  );
+  const [academySettingsFocusSection, setAcademySettingsFocusSection] = useState<'profile' | null>(null);
   const [isAdminTopBarCollapsed, setIsAdminTopBarCollapsed] = useState(
     () => getStoredAdminConsoleSettings().topBarDefaultCollapsed,
   );
@@ -4451,6 +6418,10 @@ function App() {
   const [academyCalendarSettings, setAcademyCalendarSettings] = useState(getStoredAcademyCalendarSettings);
   const [savedAcademyCalendarSettings, setSavedAcademyCalendarSettings] = useState(getStoredAcademyCalendarSettings);
   const [academyThemeClock, setAcademyThemeClock] = useState(() => Date.now());
+  const [workspaceSettings, setWorkspaceSettings] = useState(getStoredWorkspaceSettings);
+  const [savedWorkspaceSettings, setSavedWorkspaceSettings] = useState(getStoredWorkspaceSettings);
+  const [workspacePreferencesSaveStatus, setWorkspacePreferencesSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle');
+  const [workspacePreferencesSaveError, setWorkspacePreferencesSaveError] = useState('');
   const [adminConsoleSettings, setAdminConsoleSettings] = useState(getStoredAdminConsoleSettings);
   const [academyResponsiveState, setAcademyResponsiveState] = useState(() => getAcademyResponsiveState());
   const [hiddenCalendarCourseIds, setHiddenCalendarCourseIds] = useState(getStoredHiddenCalendarCourseIds);
@@ -4462,6 +6433,9 @@ function App() {
   const [canvasCalendarPages, setCanvasCalendarPages] = useState<Record<string, CanvasCalendarPage>>({});
   const [authRedirectMessage] = useState(getInitialAuthRedirectMessage);
   const [academyPreferenceVersion, setAcademyPreferenceVersion] = useState(0);
+  const [hasLoadedAcademyPreferences, setHasLoadedAcademyPreferences] = useState(false);
+  const [academyPreferencesLoadStatus, setAcademyPreferencesLoadStatus] =
+    useState<CanvasCalendarLoadStatus>('idle');
   const [selectedCourseOverviewRowId, setSelectedCourseOverviewRowId] = useState<string | null>(null);
   const [selectedCourseOverviewResourceUrl, setSelectedCourseOverviewResourceUrl] = useState<string | null>(null);
   const calendarTodoTapTimeoutRef = useRef<{ itemId: string; timeoutId: number } | null>(null);
@@ -4469,14 +6443,20 @@ function App() {
   const hasAppliedUrlNavigationRef = useRef(false);
   const academyPreferencesSaveSequenceRef = useRef(0);
   const academyPreferencesLoadSequenceRef = useRef(0);
+  const workspacePreferencesSaveSequenceRef = useRef(0);
+  const workspacePreferencesLoadSequenceRef = useRef(0);
   const isAcademyPreferencesSavingRef = useRef(false);
+  const isWorkspacePreferencesSavingRef = useRef(false);
   const academyCalendarSettingsRef = useRef(academyCalendarSettings);
   const savedAcademyCalendarSettingsRef = useRef(savedAcademyCalendarSettings);
+  const workspaceSettingsRef = useRef(workspaceSettings);
+  const savedWorkspaceSettingsRef = useRef(savedWorkspaceSettings);
   const academySettingsProtectedUntilRef = useRef(0);
   const hasLoadedRemoteAcademySettingsRef = useRef(false);
   const hasUnsavedAcademySettingsRef = useRef(false);
+  const hasUnsavedWorkspaceSettingsRef = useRef(false);
   const authSessionKeyRef = useRef<string | null>(null);
-  const pendingAcademySettingsNavigationRef = useRef<(() => void) | null>(null);
+  const pendingSettingsNavigationRef = useRef<(() => void) | null>(null);
   const academyResumeRefreshRef = useRef({
     isRunning: false,
     lastStartedAt: 0,
@@ -4498,9 +6478,6 @@ function App() {
   );
   const isAcademyOnlySession = authSession?.provider === 'academy' ||
     (authStatus === 'authenticated' && accessibleModeIds.length === 1 && accessibleModeIds[0] === 'academy');
-  const academyMagnifierScale = activeMode.id === 'academy'
-    ? academyCalendarSettings.magnifierPercent / 100
-    : 1;
   const {
     isCalendarAutoExpanded,
     isDayTodoDialogMode,
@@ -4533,10 +6510,12 @@ function App() {
   const isCommunicationView = isEmailView || isOutlookView || isChatView;
   const isCoursesView = activeMode.id === 'academy' && activeSidebarItem === 'courses';
   const isAcademySettingsView = activeMode.id === 'academy' && activeSidebarItem === 'settings';
+  const isWorkspaceProjectView = activeMode.id === 'project' && activeSidebarItem === 'project';
+  const isWorkspaceSettingsView = activeMode.id === 'project' && activeSidebarItem === 'settings';
   const isAdminUsersView = activeMode.id === 'admin-console' && activeSidebarItem === 'users';
   const isAdminGroupsView = activeMode.id === 'admin-console' && activeSidebarItem === 'groups';
   const isAdminGeneralSettingsView = activeMode.id === 'admin-console' && activeSidebarItem === 'settings-general';
-  const isSettingsMainView = isAcademySettingsView || isAdminGeneralSettingsView;
+  const isSettingsMainView = isAcademySettingsView || isWorkspaceSettingsView || isAdminGeneralSettingsView;
   const isMainOnlyView =
     isCommunicationView ||
     isCoursesView ||
@@ -4544,6 +6523,8 @@ function App() {
     isCanvasInboxView ||
     isAcademyPeopleView ||
     isAcademySettingsView ||
+    isWorkspaceSettingsView ||
+    isWorkspaceProjectView ||
     isAdminUsersView ||
     isAdminGroupsView ||
     isAdminGeneralSettingsView;
@@ -4551,6 +6532,8 @@ function App() {
   const shouldAutoExpandCalendar = isCalendarAutoExpanded && isPhoneAcademyMode;
   const effectiveCalendarExpanded = isCalendarExpanded || shouldAutoExpandCalendar;
   const canvasCalendarMonthKey = getCalendarMonthKey(calendarMonth);
+  const visibleCalendarMonths = useMemo(() => getVisibleCalendarMonths(calendarMonth), [calendarMonth]);
+  const visibleCalendarMonthKeys = visibleCalendarMonths.map((monthDate) => getCalendarMonthKey(monthDate));
   const isCalendarDataView = !isMainOnlyView && (
     currentView === 'month' ||
     currentView === 'agenda' ||
@@ -4565,23 +6548,41 @@ function App() {
     isCalendarDataView &&
     shouldFetchLiveCanvasCalendar;
   const canvasCalendarPage = canvasCalendarPages[canvasCalendarMonthKey];
-  const canvasCalendarItems = canvasCalendarPage?.items ?? [];
+  const visibleCanvasCalendarItems = getCanvasCalendarItemsForMonthKeys(
+    canvasCalendarPages,
+    visibleCalendarMonthKeys,
+  );
   const canvasCalendarLoadStatus: CanvasCalendarLoadStatus =
     canvasCalendarPage?.status ?? (shouldLoadCanvasCalendar ? 'loading' : 'idle');
-  const canvasCalendarEmptyMessage = activeMode.id === 'academy' && canvasCalendarLoadStatus === 'failed'
+  const isWaitingForAcademyPreferences =
+    activeMode.id === 'academy' &&
+    !hasLoadedAcademyPreferences &&
+    academyPreferencesLoadStatus !== 'failed';
+  const hasFailedAcademyPreferencesLoad =
+    activeMode.id === 'academy' &&
+    !hasLoadedAcademyPreferences &&
+    academyPreferencesLoadStatus === 'failed';
+  const effectiveCanvasCalendarLoadStatus: CanvasCalendarLoadStatus =
+    isWaitingForAcademyPreferences
+      ? 'loading'
+      : hasFailedAcademyPreferencesLoad
+        ? 'failed'
+        : canvasCalendarLoadStatus;
+  const canvasCalendarEmptyMessage = activeMode.id === 'academy' && effectiveCanvasCalendarLoadStatus === 'failed'
     ? dictionary.canvasCalendarUnavailable
     : undefined;
-  const allCalendarSourceItems = activeMode.id === 'academy'
-    ? getCalendarSourceItems(canvasCalendarItems, academyPreferenceVersion)
+  const canRenderAcademyCalendarSourceItems = activeMode.id === 'academy' && hasLoadedAcademyPreferences;
+  const allCalendarSourceItems = canRenderAcademyCalendarSourceItems
+    ? getCalendarSourceItems(visibleCanvasCalendarItems, academyPreferenceVersion, academyCalendarSettings)
         .filter((item) => (
           academyCalendarSettings.showPastTermCalendarItems ||
           semesterMatches(item.semester, selectedAcademySemester)
         ))
         .filter((item) => !isCourseReferenceHidden(item))
     : [];
-  const calendarCourseFilterOptions = activeMode.id === 'academy'
+  const calendarCourseFilterOptions = canRenderAcademyCalendarSourceItems
     ? getActiveCalendarCourseOptions(
-        canvasCalendarItems,
+        visibleCanvasCalendarItems,
         hiddenCalendarCourseIds,
         dictionary.selectedDayTodoNoCourse,
         selectedAcademySemester,
@@ -4654,29 +6655,46 @@ function App() {
       ]
     : Object.values(selectedDayItemsByCourse);
   const selectedDayHeading = formatSelectedDayHeading(selectedCalendarDayIso, language);
+  const selectedDayHolidayItems = activeMode.id === 'project'
+    ? getHolidayItemsForDateByNations(workspaceSettings.holidayNations, selectedCalendarDayIso)
+    : getHolidayItemsForDateByNations([academyCalendarSettings.nation], selectedCalendarDayIso);
   const selectedDayRelativeBadge = formatRelativeDayBadge(selectedCalendarDayIso);
-  const isSelectedCalendarDayToday = selectedCalendarDayIso === getTodayIsoDate();
+  const activeCalendarTodayIso = activeMode.id === 'project'
+    ? getTodayIsoDateForTimeZone(workspaceSettings.timeZone)
+    : getTodayIsoDate();
+  const isSelectedCalendarDayToday = selectedCalendarDayIso === activeCalendarTodayIso;
   const calendarData = activeMode.id === 'academy'
     ? createAcademyCalendarData(
         activeData,
         calendarMonth,
         calendarSourceItems,
-        canvasCalendarLoadStatus,
+        effectiveCanvasCalendarLoadStatus,
         selectedCalendarDayIso,
         dictionary.selectedDayTodoNoCourse,
         activeCalendarCourseOptionIds,
       )
-    : activeData;
+    : activeMode.id === 'project'
+      ? createEmptyWorkspaceCalendarData(activeData, calendarMonth, workspaceSettings)
+      : activeData;
   const selectedDayProgressInfo = getDayTodoProgress(selectedDaySourceItems);
   const selectedCalendarTodoDetailsItem = selectedCalendarTodoDetailsId
     ? calendarSourceItems.find((item) => item.id === selectedCalendarTodoDetailsId) ?? null
     : null;
   const selectedDayProgress = selectedDayProgressInfo.percent;
-  const calendarProgressThresholds: CalendarProgressThresholds = {
-    greenAt: academyCalendarSettings.progressGreenAt,
-    yellowAt: academyCalendarSettings.progressYellowAt,
-  };
+  const activeCalendarProgressDisplay = activeMode.id === 'project'
+    ? workspaceSettings.progressDisplay
+    : academyCalendarSettings.progressDisplay;
+  const calendarProgressThresholds: CalendarProgressThresholds = activeMode.id === 'project'
+    ? {
+        greenAt: workspaceSettings.progressGreenAt,
+        yellowAt: workspaceSettings.progressYellowAt,
+      }
+    : {
+        greenAt: academyCalendarSettings.progressGreenAt,
+        yellowAt: academyCalendarSettings.progressYellowAt,
+      };
   const isAcademyMode = activeMode.id === 'academy';
+  const isWorkspaceMode = activeMode.id === 'project';
   const shouldForceDashboardCalendarFill =
     isAcademyMode &&
     isDashboardWorkspaceView &&
@@ -4696,6 +6714,9 @@ function App() {
     isAcademyEffectiveLarge ||
     shouldForceDashboardCalendarFill ||
     shouldUseCompactDashboardMonth;
+  const shouldUseWorkspaceCalendarFullHeightLayout =
+    isWorkspaceMode &&
+    isDashboardWorkspaceView;
   const shouldHideCompactAcademyTopBar =
     isAcademyMode &&
     isDashboardWorkspaceView &&
@@ -4723,13 +6744,22 @@ function App() {
         : 'grid-cols-[200px_minmax(0,1fr)] xl:grid-cols-[220px_minmax(0,1fr)] 2xl:grid-cols-[230px_minmax(0,1fr)_340px]';
   const effectiveTopBarCollapsed =
     (activeMode.id === 'academy' && isAcademyTopBarCollapsed) ||
+    (activeMode.id === 'project' && isWorkspaceTopBarCollapsed) ||
     (activeMode.id === 'admin-console' && isAdminTopBarCollapsed);
   const hasUnsavedAcademySettings = !areAcademyCalendarSettingsEqual(
     academyCalendarSettings,
     savedAcademyCalendarSettings,
   );
+  const hasUnsavedWorkspaceSettings = !areWorkspaceSettingsEqual(
+    workspaceSettings,
+    savedWorkspaceSettings,
+  );
   const academyEffectiveTheme = getAcademyEffectiveTheme(
     academyCalendarSettings,
+    new Date(academyThemeClock),
+  );
+  const workspaceEffectiveTheme = getWorkspaceEffectiveTheme(
+    workspaceSettings,
     new Date(academyThemeClock),
   );
 
@@ -4742,17 +6772,31 @@ function App() {
   }, [savedAcademyCalendarSettings]);
 
   useEffect(() => {
+    workspaceSettingsRef.current = workspaceSettings;
+  }, [workspaceSettings]);
+
+  useEffect(() => {
+    savedWorkspaceSettingsRef.current = savedWorkspaceSettings;
+  }, [savedWorkspaceSettings]);
+
+  useEffect(() => {
     hasUnsavedAcademySettingsRef.current = hasUnsavedAcademySettings;
   }, [hasUnsavedAcademySettings]);
 
   useEffect(() => {
+    hasUnsavedWorkspaceSettingsRef.current = hasUnsavedWorkspaceSettings;
+  }, [hasUnsavedWorkspaceSettings]);
+
+  useEffect(() => {
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (!hasUnsavedAcademySettingsRef.current) {
+      if (!hasUnsavedAcademySettingsRef.current && !hasUnsavedWorkspaceSettingsRef.current) {
         return;
       }
 
       event.preventDefault();
-      event.returnValue = dictionary.academySettingsBeforeUnload;
+      event.returnValue = hasUnsavedWorkspaceSettingsRef.current
+        ? dictionary.workspaceSettingsBeforeUnload
+        : dictionary.academySettingsBeforeUnload;
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
@@ -4760,11 +6804,15 @@ function App() {
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
-  }, [dictionary.academySettingsBeforeUnload]);
+  }, [dictionary.academySettingsBeforeUnload, dictionary.workspaceSettingsBeforeUnload]);
 
-  const requestAcademySettingsNavigation = (action: () => void) => {
-    if (isAcademySettingsView && hasUnsavedAcademySettingsRef.current) {
-      pendingAcademySettingsNavigationRef.current = action;
+  const requestSettingsNavigation = (action: () => void) => {
+    const hasUnsavedActiveSettings =
+      (isAcademySettingsView && hasUnsavedAcademySettingsRef.current) ||
+      (isWorkspaceSettingsView && hasUnsavedWorkspaceSettingsRef.current);
+
+    if (hasUnsavedActiveSettings) {
+      pendingSettingsNavigationRef.current = action;
       setIsAcademySettingsLeaveDialogOpen(true);
       return;
     }
@@ -4834,6 +6882,8 @@ function App() {
     setHiddenCalendarCourseIds([]);
     hasLoadedRemoteAcademySettingsRef.current = false;
     hasUnsavedAcademySettingsRef.current = false;
+    setHasLoadedAcademyPreferences(false);
+    setAcademyPreferencesLoadStatus('idle');
     academyPreferencesLoadSequenceRef.current += 1;
     academySettingsProtectedUntilRef.current = 0;
     isAcademyPreferencesSavingRef.current = false;
@@ -4841,10 +6891,10 @@ function App() {
     setAcademyPreferencesSaveError('');
   };
 
-  const runPendingAcademySettingsNavigation = () => {
-    const pendingAction = pendingAcademySettingsNavigationRef.current;
+  const runPendingSettingsNavigation = () => {
+    const pendingAction = pendingSettingsNavigationRef.current;
 
-    pendingAcademySettingsNavigationRef.current = null;
+    pendingSettingsNavigationRef.current = null;
     setIsAcademySettingsLeaveDialogOpen(false);
     pendingAction?.();
   };
@@ -4909,8 +6959,14 @@ function App() {
       });
     };
 
-    if (isAcademySettingsView && itemId !== 'settings' && hasUnsavedAcademySettingsRef.current) {
-      requestAcademySettingsNavigation(navigateToItem);
+    if (
+      itemId !== 'settings' &&
+      (
+        (isAcademySettingsView && hasUnsavedAcademySettingsRef.current) ||
+        (isWorkspaceSettingsView && hasUnsavedWorkspaceSettingsRef.current)
+      )
+    ) {
+      requestSettingsNavigation(navigateToItem);
       return;
     }
 
@@ -5114,6 +7170,23 @@ function App() {
     return persistAcademyCalendarSettings(nextSettings);
   };
 
+  const handleToggleCourseworkStudyItems = () => {
+    const nextSettings = normalizeAcademyCalendarSettings(
+      {
+        ...academyCalendarSettingsRef.current,
+        courseworkShowStudyItems: !academyCalendarSettingsRef.current.courseworkShowStudyItems,
+      },
+      academyCalendarSettingsRef.current,
+    );
+
+    academyCalendarSettingsRef.current = nextSettings;
+    setAcademyCalendarSettings(nextSettings);
+    storeAcademyCalendarSettings(nextSettings);
+    setAcademyPreferencesSaveStatus('saving');
+    setAcademyPreferencesSaveError('');
+    persistAcademyCalendarSettings(nextSettings);
+  };
+
   const handleRevertAcademyCalendarSettings = () => {
     const nextSettings = savedAcademyCalendarSettingsRef.current;
 
@@ -5127,6 +7200,129 @@ function App() {
     setAcademyPreferencesSaveError('');
   };
 
+  const applyRemoteWorkspacePreferences = (preferences: WorkspacePreferences) => {
+    const currentSettings = workspaceSettingsRef.current;
+    const hasRemoteSettings = hasMeaningfulSettingsRecord(preferences.settings);
+    const nextSavedSettings = preferences.exists && hasRemoteSettings
+      ? normalizeWorkspaceSettings(preferences.settings)
+      : savedWorkspaceSettingsRef.current;
+
+    setSavedWorkspaceSettings(nextSavedSettings);
+    savedWorkspaceSettingsRef.current = nextSavedSettings;
+    storeWorkspaceSettings(nextSavedSettings);
+
+    if (!hasUnsavedWorkspaceSettingsRef.current && !isWorkspacePreferencesSavingRef.current) {
+      workspaceSettingsRef.current = nextSavedSettings;
+      setWorkspaceSettings(nextSavedSettings);
+      if (activeMode.id === 'project') {
+        setLanguage(nextSavedSettings.language);
+        setIsWorkspaceTopBarCollapsed(nextSavedSettings.topBarDefaultCollapsed);
+      }
+      return nextSavedSettings;
+    }
+
+    return currentSettings;
+  };
+
+  const beginWorkspacePreferencesLoad = () => {
+    workspacePreferencesLoadSequenceRef.current += 1;
+
+    return workspacePreferencesLoadSequenceRef.current;
+  };
+
+  const isCurrentWorkspacePreferencesLoad = (loadSequence: number) => (
+    loadSequence === workspacePreferencesLoadSequenceRef.current
+  );
+
+  const persistWorkspaceSettings = (settings: WorkspaceSettings) => {
+    const settingsToSave = normalizeWorkspaceSettings(settings, workspaceSettingsRef.current);
+    const saveSequence = workspacePreferencesSaveSequenceRef.current + 1;
+
+    workspacePreferencesSaveSequenceRef.current = saveSequence;
+    workspacePreferencesLoadSequenceRef.current += 1;
+    isWorkspacePreferencesSavingRef.current = true;
+    setWorkspacePreferencesSaveStatus('saving');
+    setWorkspacePreferencesSaveError('');
+
+    return workspaceApi.saveWorkspacePreferences({ settings: settingsToSave })
+      .then((preferences) => {
+        if (saveSequence !== workspacePreferencesSaveSequenceRef.current) {
+          return;
+        }
+
+        const nextSavedSettings = normalizeWorkspaceSettings(preferences.settings, settingsToSave);
+
+        setSavedWorkspaceSettings(nextSavedSettings);
+        savedWorkspaceSettingsRef.current = nextSavedSettings;
+        workspaceSettingsRef.current = nextSavedSettings;
+        setWorkspaceSettings(nextSavedSettings);
+        storeWorkspaceSettings(nextSavedSettings);
+        if (activeMode.id === 'project') {
+          setLanguage(nextSavedSettings.language);
+          setIsWorkspaceTopBarCollapsed(nextSavedSettings.topBarDefaultCollapsed);
+        }
+        setWorkspacePreferencesSaveStatus('saved');
+      })
+      .catch((error: unknown) => {
+        if (saveSequence !== workspacePreferencesSaveSequenceRef.current) {
+          return;
+        }
+
+        setWorkspacePreferencesSaveStatus('failed');
+        setWorkspacePreferencesSaveError(error instanceof Error ? error.message : dictionary.academySettingsSaveFailed);
+      })
+      .finally(() => {
+        if (saveSequence === workspacePreferencesSaveSequenceRef.current) {
+          isWorkspacePreferencesSavingRef.current = false;
+        }
+      });
+  };
+
+  const handleWorkspaceSettingsChange = (settings: WorkspaceSettings) => {
+    const nextSettings = normalizeWorkspaceSettings(settings);
+
+    workspaceSettingsRef.current = nextSettings;
+    setWorkspaceSettings(nextSettings);
+    storeWorkspaceSettings(nextSettings);
+    if (activeMode.id === 'project') {
+      setLanguage(nextSettings.language);
+      setIsWorkspaceTopBarCollapsed(nextSettings.topBarDefaultCollapsed);
+    }
+    setWorkspacePreferencesSaveStatus('idle');
+    setWorkspacePreferencesSaveError('');
+  };
+
+  const handleSaveWorkspaceSettings = (settings?: WorkspaceSettings) => {
+    const nextSettings = normalizeWorkspaceSettings(
+      settings ?? workspaceSettingsRef.current,
+      workspaceSettingsRef.current,
+    );
+
+    workspaceSettingsRef.current = nextSettings;
+    setWorkspaceSettings(nextSettings);
+    storeWorkspaceSettings(nextSettings);
+    if (activeMode.id === 'project') {
+      setLanguage(nextSettings.language);
+      setIsWorkspaceTopBarCollapsed(nextSettings.topBarDefaultCollapsed);
+    }
+
+    return persistWorkspaceSettings(nextSettings);
+  };
+
+  const handleRevertWorkspaceSettings = () => {
+    const nextSettings = savedWorkspaceSettingsRef.current;
+
+    workspaceSettingsRef.current = nextSettings;
+    setWorkspaceSettings(nextSettings);
+    storeWorkspaceSettings(nextSettings);
+    if (activeMode.id === 'project') {
+      setLanguage(nextSettings.language);
+      setIsWorkspaceTopBarCollapsed(nextSettings.topBarDefaultCollapsed);
+    }
+    setWorkspacePreferencesSaveStatus('idle');
+    setWorkspacePreferencesSaveError('');
+  };
+
   const handleAdminConsoleSettingsChange = (settings: AdminConsoleSettings) => {
     const nextSettings = normalizeAdminConsoleSettings(settings);
 
@@ -5137,6 +7333,20 @@ function App() {
 
   const handleThemeChange = (nextTheme: AppTheme) => {
     if (activeMode.id === 'academy') {
+      return;
+    }
+
+    if (activeMode.id === 'project') {
+      const nextSettings = normalizeWorkspaceSettings({
+        ...workspaceSettingsRef.current,
+        themeMode: nextTheme,
+      });
+
+      workspaceSettingsRef.current = nextSettings;
+      setWorkspaceSettings(nextSettings);
+      storeWorkspaceSettings(nextSettings);
+      setWorkspacePreferencesSaveStatus('idle');
+      setWorkspacePreferencesSaveError('');
       return;
     }
 
@@ -5173,7 +7383,9 @@ function App() {
   };
 
   const handleMoveSelectedDayToToday = () => {
-    const todayIso = getTodayIsoDate();
+    const todayIso = activeMode.id === 'project'
+      ? getTodayIsoDateForTimeZone(workspaceSettingsRef.current.timeZone)
+      : getTodayIsoDate();
     const todayCalendarMonth = getCalendarMonthFromIsoDate(todayIso);
 
     setSelectedCalendarDayIso(todayIso);
@@ -5491,7 +7703,11 @@ function App() {
   };
 
   useEffect(() => {
-    if (activeMode.id !== 'academy' || !academyCalendarSettings.themeTimerEnabled) {
+    const shouldRunThemeTimer =
+      (activeMode.id === 'academy' && academyCalendarSettings.themeTimerEnabled) ||
+      (activeMode.id === 'project' && workspaceSettings.themeTimerEnabled);
+
+    if (!shouldRunThemeTimer) {
       return undefined;
     }
 
@@ -5509,33 +7725,84 @@ function App() {
     academyCalendarSettings.themeTimerMode,
     academyCalendarSettings.themeTimerStart,
     activeMode.id,
+    workspaceSettings.themeTimerEnabled,
+    workspaceSettings.themeTimerEnd,
+    workspaceSettings.themeTimerMode,
+    workspaceSettings.themeTimerStart,
   ]);
 
   useEffect(() => {
     const isAcademyMode = activeMode.id === 'academy';
+    const isWorkspaceMode = activeMode.id === 'project';
 
-    applyTheme(isAcademyMode ? academyEffectiveTheme : theme, {
-      persist: !isAcademyMode,
-    });
+    applyTheme(
+      isAcademyMode
+        ? academyEffectiveTheme
+        : isWorkspaceMode
+          ? workspaceEffectiveTheme
+          : theme,
+      {
+        persist: !isAcademyMode && !isWorkspaceMode,
+      },
+    );
 
     if (isAcademyMode) {
       applyAcademyAccentColor(academyCalendarSettings.accentColor);
+    } else if (isWorkspaceMode) {
+      applyAcademyAccentColor(workspaceSettings.accentColor);
     } else {
       clearAcademyAccentColor();
     }
-  }, [academyCalendarSettings.accentColor, academyEffectiveTheme, activeMode.id, theme]);
+  }, [
+    academyCalendarSettings.accentColor,
+    academyEffectiveTheme,
+    activeMode.id,
+    theme,
+    workspaceEffectiveTheme,
+    workspaceSettings.accentColor,
+  ]);
 
   useEffect(() => {
     if (activeMode.id === 'academy' && language !== academyCalendarSettings.language) {
       setLanguage(academyCalendarSettings.language);
+      return;
     }
-  }, [academyCalendarSettings.language, activeMode.id, language, setLanguage]);
+
+    if (activeMode.id === 'project' && language !== workspaceSettings.language) {
+      setLanguage(workspaceSettings.language);
+    }
+  }, [academyCalendarSettings.language, activeMode.id, language, setLanguage, workspaceSettings.language]);
 
   useEffect(() => {
     setIsAcademyTopBarCollapsed(
       activeMode.id === 'academy' && academyCalendarSettings.topBarDefaultCollapsed,
     );
   }, [academyCalendarSettings.topBarDefaultCollapsed, activeMode.id]);
+
+  useEffect(() => {
+    setIsWorkspaceTopBarCollapsed(
+      activeMode.id === 'project' && workspaceSettings.topBarDefaultCollapsed,
+    );
+  }, [activeMode.id, workspaceSettings.topBarDefaultCollapsed]);
+
+  useEffect(() => {
+    if (activeMode.id !== 'project') {
+      return;
+    }
+
+    const workspaceTodayIso = getTodayIsoDateForTimeZone(workspaceSettings.timeZone);
+
+    if (selectedCalendarDayIso !== getTodayIsoDate() || selectedCalendarDayIso === workspaceTodayIso) {
+      return;
+    }
+
+    setSelectedCalendarDayIso(workspaceTodayIso);
+    const todayCalendarMonth = getCalendarMonthFromIsoDate(workspaceTodayIso);
+
+    if (todayCalendarMonth) {
+      setCalendarMonth(todayCalendarMonth);
+    }
+  }, [activeMode.id, selectedCalendarDayIso, workspaceSettings.timeZone]);
 
   useEffect(() => {
     const academyLogoSrc = academyCalendarSettings.academyLogoSrc;
@@ -5557,7 +7824,7 @@ function App() {
 
   useEffect(() => {
     const updateResponsiveState = () => {
-      setAcademyResponsiveState(getAcademyResponsiveState(academyMagnifierScale));
+      setAcademyResponsiveState(getAcademyResponsiveState());
     };
 
     updateResponsiveState();
@@ -5568,7 +7835,7 @@ function App() {
       window.removeEventListener('resize', updateResponsiveState);
       window.removeEventListener('orientationchange', updateResponsiveState);
     };
-  }, [academyMagnifierScale]);
+  }, []);
 
   useEffect(() => {
     if (!authRedirectMessage || typeof window === 'undefined') {
@@ -5668,6 +7935,9 @@ function App() {
 
     const loadSequence = beginAcademyPreferencesLoad();
 
+    if (!hasLoadedAcademyPreferences) {
+      setAcademyPreferencesLoadStatus('loading');
+    }
     workspaceApi
       .getAcademyPreferences()
       .then((preferences) => {
@@ -5687,7 +7957,46 @@ function App() {
           setHiddenCalendarCourseIds(nextSavedSettings.hiddenCourseIds ?? []);
         }
         setAcademyPreferenceVersion((currentVersion) => currentVersion + 1);
+        setHasLoadedAcademyPreferences(true);
+        setAcademyPreferencesLoadStatus('loaded');
         dispatchAcademyPreferencesUpdated();
+      })
+      .catch((error) => {
+        if (isSessionExpiredError(error)) {
+          setAuthSession(null);
+          setAuthStatus('unauthenticated');
+        } else if (!isCancelled) {
+          setHasLoadedAcademyPreferences(false);
+          setAcademyPreferencesLoadStatus('failed');
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [accessibleModeIds, authStatus]);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    if (authStatus !== 'authenticated' || !accessibleModeIds.includes('project')) {
+      return undefined;
+    }
+
+    const loadSequence = beginWorkspacePreferencesLoad();
+
+    workspaceApi
+      .getWorkspacePreferences()
+      .then((preferences) => {
+        if (
+          isCancelled ||
+          isWorkspacePreferencesSavingRef.current ||
+          !isCurrentWorkspacePreferencesLoad(loadSequence)
+        ) {
+          return;
+        }
+
+        applyRemoteWorkspacePreferences(preferences);
       })
       .catch((error) => {
         if (isSessionExpiredError(error)) {
@@ -5702,6 +8011,76 @@ function App() {
   }, [accessibleModeIds, authStatus]);
 
   useEffect(() => {
+    if (authStatus !== 'authenticated' || activeMode.id !== 'project') {
+      return undefined;
+    }
+
+    let isSyncing = false;
+    let lastFocusSyncStartedAt = 0;
+    const syncWorkspacePreferences = () => {
+      if (isSyncing || isWorkspacePreferencesSavingRef.current || document.visibilityState === 'hidden') {
+        return;
+      }
+
+      isSyncing = true;
+      const loadSequence = beginWorkspacePreferencesLoad();
+
+      workspaceApi
+        .getWorkspacePreferences()
+        .then((preferences) => {
+          if (
+            isWorkspacePreferencesSavingRef.current ||
+            !isCurrentWorkspacePreferencesLoad(loadSequence)
+          ) {
+            return;
+          }
+
+          applyRemoteWorkspacePreferences(preferences);
+        })
+        .catch((error) => {
+          if (isSessionExpiredError(error)) {
+            setAuthSession(null);
+            setAuthStatus('unauthenticated');
+          }
+        })
+        .finally(() => {
+          isSyncing = false;
+        });
+    };
+    const syncInterval = window.setInterval(syncWorkspacePreferences, workspaceSettings.autoRefreshIntervalMs);
+    const syncWorkspacePreferencesOnFocus = () => {
+      const now = Date.now();
+
+      if (now - lastFocusSyncStartedAt < workspaceSettings.refocusRefreshThrottleMs) {
+        return;
+      }
+
+      lastFocusSyncStartedAt = now;
+      syncWorkspacePreferences();
+    };
+    const handleFocus = () => syncWorkspacePreferencesOnFocus();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        syncWorkspacePreferencesOnFocus();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(syncInterval);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [
+    activeMode.id,
+    authStatus,
+    workspaceSettings.autoRefreshIntervalMs,
+    workspaceSettings.refocusRefreshThrottleMs,
+  ]);
+
+  useEffect(() => {
     if (authStatus !== 'authenticated' || activeMode.id !== 'academy') {
       return undefined;
     }
@@ -5714,6 +8093,9 @@ function App() {
       }
 
       isSyncing = true;
+      if (!hasLoadedAcademyPreferences) {
+        setAcademyPreferencesLoadStatus('loading');
+      }
       const loadSequence = beginAcademyPreferencesLoad();
 
       workspaceApi
@@ -5734,12 +8116,17 @@ function App() {
             setHiddenCalendarCourseIds(nextSavedSettings.hiddenCourseIds ?? []);
           }
           setAcademyPreferenceVersion((currentVersion) => currentVersion + 1);
+          setHasLoadedAcademyPreferences(true);
+          setAcademyPreferencesLoadStatus('loaded');
           dispatchAcademyPreferencesUpdated();
         })
         .catch((error) => {
           if (isSessionExpiredError(error)) {
             setAuthSession(null);
             setAuthStatus('unauthenticated');
+          } else if (!hasLoadedAcademyPreferences) {
+            setHasLoadedAcademyPreferences(false);
+            setAcademyPreferencesLoadStatus('failed');
           }
         })
         .finally(() => {
@@ -5772,7 +8159,13 @@ function App() {
       window.removeEventListener('focus', handleFocus);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [academyAutoRefreshIntervalMs, academyRefocusRefreshThrottleMs, activeMode.id, authStatus]);
+  }, [
+    academyAutoRefreshIntervalMs,
+    academyRefocusRefreshThrottleMs,
+    activeMode.id,
+    authStatus,
+    hasLoadedAcademyPreferences,
+  ]);
 
   useEffect(() => {
     if (authStatus !== 'authenticated') {
@@ -5890,7 +8283,7 @@ function App() {
       return undefined;
     }
 
-    const monthRange = getCalendarMonthRange(calendarMonth);
+    const gridRange = getCalendarGridRange(calendarMonth);
     const requestedAt = Date.now();
 
     setCanvasCalendarPages((currentPages) => ({
@@ -5922,21 +8315,13 @@ function App() {
           },
         };
       });
-    }, 30_000);
+    }, canvasCalendarLoadingTimeoutMs);
 
     workspaceApi
       .getCanvasCalendarItems({
-        endDate: formatDateParam(new Date(Date.UTC(
-          monthRange.endDate.getUTCFullYear(),
-          monthRange.endDate.getUTCMonth(),
-          monthRange.endDate.getUTCDate() + 7,
-        ))),
+        endDate: formatDateParam(gridRange.endDate),
         pageSize: 100,
-        startDate: formatDateParam(new Date(Date.UTC(
-          monthRange.startDate.getUTCFullYear(),
-          monthRange.startDate.getUTCMonth(),
-          monthRange.startDate.getUTCDate() - 7,
-        ))),
+        startDate: formatDateParam(gridRange.startDate),
       })
       .then(({ items }) => {
         window.clearTimeout(timeoutId);
@@ -5944,13 +8329,21 @@ function App() {
           return;
         }
 
-        setCanvasCalendarPages((currentPages) => ({
-          ...currentPages,
-          [monthKey]: {
-            items,
-            status: 'loaded',
-          },
-        }));
+        setCanvasCalendarPages((currentPages) => {
+          const currentPage = currentPages[monthKey];
+
+          if (currentPage?.requestedAt !== requestedAt) {
+            return currentPages;
+          }
+
+          return {
+            ...currentPages,
+            [monthKey]: {
+              items,
+              status: 'loaded',
+            },
+          };
+        });
       })
       .catch((error) => {
         window.clearTimeout(timeoutId);
@@ -5964,13 +8357,21 @@ function App() {
           return;
         }
 
-        setCanvasCalendarPages((currentPages) => ({
-          ...currentPages,
-          [monthKey]: {
-            items: [],
-            status: 'failed',
-          },
-        }));
+        setCanvasCalendarPages((currentPages) => {
+          const currentPage = currentPages[monthKey];
+
+          if (currentPage?.requestedAt !== requestedAt) {
+            return currentPages;
+          }
+
+          return {
+            ...currentPages,
+            [monthKey]: {
+              items: [],
+              status: 'failed',
+            },
+          };
+        });
       });
 
     return () => {
@@ -5980,13 +8381,13 @@ function App() {
   }, [calendarMonth, selectedAcademySemester, shouldLoadCanvasCalendar]);
 
   useEffect(() => {
-    const refreshCurrentCalendarMonth = () => {
+    const refreshCurrentCalendarMonth = (forceRefresh = false) => {
       if (!shouldLoadCanvasCalendar) {
         return Promise.resolve();
       }
 
       const monthKey = getCalendarMonthKey(calendarMonth);
-      const monthRange = getCalendarMonthRange(calendarMonth);
+      const gridRange = getCalendarGridRange(calendarMonth);
       const requestedAt = Date.now();
 
       setCanvasCalendarPages((currentPages) => ({
@@ -6018,21 +8419,14 @@ function App() {
           });
 
           reject(new Error(dictionary.canvasCalendarUnavailable));
-        }, 30_000);
+        }, canvasCalendarLoadingTimeoutMs);
       });
 
       const calendarTask = workspaceApi.getCanvasCalendarItems({
-        endDate: formatDateParam(new Date(Date.UTC(
-          monthRange.endDate.getUTCFullYear(),
-          monthRange.endDate.getUTCMonth(),
-          monthRange.endDate.getUTCDate() + 7,
-        ))),
+        endDate: formatDateParam(gridRange.endDate),
+        forceRefresh,
         pageSize: 100,
-        startDate: formatDateParam(new Date(Date.UTC(
-          monthRange.startDate.getUTCFullYear(),
-          monthRange.startDate.getUTCMonth(),
-          monthRange.startDate.getUTCDate() - 7,
-        ))),
+        startDate: formatDateParam(gridRange.startDate),
       });
 
       return Promise.race([calendarTask, timeoutTask])
@@ -6041,13 +8435,21 @@ function App() {
             window.clearTimeout(timeoutId);
           }
 
-          setCanvasCalendarPages((currentPages) => ({
-            ...currentPages,
-            [monthKey]: {
-              items,
-              status: 'loaded',
-            },
-          }));
+          setCanvasCalendarPages((currentPages) => {
+            const currentPage = currentPages[monthKey];
+
+            if (currentPage?.requestedAt !== requestedAt) {
+              return currentPages;
+            }
+
+            return {
+              ...currentPages,
+              [monthKey]: {
+                items,
+                status: 'loaded',
+              },
+            };
+          });
         })
         .catch((error: unknown) => {
           if (typeof timeoutId === 'number') {
@@ -6060,24 +8462,35 @@ function App() {
             throw error;
           }
 
-          setCanvasCalendarPages((currentPages) => ({
-            ...currentPages,
-            [monthKey]: {
-              items: [],
-              status: 'failed',
-            },
-          }));
+          setCanvasCalendarPages((currentPages) => {
+            const currentPage = currentPages[monthKey];
+
+            if (currentPage?.requestedAt !== requestedAt) {
+              return currentPages;
+            }
+
+            return {
+              ...currentPages,
+              [monthKey]: {
+                items: [],
+                status: 'failed',
+              },
+            };
+          });
 
           throw error;
         });
     };
 
-    const refreshAcademyPageData = async () => {
+    const refreshAcademyPageData = async (forceRefresh = false) => {
       if (authStatus !== 'authenticated' || activeMode.id !== 'academy') {
         return;
       }
 
       const loadSequence = beginAcademyPreferencesLoad();
+      if (!hasLoadedAcademyPreferences) {
+        setAcademyPreferencesLoadStatus('loading');
+      }
       const preferencesTask = workspaceApi
         .getAcademyPreferences()
         .then((preferences) => {
@@ -6096,12 +8509,17 @@ function App() {
             setHiddenCalendarCourseIds(nextSavedSettings.hiddenCourseIds ?? []);
           }
           setAcademyPreferenceVersion((currentVersion) => currentVersion + 1);
+          setHasLoadedAcademyPreferences(true);
+          setAcademyPreferencesLoadStatus('loaded');
           dispatchAcademyPreferencesUpdated();
         })
         .catch((error) => {
           if (isSessionExpiredError(error)) {
             setAuthSession(null);
             setAuthStatus('unauthenticated');
+          } else if (!hasLoadedAcademyPreferences) {
+            setHasLoadedAcademyPreferences(false);
+            setAcademyPreferencesLoadStatus('failed');
           }
 
           throw error;
@@ -6109,7 +8527,7 @@ function App() {
 
       const [preferencesResult, calendarResult] = await Promise.allSettled([
         preferencesTask,
-        refreshCurrentCalendarMonth(),
+        refreshCurrentCalendarMonth(forceRefresh),
       ]);
 
       if (preferencesResult.status === 'rejected') {
@@ -6122,14 +8540,13 @@ function App() {
     };
 
     const handleAcademyRefreshRequested = (event: Event) => {
-      const refreshTask = refreshAcademyPageData();
+      const detail = event instanceof CustomEvent
+        ? event.detail as AcademyRefreshRequestedDetail | undefined
+        : undefined;
+      const refreshTask = refreshAcademyPageData(Boolean(detail?.forceRefresh));
 
-      if (event instanceof CustomEvent) {
-        const detail = event.detail as AcademyRefreshRequestedDetail | undefined;
-
-        if (typeof detail?.registerTask === 'function') {
-          detail.registerTask(refreshTask);
-        }
+      if (typeof detail?.registerTask === 'function') {
+        detail.registerTask(refreshTask);
       }
     };
 
@@ -6138,7 +8555,14 @@ function App() {
     return () => {
       window.removeEventListener(academyRefreshRequestedEvent, handleAcademyRefreshRequested);
     };
-  }, [activeMode.id, authStatus, calendarMonth, selectedAcademySemester, shouldLoadCanvasCalendar]);
+  }, [
+    activeMode.id,
+    authStatus,
+    calendarMonth,
+    hasLoadedAcademyPreferences,
+    selectedAcademySemester,
+    shouldLoadCanvasCalendar,
+  ]);
 
   const applyAuthSession = (session: AuthSession) => {
     const nextSessionKey = getAuthSessionIdentityKey(session);
@@ -6389,12 +8813,32 @@ function App() {
         variant === 'mobile' && 'mb-3 border-0 bg-transparent px-1 py-0',
       )}>
         <div className="flex min-w-0 items-start justify-between gap-3">
-          <h2 className={cn(
-            'min-w-0 truncate text-xl font-black leading-tight text-foreground',
-            variant === 'mobile' && 'text-base',
-          )}>
-            {selectedDayHeading.primary}
-          </h2>
+          <div className="min-w-0">
+            <h2 className={cn(
+              'min-w-0 truncate text-xl font-black leading-tight text-foreground',
+              variant === 'mobile' && 'text-base',
+            )}>
+              {selectedDayHeading.primary}
+            </h2>
+            {selectedDayHolidayItems.length > 0 ? (
+              <div className="mt-1 flex max-w-full flex-wrap gap-1">
+                {selectedDayHolidayItems.map(({ holiday, nationOption }) => (
+                  <span
+                    className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-red-500/35 bg-red-500/10 px-2 py-0.5 text-xs font-black text-red-600"
+                    key={`${nationOption.value}-${holiday.date}-${holiday.label}`}
+                  >
+                    <NationFlagIcon
+                      alt={`${nationOption.shortLabel} flag`}
+                      src={nationOption.flagIconSrc}
+                    />
+                    <span className="truncate">
+                      {nationOption.shortLabel} · {holiday.label}
+                    </span>
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
           <div className="flex shrink-0 flex-col items-end gap-1">
             <button
               className={cn(
@@ -6418,7 +8862,7 @@ function App() {
         </div>
         <CalendarProgressIndicator
           className={cn('mt-3', variant === 'mobile' && 'hidden')}
-          display={academyCalendarSettings.progressDisplay}
+          display={activeCalendarProgressDisplay}
           label={dictionary.calendarProgressLabel}
           thresholds={calendarProgressThresholds}
           value={selectedDayProgress}
@@ -6477,14 +8921,19 @@ function App() {
                     const moveTarget = getCalendarMoveDueDateTarget(item);
                     const courseDisplay = getCourseDisplay(item, dictionary.selectedDayTodoNoCourse);
                     const isClassSession = item.source === 'class-session';
+                    const isPastClassSessionItem = isPastClassSession(item);
+                    const isCanceledForHoliday = Boolean(item.isCanceledForHoliday);
+                    const isInactiveClassSession = isClassSession && (isPastClassSessionItem || isCanceledForHoliday);
+                    const holidayBadgeLabel = language === 'ko' ? '공휴일' : 'Holiday';
                     const isEditingTitle = focusedCalendarTodoId === item.id && !item.isLocked && !isLiveCanvasCalendarItem(item);
                     const itemRow = (
                       <div
                         className={cn(
-                          'grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-2 rounded-lg border p-2 text-sm font-bold transition-colors',
+                          'relative grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-2 rounded-lg border p-2 text-sm font-bold transition-colors',
                           isClassSession
                             ? 'border-dashed border-border/70 bg-transparent py-1.5 text-xs'
                             : 'bg-muted/25',
+                          isClassSession && isPastClassSessionItem && !isCanceledForHoliday && 'border-border/60 bg-muted/35 opacity-80',
                           !isClassSession && item.isCompleted && 'border-foreground/25 bg-muted/45',
                           variant === 'mobile' && (isClassSession
                             ? 'border-0 bg-transparent px-1 py-1'
@@ -6508,13 +8957,31 @@ function App() {
                         role="button"
                         tabIndex={0}
                       >
+                        {isCanceledForHoliday ? (
+                          <span
+                            className="absolute -right-1 -top-2 z-10 max-w-24 truncate rounded-full border border-red-500/35 bg-card px-1.5 py-0.5 text-[9px] font-black uppercase leading-none text-red-600 shadow-sm"
+                            title={item.holidayName}
+                          >
+                            {holidayBadgeLabel}
+                          </span>
+                        ) : null}
                         {isClassSession ? (
                           <span
                             aria-hidden="true"
                             className={cn(
-                              'mt-1 size-2.5 shrink-0 rounded-full',
-                              variant === 'mobile' && 'mt-1.5 size-3',
-                              dotColorClasses[courseDisplay.color],
+                              'mt-1 shrink-0 rounded-full',
+                              isCanceledForHoliday
+                                ? 'size-2.5 bg-muted-foreground/35'
+                                : isPastClassSessionItem
+                                  ? 'size-2.5 bg-muted-foreground/35'
+                                : cn('size-2.5', dotColorClasses[courseDisplay.color]),
+                              variant === 'mobile' && (
+                                isCanceledForHoliday
+                                  ? 'mt-1.5 size-3 bg-muted-foreground/35'
+                                  : isPastClassSessionItem
+                                    ? 'mt-1.5 size-3 bg-muted-foreground/35'
+                                    : 'mt-1.5 size-3'
+                              ),
                             )}
                           />
                         ) : (
@@ -6570,6 +9037,8 @@ function App() {
                                 'block truncate text-[15px] font-black leading-snug text-foreground',
                                 variant === 'mobile' && 'text-sm',
                                 isClassSession && 'text-[13px] font-semibold text-muted-foreground',
+                                isInactiveClassSession && !isCanceledForHoliday && 'text-muted-foreground line-through decoration-2',
+                                isCanceledForHoliday && 'text-foreground line-through decoration-2 decoration-red-500',
                                 !isClassSession && item.isCompleted && 'text-muted-foreground line-through decoration-2',
                               )}
                             >
@@ -6592,6 +9061,11 @@ function App() {
                             {isClassSession && item.location ? (
                               <span className="max-w-32 truncate text-[10px] font-semibold text-muted-foreground">
                                 {item.location}
+                              </span>
+                            ) : null}
+                            {isCanceledForHoliday && item.holidayName ? (
+                              <span className="max-w-32 truncate text-[10px] font-semibold text-muted-foreground">
+                                {item.holidayName}
                               </span>
                             ) : null}
                             {!isClassSession ? (
@@ -6783,6 +9257,8 @@ function App() {
   if (authStatus !== 'authenticated') {
     const loginTheme = activeMode.id === 'academy'
       ? academyEffectiveTheme
+      : activeMode.id === 'project'
+        ? workspaceEffectiveTheme
       : theme;
 
     return (
@@ -6800,6 +9276,14 @@ function App() {
             return;
           }
 
+          if (activeMode.id === 'project') {
+            setWorkspaceSettings((currentSettings) => normalizeWorkspaceSettings({
+              ...currentSettings,
+              themeMode: nextTheme,
+            }));
+            return;
+          }
+
           setTheme(nextTheme);
         }}
         theme={loginTheme}
@@ -6811,7 +9295,7 @@ function App() {
     <div
         className={cn(
           'min-h-screen',
-          activeMode.id === 'academy' && 'academy-typography',
+          (activeMode.id === 'academy' || activeMode.id === 'project') && 'academy-typography',
           (!isMainOnlyView || isSettingsMainView) && 'lg:h-screen lg:overflow-hidden',
         isAcademyMode &&
           shouldUseAcademyFullHeightLayout &&
@@ -6825,14 +9309,15 @@ function App() {
           '--mode-accent-2': activeMode.accent.secondary,
           '--workspace-accent': activeMode.accent.primary,
           '--workspace-accent-2': activeMode.accent.secondary,
-          '--academy-magnifier-scale': activeMode.id === 'academy'
-            ? `${academyCalendarSettings.magnifierPercent / 100}`
-            : '1',
           '--academy-font-family': activeMode.id === 'academy'
             ? academyFontFamilyCss[academyCalendarSettings.fontFamily]
+            : activeMode.id === 'project'
+              ? academyFontFamilyCss[workspaceSettings.fontFamily]
             : undefined,
           '--academy-font-size-scale': activeMode.id === 'academy'
             ? `${academyCalendarSettings.fontSizePercent / 100}`
+            : activeMode.id === 'project'
+              ? `${workspaceSettings.fontSizePercent / 100}`
             : '1',
         } as CSSProperties
       }
@@ -6842,15 +9327,22 @@ function App() {
         <TopBar
           academyLogoSrc={activeMode.id === 'academy' ? academyCalendarSettings.academyLogoSrc : undefined}
           allowedModeIds={accessibleModeIds}
+          authSession={authSession}
           isTopBarCollapsed={effectiveTopBarCollapsed}
           onBeforeModeChange={(modeId) => {
-            if (isAcademySettingsView && hasUnsavedAcademySettingsRef.current) {
-              pendingAcademySettingsNavigationRef.current = () => {
+            if (
+              (isAcademySettingsView && hasUnsavedAcademySettingsRef.current) ||
+              (isWorkspaceSettingsView && hasUnsavedWorkspaceSettingsRef.current)
+            ) {
+              pendingSettingsNavigationRef.current = () => {
                 setIsAcademyTopBarCollapsed(
                   modeId === 'academy' && academyCalendarSettingsRef.current.topBarDefaultCollapsed,
                 );
                 setIsAdminTopBarCollapsed(
                   modeId === 'admin-console' && adminConsoleSettings.topBarDefaultCollapsed,
+                );
+                setIsWorkspaceTopBarCollapsed(
+                  modeId === 'project' && workspaceSettingsRef.current.topBarDefaultCollapsed,
                 );
                 setActiveModeId(modeId);
               };
@@ -6864,17 +9356,37 @@ function App() {
             setIsAdminTopBarCollapsed(
               modeId === 'admin-console' && adminConsoleSettings.topBarDefaultCollapsed,
             );
+            setIsWorkspaceTopBarCollapsed(
+              modeId === 'project' && workspaceSettings.topBarDefaultCollapsed,
+            );
           }}
           onOpenAddItem={openAcademyCourseworkDialog}
+          onOpenProfile={
+            activeMode.id === 'academy'
+              ? () => {
+                  setAcademySettingsFocusSection('profile');
+                  handleSelectSidebarItem('settings');
+                }
+              : activeMode.id === 'project'
+                ? () => handleSelectSidebarItem('settings')
+              : undefined
+          }
+          onSignOut={signOut}
           onToggleTopBarCollapsed={
             activeMode.id === 'academy'
               ? () => setIsAcademyTopBarCollapsed((currentValue) => !currentValue)
+              : activeMode.id === 'project'
+                ? () => setIsWorkspaceTopBarCollapsed((currentValue) => !currentValue)
               : activeMode.id === 'admin-console'
                 ? () => setIsAdminTopBarCollapsed((currentValue) => !currentValue)
                 : undefined
           }
           onThemeChange={handleThemeChange}
-          theme={activeMode.id === 'academy' ? academyEffectiveTheme : theme}
+          theme={activeMode.id === 'academy'
+            ? academyEffectiveTheme
+            : activeMode.id === 'project'
+              ? workspaceEffectiveTheme
+              : theme}
         />
       )}
 
@@ -6882,22 +9394,28 @@ function App() {
         onOpenChange={(open) => {
           setIsAcademySettingsLeaveDialogOpen(open);
           if (!open) {
-            pendingAcademySettingsNavigationRef.current = null;
+            pendingSettingsNavigationRef.current = null;
           }
         }}
         open={isAcademySettingsLeaveDialogOpen}
       >
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>{dictionary.academySettingsLeaveTitle}</DialogTitle>
+            <DialogTitle>
+              {isWorkspaceSettingsView
+                ? dictionary.workspaceSettingsLeaveTitle
+                : dictionary.academySettingsLeaveTitle}
+            </DialogTitle>
           </DialogHeader>
           <p className="text-sm font-semibold text-muted-foreground">
-            {dictionary.academySettingsLeaveDescription}
+            {isWorkspaceSettingsView
+              ? dictionary.workspaceSettingsLeaveDescription
+              : dictionary.academySettingsLeaveDescription}
           </p>
           <DialogFooter className="gap-2 sm:justify-between">
             <Button
               onClick={() => {
-                pendingAcademySettingsNavigationRef.current = null;
+                pendingSettingsNavigationRef.current = null;
                 setIsAcademySettingsLeaveDialogOpen(false);
               }}
               type="button"
@@ -6908,8 +9426,12 @@ function App() {
             <div className="flex flex-wrap justify-end gap-2">
               <Button
                 onClick={() => {
-                  handleRevertAcademyCalendarSettings();
-                  runPendingAcademySettingsNavigation();
+                  if (isWorkspaceSettingsView) {
+                    handleRevertWorkspaceSettings();
+                  } else {
+                    handleRevertAcademyCalendarSettings();
+                  }
+                  runPendingSettingsNavigation();
                 }}
                 type="button"
                 variant="outline"
@@ -6917,16 +9439,26 @@ function App() {
                 {dictionary.academySettingsLeaveRevert}
               </Button>
               <Button
-                disabled={academyPreferencesSaveStatus === 'saving'}
+                disabled={
+                  isWorkspaceSettingsView
+                    ? workspacePreferencesSaveStatus === 'saving'
+                    : academyPreferencesSaveStatus === 'saving'
+                }
                 onClick={() => {
-                  void handleSaveAcademyCalendarSettings()
+                  const saveTask = isWorkspaceSettingsView
+                    ? handleSaveWorkspaceSettings()
+                    : handleSaveAcademyCalendarSettings();
+
+                  void saveTask
                     .then(() => {
-                      runPendingAcademySettingsNavigation();
+                      runPendingSettingsNavigation();
                     });
                 }}
                 type="button"
               >
-                {academyPreferencesSaveStatus === 'saving'
+                {(isWorkspaceSettingsView
+                  ? workspacePreferencesSaveStatus === 'saving'
+                  : academyPreferencesSaveStatus === 'saving')
                   ? dictionary.academySettingsSaving
                   : dictionary.academySettingsLeaveSave}
               </Button>
@@ -6951,7 +9483,6 @@ function App() {
             'h-[calc(100vh_-_var(--top-bar-height))] grid-rows-1 items-stretch overflow-hidden',
           shouldShowAcademyBottomNav && 'pb-20 max-[520px]:pb-24',
           activeMode.id === 'academy' && 'max-[520px]:px-2 max-[520px]:pb-24 max-[520px]:pt-2',
-          activeMode.id === 'academy' && 'academy-magnifier',
           mainGridColumnsClass,
         )}
         style={{
@@ -6972,7 +9503,7 @@ function App() {
         <section
           className={cn(
             'grid w-full min-w-0 lg:min-h-0 lg:pr-1',
-            isAcademyMode && shouldUseAcademyFullHeightLayout && 'min-h-0 pr-1',
+            ((isAcademyMode && shouldUseAcademyFullHeightLayout) || shouldUseWorkspaceCalendarFullHeightLayout) && 'min-h-0 pr-1',
             isMainOnlyView && !isSettingsMainView && !isCoursesView
               ? 'lg:overflow-visible'
               : 'lg:h-full lg:overflow-x-hidden',
@@ -6981,6 +9512,7 @@ function App() {
               (isMainOnlyView && !isSettingsMainView && !isCoursesView
                 ? 'overflow-visible'
                 : 'h-full overflow-x-hidden'),
+            shouldUseWorkspaceCalendarFullHeightLayout && 'h-full overflow-x-hidden',
             isSettingsMainView && 'h-full min-h-0 overflow-y-auto overflow-x-hidden pr-1',
             (isCommunicationView || isCoursesView)
               ? 'gap-4 content-stretch lg:grid-rows-[minmax(0,1fr)] lg:overflow-hidden max-lg:gap-3'
@@ -7028,13 +9560,35 @@ function App() {
             />
           ) : isAcademySettingsView ? (
             <AcademySettingsView
+              authSession={authSession}
+              focusSection={academySettingsFocusSection}
               hasUnsavedChanges={hasUnsavedAcademySettings}
+              onFocusSectionConsumed={() => setAcademySettingsFocusSection(null)}
+              onProfileSaved={refreshAuthSession}
               onRevertSettings={handleRevertAcademyCalendarSettings}
               onSaveSettings={handleSaveAcademyCalendarSettings}
               onSettingsChange={handleAcademyCalendarSettingsChange}
+              onSignOut={signOut}
               settings={academyCalendarSettings}
               settingsSaveError={academyPreferencesSaveError}
               settingsSaveStatus={academyPreferencesSaveStatus}
+            />
+          ) : isWorkspaceProjectView ? (
+            <WorkspaceProjectView
+              data={activeData}
+              onOpenAddItem={openAcademyCourseworkDialog}
+              onOpenBoard={() => navigateWorkspace({ modeId: activeMode.id, sidebarItemId: 'board', view: 'board' })}
+              onOpenCalendar={() => navigateWorkspace({ modeId: activeMode.id, sidebarItemId: 'calendar', view: 'month' })}
+            />
+          ) : isWorkspaceSettingsView ? (
+            <WorkspaceSettingsView
+              hasUnsavedChanges={hasUnsavedWorkspaceSettings}
+              onRevertSettings={handleRevertWorkspaceSettings}
+              onSaveSettings={handleSaveWorkspaceSettings}
+              onSettingsChange={handleWorkspaceSettingsChange}
+              settings={workspaceSettings}
+              settingsSaveError={workspacePreferencesSaveError}
+              settingsSaveStatus={workspacePreferencesSaveStatus}
             />
           ) : isAdminUsersView ? (
             <AdminUsersView />
@@ -7062,10 +9616,12 @@ function App() {
                     completedFrom: academyCalendarSettings.courseworkHideCompletedFrom,
                     uncompletedAfterHours: academyCalendarSettings.courseworkHideUncompletedAfterHours,
                   }}
+                  courseworkShowStudyItems={academyCalendarSettings.courseworkShowStudyItems}
                   effectiveWideSummaryCards={isAcademyMode ? isAcademyEffectiveExtraLarge : undefined}
                   hideSummaryCards={effectiveCalendarExpanded}
                   onOpenAddItem={openAcademyCourseworkDialog}
                   onOpenCourse={openAcademyCourseResource}
+                  onToggleCourseworkStudyItems={handleToggleCourseworkStudyItems}
                   selectedSemester={selectedAcademySemester}
                   onPlanMeeting={() => {
                     window.open(
@@ -7095,7 +9651,7 @@ function App() {
               <div
                 className={cn(
                   'min-w-0 lg:flex lg:h-full lg:min-h-0 lg:flex-col',
-                  (shouldForceDashboardCalendarFill || shouldUseCompactDashboardMonth) &&
+                  (shouldForceDashboardCalendarFill || shouldUseCompactDashboardMonth || shouldUseWorkspaceCalendarFullHeightLayout) &&
                     'flex h-full min-h-0 flex-col',
                   activeMode.id === 'academy' &&
                     currentView === 'board' &&
@@ -7112,12 +9668,14 @@ function App() {
                   courseFilterOptions={calendarCourseFilterOptions}
                   data={calendarData}
                   emptyMessage={canvasCalendarEmptyMessage}
-                  fillHeight={shouldUseAcademyFullHeightLayout && isDashboardWorkspaceView}
+                  fillHeight={(shouldUseAcademyFullHeightLayout && isDashboardWorkspaceView) || shouldUseWorkspaceCalendarFullHeightLayout}
                   focusedBoardItemId={focusedCalendarTodoId}
+                  holidayNation={activeMode.id === 'academy' ? academyCalendarSettings.nation : undefined}
+                  holidayNations={activeMode.id === 'project' ? workspaceSettings.holidayNations : undefined}
                   isExpanded={effectiveCalendarExpanded}
                   isCompactMonth={shouldUseCompactDashboardMonth}
                   isSelectedDateToday={isSelectedCalendarDayToday}
-                  isLoading={activeMode.id === 'academy' && canvasCalendarLoadStatus === 'loading'}
+                  isLoading={activeMode.id === 'academy' && effectiveCanvasCalendarLoadStatus === 'loading'}
                   mode={activeMode}
                   onAddCourseworkForDay={activeMode.id === 'academy'
                     ? handleQuickAddCalendarCourseworkForDay
@@ -7125,22 +9683,26 @@ function App() {
                   onFinishTodoTitleEdit={handleFinishCalendarTodoTitleEdit}
                   onNextMonth={activeMode.id === 'academy'
                     ? () => setCalendarMonth((currentMonth) => addCalendarMonths(currentMonth, 1))
-                    : undefined}
-                  onNextAgendaDay={activeMode.id === 'academy'
+                    : activeMode.id === 'project'
+                      ? () => setCalendarMonth((currentMonth) => addCalendarMonths(currentMonth, 1))
+                      : undefined}
+                  onNextAgendaDay={activeMode.id === 'academy' || activeMode.id === 'project'
                     ? () => handleMoveSelectedAgendaDay(1)
                     : undefined}
                   onOpenAddItem={activeMode.id === 'academy'
                     ? handleQuickAddCalendarTodo
-                    : () => setIsAddModalOpen(true)}
+                    : undefined}
                   onOpenTodo={openCalendarActionItem}
                   onOpenTodoDetails={handleOpenCalendarTodoDetails}
                   onMoveTodoDueDate={handleMoveCalendarTodoDueDate}
-                  onPreviousAgendaDay={activeMode.id === 'academy'
+                  onPreviousAgendaDay={activeMode.id === 'academy' || activeMode.id === 'project'
                     ? () => handleMoveSelectedAgendaDay(-1)
                     : undefined}
                   onPreviousMonth={activeMode.id === 'academy'
                     ? () => setCalendarMonth((currentMonth) => addCalendarMonths(currentMonth, -1))
-                    : undefined}
+                    : activeMode.id === 'project'
+                      ? () => setCalendarMonth((currentMonth) => addCalendarMonths(currentMonth, -1))
+                      : undefined}
                   onRemoveTodo={handleRemoveCalendarTodo}
                   onStartTodoTitleEdit={(item) => setFocusedCalendarTodoId(item.id)}
                   onToggleCourseFilter={handleToggleCalendarCourse}
@@ -7152,10 +9714,10 @@ function App() {
                       }
                     }
                   }}
-                  onToggleExpanded={activeMode.id === 'academy' && !shouldAutoExpandCalendar
+                  onToggleExpanded={(activeMode.id === 'academy' && !shouldAutoExpandCalendar) || activeMode.id === 'project'
                     ? () => setIsCalendarExpanded((currentValue) => !currentValue)
                     : undefined}
-                  onToday={activeMode.id === 'academy' ? handleMoveSelectedDayToToday : undefined}
+                  onToday={activeMode.id === 'academy' || activeMode.id === 'project' ? handleMoveSelectedDayToToday : undefined}
                   onToggleTodoDone={handleToggleCalendarTodoDone}
                   onToggleTodoStar={handleToggleCalendarTodoStar}
                   onUpdateTodoTitle={handleUpdateCalendarTodoTitle}
@@ -7163,7 +9725,7 @@ function App() {
                     const isOpeningDayScopedView = view === 'agenda' || view === 'board';
                     const isLeavingDayScopedViews = currentView !== 'agenda' && currentView !== 'board';
 
-                    if (activeMode.id === 'academy' && isOpeningDayScopedView && isLeavingDayScopedViews) {
+                    if ((activeMode.id === 'academy' || activeMode.id === 'project') && isOpeningDayScopedView && isLeavingDayScopedViews) {
                       handleMoveSelectedDayToToday();
                     }
 
@@ -7173,9 +9735,10 @@ function App() {
                       view,
                     });
                   }}
-                  progressDisplay={academyCalendarSettings.progressDisplay}
+                  progressDisplay={activeCalendarProgressDisplay}
                   progressThresholds={calendarProgressThresholds}
                   showCurrentTime={isSelectedCalendarDayToday}
+                  todayIso={activeCalendarTodayIso}
                   view={currentView}
                 />
                 {activeMode.id === 'academy' && currentView === 'month' ? (

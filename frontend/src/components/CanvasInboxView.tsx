@@ -425,15 +425,19 @@ export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasI
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [expandedCourseIds, setExpandedCourseIds] = useState<Set<string>>(() => new Set());
   const [canvasLecturePreferences, setCanvasLecturePreferences] = useState<CanvasLecturePreferences>({});
+  const [academyPreferencesLoadStatus, setAcademyPreferencesLoadStatus] = useState<LoadStatus>('idle');
+  const [hasLoadedAcademyPreferences, setHasLoadedAcademyPreferences] = useState(false);
   const [storedSelectedSemester, setStoredSelectedSemester] = useState(defaultAcademySemester);
   const [selectionHistory, setSelectionHistory] = useState<InboxSelectionHistory>({ ids: [], index: -1 });
   const effectiveSelectedSemester = normalizeSemesterName(selectedSemester ?? storedSelectedSemester);
   const visibleCourseIds = useMemo(() => new Set(
-    courses
-      .filter((course) => !isCourseHidden(course, canvasLecturePreferences) &&
-        courseMatchesSemester(course, canvasLecturePreferences, effectiveSelectedSemester))
-      .map((course) => course.id),
-  ), [canvasLecturePreferences, courses, effectiveSelectedSemester]);
+    hasLoadedAcademyPreferences
+      ? courses
+          .filter((course) => !isCourseHidden(course, canvasLecturePreferences) &&
+            courseMatchesSemester(course, canvasLecturePreferences, effectiveSelectedSemester))
+          .map((course) => course.id)
+      : [],
+  ), [canvasLecturePreferences, courses, effectiveSelectedSemester, hasLoadedAcademyPreferences]);
   const sortedItems = useMemo(() => (
     Object.entries(courseInbox)
       .filter(([courseId]) => visibleCourseIds.has(courseId))
@@ -441,8 +445,12 @@ export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasI
       .sort(sortCanvasInboxItems)
   ), [courseInbox, visibleCourseIds]);
   const groupedItems = useMemo(
-    () => groupCanvasInboxItems(courses, courseInbox, locale, canvasLecturePreferences, effectiveSelectedSemester),
-    [canvasLecturePreferences, courseInbox, courses, effectiveSelectedSemester, locale],
+    () => (
+      hasLoadedAcademyPreferences
+        ? groupCanvasInboxItems(courses, courseInbox, locale, canvasLecturePreferences, effectiveSelectedSemester)
+        : []
+    ),
+    [canvasLecturePreferences, courseInbox, courses, effectiveSelectedSemester, hasLoadedAcademyPreferences, locale],
   );
   const selectedItem = useMemo(
     () => sortedItems.find((item) => item.id === selectedItemId) ?? null,
@@ -452,7 +460,9 @@ export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasI
     () => getCanvasInboxRenderableMessage(selectedItem?.message),
     [selectedItem?.message],
   );
-  const isLoading = loadStatus === 'loading';
+  const isLoading =
+    loadStatus === 'loading' ||
+    (academyPreferencesLoadStatus !== 'failed' && !hasLoadedAcademyPreferences);
   const canGoBack = selectionHistory.index > 0;
   const canGoForward = selectionHistory.index >= 0 && selectionHistory.index < selectionHistory.ids.length - 1;
 
@@ -460,13 +470,22 @@ export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasI
     const applyAcademyPreferences = (preferences: AcademyPreferences) => {
       setCanvasLecturePreferences(getCanvasLecturePreferencesFromAcademyPreferences(preferences));
       setStoredSelectedSemester(getSelectedSemesterFromAcademyPreferences(preferences) ?? defaultAcademySemester);
+      setHasLoadedAcademyPreferences(true);
+      setAcademyPreferencesLoadStatus('loaded');
     };
 
     const reloadAcademyPreferences = () => {
+      if (!hasLoadedAcademyPreferences) {
+        setAcademyPreferencesLoadStatus('loading');
+      }
       workspaceApi
         .getAcademyPreferences()
         .then(applyAcademyPreferences)
-        .catch(() => undefined);
+        .catch(() => {
+          if (!hasLoadedAcademyPreferences) {
+            setAcademyPreferencesLoadStatus('failed');
+          }
+        });
     };
 
     const handleAcademyPreferencesUpdated = (event: Event) => {
@@ -475,6 +494,8 @@ export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasI
 
         if (isCanvasLecturePreferences(event.detail.canvasLecturePreferences)) {
           setCanvasLecturePreferences(event.detail.canvasLecturePreferences);
+          setHasLoadedAcademyPreferences(true);
+          setAcademyPreferencesLoadStatus('loaded');
         } else {
           shouldReloadPreferences = true;
         }
@@ -501,7 +522,7 @@ export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasI
     return () => {
       window.removeEventListener(academyPreferencesUpdatedEvent, handleAcademyPreferencesUpdated);
     };
-  }, []);
+  }, [hasLoadedAcademyPreferences]);
   const loadCourseInbox = (courseId: string, options?: { force?: boolean }) => {
     const currentState = courseInbox[courseId];
 

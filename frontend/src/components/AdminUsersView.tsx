@@ -1,5 +1,5 @@
 import { ArrowLeft, CheckCircle2, Clock3, Eye, KeyRound, Loader2, LogOut, Mail, RefreshCw, Save, UserCheck, UserX } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 
 import {
   workspaceApi,
@@ -101,6 +101,7 @@ function formatTokenStatus(status?: CanvasTokenStatus | null) {
 }
 
 export function AdminUsersView() {
+  const isMountedRef = useRef(true);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [groups, setGroups] = useState<AdminGroup[]>([]);
   const [query, setQuery] = useState('');
@@ -137,6 +138,14 @@ export function AdminUsersView() {
   const [canvasTokenError, setCanvasTokenError] = useState('');
   const [canvasTokenMessage, setCanvasTokenMessage] = useState('');
 
+  useEffect(() => {
+    isMountedRef.current = true;
+
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
   const refreshUsers = useCallback(async () => {
     setIsLoading(true);
     setError('');
@@ -146,13 +155,23 @@ export function AdminUsersView() {
         workspaceApi.getAdminUsers(),
         workspaceApi.getAdminGroups(),
       ]);
+      if (!isMountedRef.current) {
+        return;
+      }
+
       setUsers(userResponse.users);
       setGroups(groupResponse.groups);
       setSyncError(userResponse.syncError ?? '');
     } catch (loadError: unknown) {
+      if (!isMountedRef.current) {
+        return;
+      }
+
       setError(loadError instanceof Error ? loadError.message : 'Unable to load users.');
     } finally {
-      setIsLoading(false);
+      if (isMountedRef.current) {
+        setIsLoading(false);
+      }
     }
   }, []);
 
@@ -217,6 +236,10 @@ export function AdminUsersView() {
 
     try {
       const detail = await workspaceApi.getAdminUserDetail(userId);
+      if (!isMountedRef.current) {
+        return;
+      }
+
       setUserDetail(detail);
       setDetailDraft({
         contactEmail: detail.user.contactEmail ?? '',
@@ -226,9 +249,15 @@ export function AdminUsersView() {
         photoUrl: detail.user.photoUrl ?? '',
       });
     } catch (loadError: unknown) {
+      if (!isMountedRef.current) {
+        return;
+      }
+
       setDetailError(loadError instanceof Error ? loadError.message : 'Unable to load user details.');
     } finally {
-      setIsDetailLoading(false);
+      if (isMountedRef.current) {
+        setIsDetailLoading(false);
+      }
     }
   }, []);
 
@@ -257,6 +286,10 @@ export function AdminUsersView() {
 
     try {
       const updatedUser = await workspaceApi.updateAdminUser(user.id, request);
+      if (!isMountedRef.current) {
+        return;
+      }
+
       setUsers((currentUsers) => currentUsers.map((currentUser) => (
         currentUser.id === updatedUser.id ? updatedUser : currentUser
       )));
@@ -266,9 +299,15 @@ export function AdminUsersView() {
           : currentDetail
       ));
     } catch (updateError: unknown) {
+      if (!isMountedRef.current) {
+        return;
+      }
+
       setError(updateError instanceof Error ? updateError.message : 'Unable to update user.');
     } finally {
-      setActionUserId(null);
+      if (isMountedRef.current) {
+        setActionUserId(null);
+      }
     }
   };
 
@@ -296,15 +335,29 @@ export function AdminUsersView() {
         password: selectedUser.isAcademyUser && detailDraft.password ? detailDraft.password : undefined,
         photoUrl: detailDraft.photoUrl,
       });
+      if (!isMountedRef.current) {
+        return;
+      }
+
       setUsers((currentUsers) => currentUsers.map((currentUser) => (
         currentUser.id === updatedUser.id ? updatedUser : currentUser
       )));
       await loadUserDetail(updatedUser.id);
+      if (!isMountedRef.current) {
+        return;
+      }
+
       setDetailMessage('User details saved.');
     } catch (saveError: unknown) {
+      if (!isMountedRef.current) {
+        return;
+      }
+
       setDetailError(saveError instanceof Error ? saveError.message : 'Unable to save user details.');
     } finally {
-      setIsDetailSaving(false);
+      if (isMountedRef.current) {
+        setIsDetailSaving(false);
+      }
     }
   };
 
@@ -319,15 +372,29 @@ export function AdminUsersView() {
 
     try {
       const updatedUser = await workspaceApi.signOutAdminUser(selectedUser.id);
+      if (!isMountedRef.current) {
+        return;
+      }
+
       setUsers((currentUsers) => currentUsers.map((currentUser) => (
         currentUser.id === updatedUser.id ? updatedUser : currentUser
       )));
       await loadUserDetail(updatedUser.id);
+      if (!isMountedRef.current) {
+        return;
+      }
+
       setDetailMessage('Active sessions revoked.');
     } catch (revokeError: unknown) {
+      if (!isMountedRef.current) {
+        return;
+      }
+
       setDetailError(revokeError instanceof Error ? revokeError.message : 'Unable to revoke this user session.');
     } finally {
-      setIsRevokingSession(false);
+      if (isMountedRef.current) {
+        setIsRevokingSession(false);
+      }
     }
   };
 
@@ -369,6 +436,10 @@ export function AdminUsersView() {
     workspaceApi
       .getAdminUserCanvasTokenStatus(user.id)
       .then((status) => {
+        if (!isMountedRef.current) {
+          return;
+        }
+
         setCanvasTokenStatus(status);
         setCanvasTokenDraft((currentDraft) => ({
           ...currentDraft,
@@ -379,9 +450,17 @@ export function AdminUsersView() {
         }));
       })
       .catch((statusError: unknown) => {
+        if (!isMountedRef.current) {
+          return;
+        }
+
         setCanvasTokenError(statusError instanceof Error ? statusError.message : 'Unable to load Canvas token status.');
       })
-      .finally(() => setIsCanvasTokenLoading(false));
+      .finally(() => {
+        if (isMountedRef.current) {
+          setIsCanvasTokenLoading(false);
+        }
+      });
   };
 
   const updateCanvasTokenDraft = (field: keyof typeof canvasTokenDraft, value: string) => {
@@ -410,6 +489,10 @@ export function AdminUsersView() {
         startsAt: optionalIsoFromDateInput(canvasTokenDraft.startsAt),
       })
       .then((status) => {
+        if (!isMountedRef.current) {
+          return;
+        }
+
         setCanvasTokenStatus(status);
         setCanvasTokenDraft((currentDraft) => ({
           ...currentDraft,
@@ -421,9 +504,17 @@ export function AdminUsersView() {
         setCanvasTokenMessage('Canvas token saved.');
       })
       .catch((saveError: unknown) => {
+        if (!isMountedRef.current) {
+          return;
+        }
+
         setCanvasTokenError(saveError instanceof Error ? saveError.message : 'Unable to save Canvas token.');
       })
-      .finally(() => setIsCanvasTokenSaving(false));
+      .finally(() => {
+        if (isMountedRef.current) {
+          setIsCanvasTokenSaving(false);
+        }
+      });
   };
 
   const handleCanvasTokenReset = () => {
@@ -438,6 +529,10 @@ export function AdminUsersView() {
     workspaceApi
       .deleteAdminUserCanvasToken(canvasTokenUser.id)
       .then((status) => {
+        if (!isMountedRef.current) {
+          return;
+        }
+
         setCanvasTokenStatus(status);
         setCanvasTokenDraft((currentDraft) => ({
           ...currentDraft,
@@ -449,9 +544,17 @@ export function AdminUsersView() {
         setCanvasTokenMessage('Canvas token reset.');
       })
       .catch((resetError: unknown) => {
+        if (!isMountedRef.current) {
+          return;
+        }
+
         setCanvasTokenError(resetError instanceof Error ? resetError.message : 'Unable to reset Canvas token.');
       })
-      .finally(() => setIsCanvasTokenResetting(false));
+      .finally(() => {
+        if (isMountedRef.current) {
+          setIsCanvasTokenResetting(false);
+        }
+      });
   };
 
   return (

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Check,
   ChevronRight,
@@ -288,6 +288,10 @@ const viewIcons: Record<GoogleDriveView, string> = {
 
 export function DriveFilesView({ onSelectedItemChange }: DriveFilesViewProps) {
   const { dictionary } = useLanguage();
+  const isMountedRef = useRef(true);
+  const downloadStatusTimeoutRef = useRef<number | null>(null);
+  const searchPreviewCloseTimeoutRef = useRef<number | null>(null);
+  const objectUrlRevokeTimeoutsRef = useRef<Array<{ timeoutId: number; url: string }>>([]);
   const [activeView, setActiveView] = useState<GoogleDriveView>('my-drive');
   const [files, setFiles] = useState<GoogleDriveFile[]>([]);
   const [sharedDrives, setSharedDrives] = useState<GoogleSharedDrive[]>([]);
@@ -351,6 +355,28 @@ export function DriveFilesView({ onSelectedItemChange }: DriveFilesViewProps) {
       dictionary.driveSortRecent,
     ],
   );
+
+  useEffect(() => {
+    isMountedRef.current = true;
+
+    return () => {
+      isMountedRef.current = false;
+
+      if (downloadStatusTimeoutRef.current !== null) {
+        window.clearTimeout(downloadStatusTimeoutRef.current);
+      }
+
+      if (searchPreviewCloseTimeoutRef.current !== null) {
+        window.clearTimeout(searchPreviewCloseTimeoutRef.current);
+      }
+
+      objectUrlRevokeTimeoutsRef.current.forEach(({ timeoutId, url }) => {
+        window.clearTimeout(timeoutId);
+        URL.revokeObjectURL(url);
+      });
+      objectUrlRevokeTimeoutsRef.current = [];
+    };
+  }, []);
   const orderedSharedDrives = useMemo(
     () =>
       [...sharedDrives].sort((left, right) => {
@@ -752,10 +778,25 @@ export function DriveFilesView({ onSelectedItemChange }: DriveFilesViewProps) {
   };
 
   const showDownloadStatus = (status: DriveDownloadStatus) => {
+    if (!isMountedRef.current) {
+      return;
+    }
+
     setDownloadStatus(status);
 
+    if (downloadStatusTimeoutRef.current !== null) {
+      window.clearTimeout(downloadStatusTimeoutRef.current);
+      downloadStatusTimeoutRef.current = null;
+    }
+
     if (status.type !== 'loading') {
-      window.setTimeout(() => {
+      downloadStatusTimeoutRef.current = window.setTimeout(() => {
+        downloadStatusTimeoutRef.current = null;
+
+        if (!isMountedRef.current) {
+          return;
+        }
+
         setDownloadStatus((currentStatus) => (currentStatus === status ? null : currentStatus));
       }, 4500);
     }
@@ -771,7 +812,12 @@ export function DriveFilesView({ onSelectedItemChange }: DriveFilesViewProps) {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    const timeoutId = window.setTimeout(() => {
+      URL.revokeObjectURL(url);
+      objectUrlRevokeTimeoutsRef.current = objectUrlRevokeTimeoutsRef.current.filter((entry) => entry.timeoutId !== timeoutId);
+    }, 1000);
+
+    objectUrlRevokeTimeoutsRef.current.push({ timeoutId, url });
   };
 
   const downloadDriveItem = async (
@@ -813,7 +859,9 @@ export function DriveFilesView({ onSelectedItemChange }: DriveFilesViewProps) {
         title: dictionary.driveDownloadSuccess,
         message: usedBrowserDownloadFallback ? dictionary.driveDownloadFallback : download.fileName,
       });
-      setFlaggedDownloadFile(null);
+      if (isMountedRef.current) {
+        setFlaggedDownloadFile(null);
+      }
     } catch (error) {
       const typedError = error as Error & { googleReason?: string; status?: number };
 
@@ -831,7 +879,9 @@ export function DriveFilesView({ onSelectedItemChange }: DriveFilesViewProps) {
         && typedError.googleReason === 'cannotDownloadAbusiveFile'
         && !options.acknowledgeAbuse
       ) {
-        setFlaggedDownloadFile(file);
+        if (isMountedRef.current) {
+          setFlaggedDownloadFile(file);
+        }
         showDownloadStatus({
           type: 'error',
           title: dictionary.driveDownloadBlockedTitle,
@@ -1185,7 +1235,19 @@ export function DriveFilesView({ onSelectedItemChange }: DriveFilesViewProps) {
             />
             <Input
               className="h-10 rounded-lg pl-9"
-              onBlur={() => window.setTimeout(() => setIsSearchPreviewOpen(false), 120)}
+              onBlur={() => {
+                if (searchPreviewCloseTimeoutRef.current !== null) {
+                  window.clearTimeout(searchPreviewCloseTimeoutRef.current);
+                }
+
+                searchPreviewCloseTimeoutRef.current = window.setTimeout(() => {
+                  searchPreviewCloseTimeoutRef.current = null;
+
+                  if (isMountedRef.current) {
+                    setIsSearchPreviewOpen(false);
+                  }
+                }, 120);
+              }}
               onChange={(event) => handleSearchTextChange(event.target.value)}
               onFocus={() => setIsSearchPreviewOpen(Boolean(search.trim()))}
               placeholder={dictionary.driveSearchPlaceholder}

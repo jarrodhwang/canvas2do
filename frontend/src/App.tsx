@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   Activity,
   BarChart3,
@@ -33,14 +33,7 @@ import {
 import { workspaceApi } from './api/workspaceApi';
 import type { AcademyPreferences, AuthSession, CanvasCalendarItem, CanvasTokenStatus, GoogleDriveFile, WorkspacePreferences } from './api/workspaceApi';
 import { AddItemModal } from './components/AddItemModal';
-import { AdminGroupsView } from './components/AdminGroupsView';
-import { AdminUsersView } from './components/AdminUsersView';
 import { CalendarShell } from './components/CalendarShell';
-import { CanvasInboxView } from './components/CanvasInboxView';
-import { CanvasPeopleView } from './components/CanvasPeopleView';
-import { AcademyGradesView } from './components/AcademyGradesView';
-import { CourseOverviewView } from './components/CourseOverviewView';
-import { DashboardCards } from './components/DashboardCards';
 import { DateTimeField } from './components/DateTimeField';
 import type {
   ManualLectureClassType,
@@ -50,10 +43,7 @@ import type {
 } from './components/ManualLectureDialog';
 import { DetailPanel } from './components/DetailPanel';
 import { DriveDetailPanel } from './components/DriveDetailPanel';
-import { DriveFilesView } from './components/DriveFilesView';
-import { GoogleCommunicationView } from './components/GoogleCommunicationView';
 import { LoginPage } from './components/LoginPage';
-import { OutlookEmailView } from './components/OutlookEmailView';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
 import {
@@ -116,6 +106,17 @@ import {
   type AcademyNation,
   type Language,
 } from './i18n';
+
+const AcademyGradesView = lazy(() => import('./components/AcademyGradesView').then((module) => ({ default: module.AcademyGradesView })));
+const AdminGroupsView = lazy(() => import('./components/AdminGroupsView').then((module) => ({ default: module.AdminGroupsView })));
+const AdminUsersView = lazy(() => import('./components/AdminUsersView').then((module) => ({ default: module.AdminUsersView })));
+const CanvasInboxView = lazy(() => import('./components/CanvasInboxView').then((module) => ({ default: module.CanvasInboxView })));
+const CanvasPeopleView = lazy(() => import('./components/CanvasPeopleView').then((module) => ({ default: module.CanvasPeopleView })));
+const CourseOverviewView = lazy(() => import('./components/CourseOverviewView').then((module) => ({ default: module.CourseOverviewView })));
+const DashboardCards = lazy(() => import('./components/DashboardCards').then((module) => ({ default: module.DashboardCards })));
+const DriveFilesView = lazy(() => import('./components/DriveFilesView').then((module) => ({ default: module.DriveFilesView })));
+const GoogleCommunicationView = lazy(() => import('./components/GoogleCommunicationView').then((module) => ({ default: module.GoogleCommunicationView })));
+const OutlookEmailView = lazy(() => import('./components/OutlookEmailView').then((module) => ({ default: module.OutlookEmailView })));
 
 interface WorkspaceNavigation {
   modeId: string;
@@ -6387,6 +6388,22 @@ function PreviewModeBanner({
   );
 }
 
+function WorkspaceViewFallback() {
+  return (
+    <div
+      aria-live="polite"
+      className="grid min-h-64 content-start gap-3 rounded-xl border bg-card p-4"
+    >
+      <div className="h-5 w-40 rounded-md bg-muted" />
+      <div className="grid gap-2">
+        <div className="h-20 rounded-lg bg-muted/70" />
+        <div className="h-20 rounded-lg bg-muted/50" />
+        <div className="h-20 rounded-lg bg-muted/40" />
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const { activeData, activeMode, setActiveModeId, visibleModes } = useWorkspaceMode();
   const { dictionary, language, setLanguage, translateItemLabel } = useLanguage();
@@ -9532,112 +9549,113 @@ function App() {
                   : 'overflow-y-auto'),
           )}
         >
-          {isDriveView ? (
-            <DriveFilesView onSelectedItemChange={setSelectedDriveItem} />
-          ) : isEmailView ? (
-            <GoogleCommunicationView key="email" type="email" />
-          ) : isOutlookView ? (
-            <OutlookEmailView />
-          ) : isChatView ? (
-            <GoogleCommunicationView key="chat" type="chat" />
-          ) : isCanvasInboxView ? (
-            <CanvasInboxView
-              onOpenIntegration={openAcademyCourseResource}
-              selectedSemester={selectedAcademySemester}
-            />
-          ) : isAcademyPeopleView ? (
-            <CanvasPeopleView
-              onOpenCoursePeople={openAcademyCourseResource}
-              selectedSemester={selectedAcademySemester}
-            />
-          ) : isAcademyGradesView ? (
-            <AcademyGradesView selectedSemester={selectedAcademySemester} />
-          ) : isCoursesView ? (
-            <CourseOverviewView
-              initialResourceUrl={selectedCourseOverviewResourceUrl}
-              initialSelectedCourseRowId={selectedCourseOverviewRowId}
-              selectedSemester={selectedAcademySemester}
-            />
-          ) : isAcademySettingsView ? (
-            <AcademySettingsView
-              authSession={authSession}
-              focusSection={academySettingsFocusSection}
-              hasUnsavedChanges={hasUnsavedAcademySettings}
-              onFocusSectionConsumed={() => setAcademySettingsFocusSection(null)}
-              onProfileSaved={refreshAuthSession}
-              onRevertSettings={handleRevertAcademyCalendarSettings}
-              onSaveSettings={handleSaveAcademyCalendarSettings}
-              onSettingsChange={handleAcademyCalendarSettingsChange}
-              onSignOut={signOut}
-              settings={academyCalendarSettings}
-              settingsSaveError={academyPreferencesSaveError}
-              settingsSaveStatus={academyPreferencesSaveStatus}
-            />
-          ) : isWorkspaceProjectView ? (
-            <WorkspaceProjectView
-              data={activeData}
-              onOpenAddItem={openAcademyCourseworkDialog}
-              onOpenBoard={() => navigateWorkspace({ modeId: activeMode.id, sidebarItemId: 'board', view: 'board' })}
-              onOpenCalendar={() => navigateWorkspace({ modeId: activeMode.id, sidebarItemId: 'calendar', view: 'month' })}
-            />
-          ) : isWorkspaceSettingsView ? (
-            <WorkspaceSettingsView
-              hasUnsavedChanges={hasUnsavedWorkspaceSettings}
-              onRevertSettings={handleRevertWorkspaceSettings}
-              onSaveSettings={handleSaveWorkspaceSettings}
-              onSettingsChange={handleWorkspaceSettingsChange}
-              settings={workspaceSettings}
-              settingsSaveError={workspacePreferencesSaveError}
-              settingsSaveStatus={workspacePreferencesSaveStatus}
-            />
-          ) : isAdminUsersView ? (
-            <AdminUsersView />
-          ) : isAdminGroupsView ? (
-            <AdminGroupsView />
-          ) : isAdminGeneralSettingsView ? (
-            <AdminGeneralSettingsView
-              onSettingsChange={handleAdminConsoleSettingsChange}
-              settings={adminConsoleSettings}
-            />
-          ) : (
-            <>
-              <div
-                className={cn(
-                  'dashboard-summary-container overflow-hidden transition-all duration-300 ease-out',
-                  effectiveCalendarExpanded && 'contents',
-                )}
-              >
-                <DashboardCards
-                  academyAutoRefreshIntervalMs={academyAutoRefreshIntervalMs}
-                  academyRefocusRefreshThrottleMs={academyRefocusRefreshThrottleMs}
-                  compactAcademySummary={shouldUseCompactDashboardMonth}
-                  courseworkHideSettings={{
-                    completedAfterHours: academyCalendarSettings.courseworkHideCompletedAfterHours,
-                    completedFrom: academyCalendarSettings.courseworkHideCompletedFrom,
-                    uncompletedAfterHours: academyCalendarSettings.courseworkHideUncompletedAfterHours,
-                  }}
-                  courseworkShowStudyItems={academyCalendarSettings.courseworkShowStudyItems}
-                  effectiveWideSummaryCards={isAcademyMode ? isAcademyEffectiveExtraLarge : undefined}
-                  hideSummaryCards={effectiveCalendarExpanded}
-                  onOpenAddItem={openAcademyCourseworkDialog}
-                  onOpenCourse={openAcademyCourseResource}
-                  onToggleCourseworkStudyItems={handleToggleCourseworkStudyItems}
-                  selectedSemester={selectedAcademySemester}
-                  onPlanMeeting={() => {
-                    window.open(
-                      'https://calendar.google.com/calendar/u/0/r/eventedit',
-                      '_blank',
-                      'noopener,noreferrer',
-                    );
-                  }}
-                  onStartMeetingNow={() => {
-                    window.open('https://meet.google.com/new', '_blank', 'noopener,noreferrer');
-                  }}
-                  onWriteInPersonMeetingReport={() => {
-                    window.open('https://docs.new', '_blank', 'noopener,noreferrer');
-                  }}
-                />
-              </div>
+          <Suspense fallback={<WorkspaceViewFallback />}>
+            {isDriveView ? (
+              <DriveFilesView onSelectedItemChange={setSelectedDriveItem} />
+            ) : isEmailView ? (
+              <GoogleCommunicationView key="email" type="email" />
+            ) : isOutlookView ? (
+              <OutlookEmailView />
+            ) : isChatView ? (
+              <GoogleCommunicationView key="chat" type="chat" />
+            ) : isCanvasInboxView ? (
+              <CanvasInboxView
+                onOpenIntegration={openAcademyCourseResource}
+                selectedSemester={selectedAcademySemester}
+              />
+            ) : isAcademyPeopleView ? (
+              <CanvasPeopleView
+                onOpenCoursePeople={openAcademyCourseResource}
+                selectedSemester={selectedAcademySemester}
+              />
+            ) : isAcademyGradesView ? (
+              <AcademyGradesView selectedSemester={selectedAcademySemester} />
+            ) : isCoursesView ? (
+              <CourseOverviewView
+                initialResourceUrl={selectedCourseOverviewResourceUrl}
+                initialSelectedCourseRowId={selectedCourseOverviewRowId}
+                selectedSemester={selectedAcademySemester}
+              />
+            ) : isAcademySettingsView ? (
+              <AcademySettingsView
+                authSession={authSession}
+                focusSection={academySettingsFocusSection}
+                hasUnsavedChanges={hasUnsavedAcademySettings}
+                onFocusSectionConsumed={() => setAcademySettingsFocusSection(null)}
+                onProfileSaved={refreshAuthSession}
+                onRevertSettings={handleRevertAcademyCalendarSettings}
+                onSaveSettings={handleSaveAcademyCalendarSettings}
+                onSettingsChange={handleAcademyCalendarSettingsChange}
+                onSignOut={signOut}
+                settings={academyCalendarSettings}
+                settingsSaveError={academyPreferencesSaveError}
+                settingsSaveStatus={academyPreferencesSaveStatus}
+              />
+            ) : isWorkspaceProjectView ? (
+              <WorkspaceProjectView
+                data={activeData}
+                onOpenAddItem={openAcademyCourseworkDialog}
+                onOpenBoard={() => navigateWorkspace({ modeId: activeMode.id, sidebarItemId: 'board', view: 'board' })}
+                onOpenCalendar={() => navigateWorkspace({ modeId: activeMode.id, sidebarItemId: 'calendar', view: 'month' })}
+              />
+            ) : isWorkspaceSettingsView ? (
+              <WorkspaceSettingsView
+                hasUnsavedChanges={hasUnsavedWorkspaceSettings}
+                onRevertSettings={handleRevertWorkspaceSettings}
+                onSaveSettings={handleSaveWorkspaceSettings}
+                onSettingsChange={handleWorkspaceSettingsChange}
+                settings={workspaceSettings}
+                settingsSaveError={workspacePreferencesSaveError}
+                settingsSaveStatus={workspacePreferencesSaveStatus}
+              />
+            ) : isAdminUsersView ? (
+              <AdminUsersView />
+            ) : isAdminGroupsView ? (
+              <AdminGroupsView />
+            ) : isAdminGeneralSettingsView ? (
+              <AdminGeneralSettingsView
+                onSettingsChange={handleAdminConsoleSettingsChange}
+                settings={adminConsoleSettings}
+              />
+            ) : (
+              <>
+                <div
+                  className={cn(
+                    'dashboard-summary-container overflow-hidden transition-all duration-300 ease-out',
+                    effectiveCalendarExpanded && 'contents',
+                  )}
+                >
+                  <DashboardCards
+                    academyAutoRefreshIntervalMs={academyAutoRefreshIntervalMs}
+                    academyRefocusRefreshThrottleMs={academyRefocusRefreshThrottleMs}
+                    compactAcademySummary={shouldUseCompactDashboardMonth}
+                    courseworkHideSettings={{
+                      completedAfterHours: academyCalendarSettings.courseworkHideCompletedAfterHours,
+                      completedFrom: academyCalendarSettings.courseworkHideCompletedFrom,
+                      uncompletedAfterHours: academyCalendarSettings.courseworkHideUncompletedAfterHours,
+                    }}
+                    courseworkShowStudyItems={academyCalendarSettings.courseworkShowStudyItems}
+                    effectiveWideSummaryCards={isAcademyMode ? isAcademyEffectiveExtraLarge : undefined}
+                    hideSummaryCards={effectiveCalendarExpanded}
+                    onOpenAddItem={openAcademyCourseworkDialog}
+                    onOpenCourse={openAcademyCourseResource}
+                    onToggleCourseworkStudyItems={handleToggleCourseworkStudyItems}
+                    selectedSemester={selectedAcademySemester}
+                    onPlanMeeting={() => {
+                      window.open(
+                        'https://calendar.google.com/calendar/u/0/r/eventedit',
+                        '_blank',
+                        'noopener,noreferrer',
+                      );
+                    }}
+                    onStartMeetingNow={() => {
+                      window.open('https://meet.google.com/new', '_blank', 'noopener,noreferrer');
+                    }}
+                    onWriteInPersonMeetingReport={() => {
+                      window.open('https://docs.new', '_blank', 'noopener,noreferrer');
+                    }}
+                  />
+                </div>
               {activeMode.id === 'academy' && currentView === 'board' ? (
                 <div
                   className={cn(
@@ -9752,8 +9770,9 @@ function App() {
                   </div>
                 ) : null}
               </div>
-            </>
-          )}
+              </>
+            )}
+          </Suspense>
         </section>
         {isDriveView ? (
           <DriveDetailPanel item={selectedDriveItem} />

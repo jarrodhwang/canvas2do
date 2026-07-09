@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronRight, ExternalLink, LoaderCircle, Mail, RefreshCw, Search, Users } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { workspaceApi } from '../api/workspaceApi';
 import type { AcademyPreferences, CanvasCourse, CanvasCourseUser } from '../api/workspaceApi';
@@ -247,6 +247,7 @@ function personMatchesQuery(person: CanvasCourseUser, course: CanvasCourse, quer
 
 export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: CanvasPeopleViewProps) {
   const { dictionary } = useLanguage();
+  const isMountedRef = useRef(true);
   const [courses, setCourses] = useState<CanvasCourse[]>([]);
   const [coursePeople, setCoursePeople] = useState<Record<string, CoursePeopleState>>({});
   const [loadStatus, setLoadStatus] = useState<LoadStatus>('idle');
@@ -316,6 +317,15 @@ export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: Canva
   const isLoading =
     loadStatus === 'loading' ||
     (academyPreferencesLoadStatus !== 'failed' && !hasLoadedAcademyPreferences);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
   const loadCoursePeople = (courseId: string, options?: { force?: boolean }) => {
     const currentState = coursePeople[courseId];
 
@@ -334,6 +344,10 @@ export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: Canva
     workspaceApi
       .getCanvasCoursePeople(courseId)
       .then(({ people }) => {
+        if (!isMountedRef.current) {
+          return;
+        }
+
         setCoursePeople((currentPeople) => ({
           ...currentPeople,
           [courseId]: {
@@ -343,6 +357,10 @@ export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: Canva
         }));
       })
       .catch((error) => {
+        if (!isMountedRef.current) {
+          return;
+        }
+
         setCoursePeople((currentPeople) => ({
           ...currentPeople,
           [courseId]: {
@@ -377,10 +395,18 @@ export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: Canva
     workspaceApi
       .getCanvasCourses(50)
       .then(({ courses: nextCourses }) => {
+        if (!isMountedRef.current) {
+          return;
+        }
+
         setCourses(nextCourses);
         setLoadStatus('loaded');
       })
       .catch((error) => {
+        if (!isMountedRef.current) {
+          return;
+        }
+
         setCourses([]);
         setCoursePeople({});
         setErrorMessage(error instanceof Error ? error.message : '');
@@ -394,6 +420,10 @@ export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: Canva
 
   useEffect(() => {
     const applyAcademyPreferences = (preferences: AcademyPreferences) => {
+      if (!isMountedRef.current) {
+        return;
+      }
+
       setCanvasLecturePreferences(getCanvasLecturePreferencesFromAcademyPreferences(preferences));
       setStoredSelectedSemester(getSelectedSemesterFromAcademyPreferences(preferences) ?? defaultAcademySemester);
       setHasLoadedAcademyPreferences(true);
@@ -408,7 +438,7 @@ export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: Canva
         .getAcademyPreferences()
         .then(applyAcademyPreferences)
         .catch(() => {
-          if (!hasLoadedAcademyPreferences) {
+          if (isMountedRef.current && !hasLoadedAcademyPreferences) {
             setAcademyPreferencesLoadStatus('failed');
           }
         });

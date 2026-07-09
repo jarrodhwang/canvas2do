@@ -413,12 +413,16 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
     useState<GradeProgressColorThresholds>(defaultGradeProgressColorThresholds);
   const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(() => new Set());
   const [courseDetails, setCourseDetails] = useState<Record<string, CourseDetailState>>({});
+  const isMountedRef = useRef(true);
+  const loadGradesSequenceRef = useRef(0);
   const manualGradeSaveSequenceRef = useRef(0);
   const selectedSemesterFromProp = selectedSemesterProp
     ? normalizeSemesterName(selectedSemesterProp)
     : undefined;
 
   const loadGrades = useCallback(async () => {
+    const loadSequence = ++loadGradesSequenceRef.current;
+
     setLoadStatus('loading');
     setLoadError('');
     setCanvasWarning('');
@@ -427,6 +431,10 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
       workspaceApi.getAcademyPreferences(),
       workspaceApi.getCanvasCourses(100),
     ]);
+
+    if (!isMountedRef.current || loadSequence !== loadGradesSequenceRef.current) {
+      return;
+    }
 
     if (preferencesResult.status === 'rejected') {
       setRows([]);
@@ -480,6 +488,15 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
   ]);
 
   useEffect(() => {
+    isMountedRef.current = true;
+
+    return () => {
+      isMountedRef.current = false;
+      loadGradesSequenceRef.current += 1;
+    };
+  }, []);
+
+  useEffect(() => {
     void loadGrades();
   }, [loadGrades]);
 
@@ -515,6 +532,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
   }, [selectedSemester, selectedSemesterFromProp]);
 
   useEffect(() => {
+    let isCancelled = false;
     const expandedRowsToLoad = rows.filter((row) => (
       expandedRowIds.has(row.id) &&
       row.canvasCourseId &&
@@ -542,12 +560,20 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
 
       workspaceApi.getCanvasCourseContent(row.canvasCourseId, 'grades')
         .then((content) => {
+          if (isCancelled) {
+            return;
+          }
+
           setCourseDetails((currentDetails) => ({
             ...currentDetails,
             [row.id]: { content, status: 'loaded' },
           }));
         })
         .catch((error: unknown) => {
+          if (isCancelled) {
+            return;
+          }
+
           setCourseDetails((currentDetails) => ({
             ...currentDetails,
             [row.id]: {
@@ -557,6 +583,10 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
           }));
         });
     });
+
+    return () => {
+      isCancelled = true;
+    };
   }, [courseDetails, dictionary.academyGradesDetailUnavailable, expandedRowIds, rows]);
 
   const semesterOptions = useMemo(() => {

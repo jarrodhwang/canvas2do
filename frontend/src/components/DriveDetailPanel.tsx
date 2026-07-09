@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Copy, FileText, Folder, Link, Lock, Share2, Users } from 'lucide-react';
 import {
   workspaceApi,
@@ -108,6 +108,8 @@ function getPreviewUrl(item: GoogleDriveFile) {
 
 export function DriveDetailPanel({ item }: DriveDetailPanelProps) {
   const { dictionary } = useLanguage();
+  const isMountedRef = useRef(true);
+  const linkCopiedTimeoutRef = useRef<number | null>(null);
   const [isAccessOpen, setIsAccessOpen] = useState(false);
   const [permissions, setPermissions] = useState<GoogleDrivePermission[]>([]);
   const [permissionsError, setPermissionsError] = useState<string | null>(null);
@@ -122,6 +124,18 @@ export function DriveDetailPanel({ item }: DriveDetailPanelProps) {
     [permissions],
   );
 
+  useEffect(() => {
+    isMountedRef.current = true;
+
+    return () => {
+      isMountedRef.current = false;
+
+      if (linkCopiedTimeoutRef.current !== null) {
+        window.clearTimeout(linkCopiedTimeoutRef.current);
+      }
+    };
+  }, []);
+
   const loadPermissions = (fileId: string) => {
     setIsPermissionsLoading(true);
     setPermissionsError(null);
@@ -129,13 +143,25 @@ export function DriveDetailPanel({ item }: DriveDetailPanelProps) {
     workspaceApi
       .getGoogleDrivePermissions(fileId)
       .then((response) => {
+        if (!isMountedRef.current) {
+          return;
+        }
+
         setPermissions(response.permissions);
       })
       .catch((error: Error) => {
+        if (!isMountedRef.current) {
+          return;
+        }
+
         setPermissions([]);
         setPermissionsError(error.message || dictionary.driveAccessUnavailable);
       })
-      .finally(() => setIsPermissionsLoading(false));
+      .finally(() => {
+        if (isMountedRef.current) {
+          setIsPermissionsLoading(false);
+        }
+      });
   };
 
   const openAccessDialog = () => {
@@ -155,7 +181,16 @@ export function DriveDetailPanel({ item }: DriveDetailPanelProps) {
 
     await navigator.clipboard?.writeText(item.webViewLink);
     setIsLinkCopied(true);
-    window.setTimeout(() => setIsLinkCopied(false), 1800);
+    if (linkCopiedTimeoutRef.current !== null) {
+      window.clearTimeout(linkCopiedTimeoutRef.current);
+    }
+    linkCopiedTimeoutRef.current = window.setTimeout(() => {
+      linkCopiedTimeoutRef.current = null;
+
+      if (isMountedRef.current) {
+        setIsLinkCopied(false);
+      }
+    }, 1800);
   };
 
   const getRoleLabel = (role: string) => {

@@ -14,6 +14,7 @@ using System.Net.Mail;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -33,6 +34,7 @@ public static class GoogleIntegrationEndpoints
     private const string ScheduledGmailStatusSent = "sent";
     private const string ScheduledGmailStatusFailed = "failed";
     private const string ScheduledGmailStatusCancelled = "cancelled";
+    private const int SearchCacheKeyMaxLength = 96;
     private const string AcademyAccountDomain = "academy.local";
     private const int ChatSpaceLoadConcurrency = 6;
     private const int ChatMemberProfileLookupLimit = 10;
@@ -1754,7 +1756,7 @@ public static class GoogleIntegrationEndpoints
                     ':',
                     userCachePrefix,
                     "chat-v2",
-                    search?.Trim() ?? "spaces",
+                    NormalizeSearchCacheKey(search, "spaces"),
                     safePageSize);
 
                 try
@@ -6945,6 +6947,31 @@ public static class GoogleIntegrationEndpoints
         return Regex.Replace(value.Trim().ToLowerInvariant(), @"[^\w@.\-/]+", "_", RegexOptions.Compiled);
     }
 
+    private static string NormalizeSearchCacheKey(string? value, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return fallback;
+        }
+
+        var normalizedValue = NormalizeCacheKey(value);
+
+        if (string.IsNullOrWhiteSpace(normalizedValue))
+        {
+            return fallback;
+        }
+
+        if (normalizedValue.Length <= SearchCacheKeyMaxLength)
+        {
+            return normalizedValue;
+        }
+
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(normalizedValue)))
+            .ToLowerInvariant();
+
+        return $"{normalizedValue[..SearchCacheKeyMaxLength]}-{hash[..16]}";
+    }
+
     private static string NormalizeEmailBody(string value)
     {
         var normalizedLineEndings = value.ReplaceLineEndings("\n");
@@ -7789,7 +7816,7 @@ public static class GoogleIntegrationEndpoints
             driveView,
             folderId ?? "root",
             driveId ?? "none",
-            search?.Trim() ?? "none",
+            NormalizeSearchCacheKey(search, "none"),
             pageSize);
     }
 

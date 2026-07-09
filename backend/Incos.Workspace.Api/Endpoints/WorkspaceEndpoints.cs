@@ -221,6 +221,32 @@ public static class WorkspaceEndpoints
             """,
             cancellationToken);
 
+    private static async Task<UserSetting?> FindUserSettingAsync(
+        IncosWorkspaceDbContext db,
+        string userKey,
+        string settingKey,
+        CancellationToken cancellationToken)
+    {
+        var setting = await db.UserSettings
+            .FirstOrDefaultAsync(
+                userSetting =>
+                    userSetting.UserKey == userKey &&
+                    userSetting.SettingKey == settingKey,
+                cancellationToken);
+
+        if (setting is not null)
+        {
+            return setting;
+        }
+
+        return await db.UserSettings
+            .FirstOrDefaultAsync(
+                userSetting =>
+                    userSetting.UserKey.ToLower() == userKey &&
+                    userSetting.SettingKey == settingKey,
+                cancellationToken);
+    }
+
     private static async Task<IResult> GetAcademyPreferencesAsync(
         HttpContext context,
         IncosWorkspaceDbContext db,
@@ -235,13 +261,7 @@ public static class WorkspaceEndpoints
 
         await EnsureUserSettingsTableAsync(db, cancellationToken);
 
-        var setting = await db.UserSettings
-            .OrderBy(userSetting => userSetting.UserKey == userKey ? 0 : 1)
-            .FirstOrDefaultAsync(
-                userSetting =>
-                    userSetting.UserKey.ToLower() == userKey &&
-                    userSetting.SettingKey == AcademyPreferencesSettingKey,
-                cancellationToken);
+        var setting = await FindUserSettingAsync(db, userKey, AcademyPreferencesSettingKey, cancellationToken);
 
         if (setting is not null)
         {
@@ -275,13 +295,7 @@ public static class WorkspaceEndpoints
         await EnsureUserSettingsTableAsync(db, cancellationToken);
 
         var now = DateTimeOffset.UtcNow;
-        var setting = await db.UserSettings
-            .OrderBy(userSetting => userSetting.UserKey == userKey ? 0 : 1)
-            .FirstOrDefaultAsync(
-                userSetting =>
-                    userSetting.UserKey.ToLower() == userKey &&
-                    userSetting.SettingKey == AcademyPreferencesSettingKey,
-                cancellationToken);
+        var setting = await FindUserSettingAsync(db, userKey, AcademyPreferencesSettingKey, cancellationToken);
 
         if (setting is null)
         {
@@ -323,12 +337,7 @@ public static class WorkspaceEndpoints
 
         await EnsureUserSettingsTableAsync(db, cancellationToken);
 
-        var setting = await db.UserSettings
-            .FirstOrDefaultAsync(
-                userSetting =>
-                    userSetting.UserKey.ToLower() == userKey &&
-                    userSetting.SettingKey == WorkspacePreferencesSettingKey,
-                cancellationToken);
+        var setting = await FindUserSettingAsync(db, userKey, WorkspacePreferencesSettingKey, cancellationToken);
 
         if (setting is not null)
         {
@@ -362,12 +371,7 @@ public static class WorkspaceEndpoints
         await EnsureUserSettingsTableAsync(db, cancellationToken);
 
         var now = DateTimeOffset.UtcNow;
-        var setting = await db.UserSettings
-            .FirstOrDefaultAsync(
-                userSetting =>
-                    userSetting.UserKey.ToLower() == userKey &&
-                    userSetting.SettingKey == WorkspacePreferencesSettingKey,
-                cancellationToken);
+        var setting = await FindUserSettingAsync(db, userKey, WorkspacePreferencesSettingKey, cancellationToken);
 
         if (setting is null)
         {

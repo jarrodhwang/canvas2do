@@ -512,6 +512,8 @@ function grantedCheckboxClassName(isGranted: boolean) {
 export function AdminGroupsView() {
   const detailHistoryPushedRef = useRef(false);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const imageReaderRef = useRef<FileReader | null>(null);
+  const isMountedRef = useRef(true);
   const snackbarTimeoutRef = useRef<number | null>(null);
   const [groups, setGroups] = useState<AdminGroup[]>([]);
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -574,6 +576,10 @@ export function AdminGroupsView() {
   };
 
   const showSnackbar = useCallback((nextSnackbar: SnackbarState) => {
+    if (!isMountedRef.current) {
+      return;
+    }
+
     if (snackbarTimeoutRef.current !== null) {
       window.clearTimeout(snackbarTimeoutRef.current);
     }
@@ -594,12 +600,22 @@ export function AdminGroupsView() {
         workspaceApi.getAdminUsers(),
         workspaceApi.getAdminGroups(),
       ]);
+      if (!isMountedRef.current) {
+        return;
+      }
+
       setUsers(userResponse.users);
       setGroups(groupResponse.groups);
     } catch (loadError: unknown) {
+      if (!isMountedRef.current) {
+        return;
+      }
+
       setError(loadError instanceof Error ? loadError.message : 'Unable to load groups.');
     } finally {
-      setIsLoading(false);
+      if (isMountedRef.current) {
+        setIsLoading(false);
+      }
     }
   }, []);
 
@@ -626,10 +642,20 @@ export function AdminGroupsView() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, [clearEditor, isEditorOpen]);
 
-  useEffect(() => () => {
-    if (snackbarTimeoutRef.current !== null) {
-      window.clearTimeout(snackbarTimeoutRef.current);
-    }
+  useEffect(() => {
+    isMountedRef.current = true;
+
+    return () => {
+      isMountedRef.current = false;
+
+      if (snackbarTimeoutRef.current !== null) {
+        window.clearTimeout(snackbarTimeoutRef.current);
+      }
+
+      if (imageReaderRef.current?.readyState === FileReader.LOADING) {
+        imageReaderRef.current.abort();
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -762,12 +788,26 @@ export function AdminGroupsView() {
       return;
     }
 
+    if (imageReaderRef.current?.readyState === FileReader.LOADING) {
+      imageReaderRef.current.abort();
+    }
+
     const reader = new FileReader();
+    imageReaderRef.current = reader;
     reader.addEventListener('load', () => {
+      if (!isMountedRef.current) {
+        return;
+      }
+
       setForm((currentForm) => ({
         ...currentForm,
         photoUrl: typeof reader.result === 'string' ? reader.result : currentForm.photoUrl,
       }));
+    });
+    reader.addEventListener('loadend', () => {
+      if (imageReaderRef.current === reader) {
+        imageReaderRef.current = null;
+      }
     });
     reader.readAsDataURL(file);
   };

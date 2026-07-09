@@ -4422,6 +4422,7 @@ export function DashboardCards({
       return undefined;
     }
 
+    let isCancelled = false;
     let isSyncing = false;
     let lastFocusSyncStartedAt = 0;
     const syncAcademyPreferences = () => {
@@ -4434,7 +4435,7 @@ export function DashboardCards({
       workspaceApi
         .getAcademyPreferences()
         .then((preferences) => {
-          if (preferenceReadSequence !== academyPreferencesSaveSequence) {
+          if (isCancelled || preferenceReadSequence !== academyPreferencesSaveSequence) {
             return;
           }
 
@@ -4445,12 +4446,14 @@ export function DashboardCards({
           setAcademyPreferencesLoadStatus('loaded');
         })
         .catch(() => {
-          if (!hasLoadedAcademyPreferences) {
+          if (!isCancelled && !hasLoadedAcademyPreferences) {
             setAcademyPreferencesLoadStatus('failed');
           }
         })
         .finally(() => {
-          isSyncing = false;
+          if (!isCancelled) {
+            isSyncing = false;
+          }
         });
     };
     const syncAcademyPreferencesOnFocus = () => {
@@ -4474,6 +4477,7 @@ export function DashboardCards({
     const syncInterval = window.setInterval(syncAcademyPreferences, academyAutoRefreshIntervalMs);
 
     return () => {
+      isCancelled = true;
       window.removeEventListener('focus', syncAcademyPreferencesOnFocus);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.clearInterval(syncInterval);

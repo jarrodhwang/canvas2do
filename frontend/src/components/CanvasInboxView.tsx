@@ -1,5 +1,5 @@
 import { ArrowLeft, ArrowRight, ChevronDown, ChevronRight, ExternalLink, Inbox, LoaderCircle, RefreshCw } from 'lucide-react';
-import { useEffect, useMemo, useState, type MouseEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 
 import { workspaceApi, type AcademyPreferences, type CanvasCourse, type CanvasInboxItem } from '../api/workspaceApi';
 import { useLanguage } from '../context/LanguageContext';
@@ -418,6 +418,7 @@ function groupCanvasInboxItems(
 export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasInboxViewProps = {}) {
   const { dictionary, language } = useLanguage();
   const locale = language === 'ko' ? 'ko-KR' : 'en-CA';
+  const isMountedRef = useRef(true);
   const [courses, setCourses] = useState<CanvasCourse[]>([]);
   const [courseInbox, setCourseInbox] = useState<Record<string, CourseInboxState>>({});
   const [loadStatus, setLoadStatus] = useState<LoadStatus>('idle');
@@ -467,7 +468,19 @@ export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasI
   const canGoForward = selectionHistory.index >= 0 && selectionHistory.index < selectionHistory.ids.length - 1;
 
   useEffect(() => {
+    isMountedRef.current = true;
+
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
     const applyAcademyPreferences = (preferences: AcademyPreferences) => {
+      if (!isMountedRef.current) {
+        return;
+      }
+
       setCanvasLecturePreferences(getCanvasLecturePreferencesFromAcademyPreferences(preferences));
       setStoredSelectedSemester(getSelectedSemesterFromAcademyPreferences(preferences) ?? defaultAcademySemester);
       setHasLoadedAcademyPreferences(true);
@@ -482,7 +495,7 @@ export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasI
         .getAcademyPreferences()
         .then(applyAcademyPreferences)
         .catch(() => {
-          if (!hasLoadedAcademyPreferences) {
+          if (isMountedRef.current && !hasLoadedAcademyPreferences) {
             setAcademyPreferencesLoadStatus('failed');
           }
         });
@@ -541,6 +554,10 @@ export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasI
     workspaceApi
       .getCanvasInboxItems(75, { courseId })
       .then(({ items: nextItems }) => {
+        if (!isMountedRef.current) {
+          return;
+        }
+
         setCourseInbox((currentInbox) => ({
           ...currentInbox,
           [courseId]: {
@@ -554,6 +571,10 @@ export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasI
         }
       })
       .catch((error) => {
+        if (!isMountedRef.current) {
+          return;
+        }
+
         setCourseInbox((currentInbox) => ({
           ...currentInbox,
           [courseId]: {
@@ -592,10 +613,18 @@ export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasI
     workspaceApi
       .getCanvasCourses(50)
       .then(({ courses: nextCourses }) => {
+        if (!isMountedRef.current) {
+          return;
+        }
+
         setCourses(nextCourses);
         setLoadStatus('loaded');
       })
       .catch((error) => {
+        if (!isMountedRef.current) {
+          return;
+        }
+
         setCourses([]);
         setCourseInbox({});
         setErrorMessage(error instanceof Error ? error.message : '');

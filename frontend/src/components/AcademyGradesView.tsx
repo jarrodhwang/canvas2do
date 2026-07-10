@@ -414,6 +414,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
   const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(() => new Set());
   const [courseDetails, setCourseDetails] = useState<Record<string, CourseDetailState>>({});
   const isMountedRef = useRef(true);
+  const courseDetailsRef = useRef(courseDetails);
   const loadGradesSequenceRef = useRef(0);
   const manualGradeSaveSequenceRef = useRef(0);
   const selectedSemesterFromProp = selectedSemesterProp
@@ -497,6 +498,10 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
   }, []);
 
   useEffect(() => {
+    courseDetailsRef.current = courseDetails;
+  }, [courseDetails]);
+
+  useEffect(() => {
     void loadGrades();
   }, [loadGrades]);
 
@@ -532,11 +537,10 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
   }, [selectedSemester, selectedSemesterFromProp]);
 
   useEffect(() => {
-    let isCancelled = false;
     const expandedRowsToLoad = rows.filter((row) => (
       expandedRowIds.has(row.id) &&
       row.canvasCourseId &&
-      !courseDetails[row.id]?.status
+      !courseDetailsRef.current[row.id]?.status
     ));
 
     if (expandedRowsToLoad.length === 0) {
@@ -560,7 +564,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
 
       workspaceApi.getCanvasCourseContent(row.canvasCourseId, 'grades')
         .then((content) => {
-          if (isCancelled) {
+          if (!isMountedRef.current) {
             return;
           }
 
@@ -570,7 +574,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
           }));
         })
         .catch((error: unknown) => {
-          if (isCancelled) {
+          if (!isMountedRef.current) {
             return;
           }
 
@@ -583,11 +587,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
           }));
         });
     });
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [courseDetails, dictionary.academyGradesDetailUnavailable, expandedRowIds, rows]);
+  }, [dictionary.academyGradesDetailUnavailable, expandedRowIds, rows]);
 
   const semesterOptions = useMemo(() => {
     const semesters = new Set<string>();

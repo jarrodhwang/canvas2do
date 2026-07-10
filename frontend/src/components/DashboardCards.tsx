@@ -258,6 +258,7 @@ type AcademyRefreshRequestedDetail = {
   registerTask?: (task: Promise<unknown>) => void;
 };
 let academyPreferencesSaveSequence = 0;
+let academyPreferencesSaveQueue: Promise<void> = Promise.resolve();
 const canvasSubmissionSyncProtectionMs = 15000;
 let academyCalendarSettingsCache: Record<string, unknown> = {};
 let academyCalendarSettingsProtectedUntil = 0;
@@ -1732,7 +1733,7 @@ function persistAcademyPreferences(
     { emitCalendarSettings: Boolean(options.calendarSettings) },
   );
 
-  return workspaceApi.saveAcademyPreferences({
+  return saveAcademyPreferencesInOrder({
     manualLectures: lectures,
     canvasLecturePreferences: preferences,
     manualCoursework: coursework,
@@ -1756,13 +1757,24 @@ function persistAcademyPreferencePatch(patch: SaveAcademyPreferencesRequest) {
     window.dispatchEvent(new CustomEvent(academyPreferencesUpdatedEvent, { detail: patch }));
   }
 
-  void workspaceApi.saveAcademyPreferences(patch)
+  void saveAcademyPreferencesInOrder(patch)
     .then((savedPreferences) => {
       if (saveSequence === academyPreferencesSaveSequence) {
         cacheAcademyPreferencesResponse(savedPreferences);
       }
     })
     .catch(() => undefined);
+}
+
+function saveAcademyPreferencesInOrder(request: SaveAcademyPreferencesRequest) {
+  const saveTask = academyPreferencesSaveQueue.then(() => workspaceApi.saveAcademyPreferences(request));
+
+  academyPreferencesSaveQueue = saveTask.then(
+    () => undefined,
+    () => undefined,
+  );
+
+  return saveTask;
 }
 
 function isCanvasLecturePreferences(value: unknown): value is CanvasLecturePreferences {

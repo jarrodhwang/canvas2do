@@ -8675,6 +8675,7 @@ function App() {
         academyRefreshRequestedEvent,
         {
           detail: {
+            forceRefresh: true,
             registerTask: (task) => {
               registeredTask = true;
               task.then(() => resolve(), reject);

@@ -17,7 +17,7 @@ import {
   Star,
   Trash2,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type ReactElement, type TouchEvent } from 'react';
+import { useEffect, useEffectEvent, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type ReactElement, type TouchEvent } from 'react';
 
 import { workspaceApi, type AcademyPreferences, type CanvasCalendarItem, type CanvasCourse, type SaveAcademyPreferencesRequest } from '../api/workspaceApi';
 import { useLanguage } from '../context/LanguageContext';
@@ -3653,6 +3653,10 @@ export function DashboardCards({
   const [canvasCourseworkItems, setCanvasCourseworkItems] = useState<CanvasCalendarItem[]>([]);
   const [canvasCourseworkLoadStatus, setCanvasCourseworkLoadStatus] = useState<CanvasCourseLoadStatus>('idle');
   const [isAcademyDashboardRefreshInProgress, setIsAcademyDashboardRefreshInProgress] = useState(false);
+  const isAcademyDashboardRefreshing =
+    isAcademyDashboardRefreshInProgress ||
+    canvasCourseLoadStatus === 'loading' ||
+    canvasCourseworkLoadStatus === 'loading';
   const [isSyncingCanvasCoursework, setIsSyncingCanvasCoursework] = useState(false);
   const [canvasTermName, setCanvasTermName] = useState<string | undefined>();
   const [selectedCourseSemester, setSelectedCourseSemester] = useState<string | undefined>();
@@ -3692,6 +3696,7 @@ export function DashboardCards({
   const academyRefreshLongPressTriggeredRef = useRef(false);
   const canvasCourseworkRequestSequenceRef = useRef(0);
   const protectedCanvasSubmissionStatusesRef = useRef(new Map<string, ProtectedCanvasSubmissionStatus>());
+  const refreshAcademyDashboardDataEvent = useEffectEvent(refreshAcademyDashboardData);
   const dateLocale = getDateLocale(language);
   const selectedManualLecture = selectedManualLectureId
     ? manualLectures.find((lecture) => lecture.id === selectedManualLectureId)
@@ -4422,41 +4427,21 @@ export function DashboardCards({
       return undefined;
     }
 
-    let isCancelled = false;
     let isSyncing = false;
     let lastFocusSyncStartedAt = 0;
-    const syncAcademyPreferences = () => {
-      if (isSyncing || document.visibilityState === 'hidden') {
+    const refreshAcademyData = () => {
+      if (isSyncing || isAcademyDashboardRefreshing || document.visibilityState === 'hidden') {
         return;
       }
 
       isSyncing = true;
-      const preferenceReadSequence = academyPreferencesSaveSequence;
-      workspaceApi
-        .getAcademyPreferences()
-        .then((preferences) => {
-          if (isCancelled || preferenceReadSequence !== academyPreferencesSaveSequence) {
-            return;
-          }
-
-          if (preferences.exists) {
-            cacheAcademyPreferencesResponse(preferences);
-          }
-          setHasLoadedAcademyPreferences(true);
-          setAcademyPreferencesLoadStatus('loaded');
-        })
-        .catch(() => {
-          if (!isCancelled && !hasLoadedAcademyPreferences) {
-            setAcademyPreferencesLoadStatus('failed');
-          }
-        })
+      void refreshAcademyDashboardDataEvent({ forceCanvasRefresh: true })
+        .catch(() => undefined)
         .finally(() => {
-          if (!isCancelled) {
-            isSyncing = false;
-          }
+          isSyncing = false;
         });
     };
-    const syncAcademyPreferencesOnFocus = () => {
+    const refreshAcademyDataOnFocus = () => {
       const now = Date.now();
 
       if (now - lastFocusSyncStartedAt < academyRefocusRefreshThrottleMs) {
@@ -4464,25 +4449,29 @@ export function DashboardCards({
       }
 
       lastFocusSyncStartedAt = now;
-      syncAcademyPreferences();
+      refreshAcademyData();
     };
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        syncAcademyPreferencesOnFocus();
+        refreshAcademyDataOnFocus();
       }
     };
 
-    window.addEventListener('focus', syncAcademyPreferencesOnFocus);
+    window.addEventListener('focus', refreshAcademyDataOnFocus);
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    const syncInterval = window.setInterval(syncAcademyPreferences, academyAutoRefreshIntervalMs);
+    const refreshInterval = window.setInterval(refreshAcademyData, academyAutoRefreshIntervalMs);
 
     return () => {
-      isCancelled = true;
-      window.removeEventListener('focus', syncAcademyPreferencesOnFocus);
+      window.removeEventListener('focus', refreshAcademyDataOnFocus);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.clearInterval(syncInterval);
+      window.clearInterval(refreshInterval);
     };
-  }, [academyAutoRefreshIntervalMs, academyRefocusRefreshThrottleMs, activeMode.id, hasLoadedAcademyPreferences]);
+  }, [
+    academyAutoRefreshIntervalMs,
+    academyRefocusRefreshThrottleMs,
+    activeMode.id,
+    isAcademyDashboardRefreshing,
+  ]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -6178,11 +6167,6 @@ export function DashboardCards({
     }, 2800);
   };
 
-  const isAcademyDashboardRefreshing =
-    isAcademyDashboardRefreshInProgress ||
-    canvasCourseLoadStatus === 'loading' ||
-    canvasCourseworkLoadStatus === 'loading';
-
   const handleRefreshAcademyDashboard = async () => {
     if (activeMode.id !== 'academy') {
       return;
@@ -6196,7 +6180,7 @@ export function DashboardCards({
     await refreshAcademyDashboardData({ forceCanvasRefresh: true });
   };
 
-  const refreshAcademyDashboardData = async (options: { forceCanvasRefresh?: boolean } = {}) => {
+  async function refreshAcademyDashboardData(options: { forceCanvasRefresh?: boolean } = {}) {
     if (activeMode.id !== 'academy') {
       return null;
     }
@@ -6302,7 +6286,7 @@ export function DashboardCards({
     }
 
     return syncedCanvasCourseworkItems;
-  };
+  }
 
   const startAcademyRefreshLongPress = () => {
     if (activeMode.id !== 'academy' || isAcademyDashboardRefreshing) {

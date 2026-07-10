@@ -1493,6 +1493,7 @@ export const workspaceApi = {
 
       try {
         response = await fetch(`${apiBaseUrl}/canvas/calendar-items${query ? `?${query}` : ''}`, {
+          cache: options.forceRefresh ? 'no-store' : 'default',
           credentials: 'include',
           signal: timeout.signal,
         });

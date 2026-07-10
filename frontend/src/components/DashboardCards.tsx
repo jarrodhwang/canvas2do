@@ -4148,6 +4148,13 @@ export function DashboardCards({
     }
 
     if (activeMode.id === 'academy' && translatedCard.id === 'upcoming-coursework') {
+      if (canvasCourseworkLoadStatus === 'idle' || canvasCourseworkLoadStatus === 'loading') {
+        return {
+          ...translatedCard,
+          rows: createLoadingRows(dictionary.canvasCourseworkLoading),
+        };
+      }
+
       const currentCanvasCourseworkItemIds = new Set(canvasCourseworkItems.filter(isCourseworkCanvasItem).map((item) => item.id));
       const currentCanvasAssessmentItemIds = new Set(canvasCourseworkItems.filter(isAssessmentCanvasItem).map((item) => item.id));
       const manualRows = createManualCourseworkRows(
@@ -4220,17 +4227,6 @@ export function DashboardCards({
       ]
         .filter((row) => courseworkShowStudyItems || row.courseworkType?.toLowerCase() !== 'study')
         .sort(compareCourseworkCompletionThenDue);
-      const isLoadingCoursework =
-        canvasCourseworkLoadStatus === 'idle' ||
-        canvasCourseworkLoadStatus === 'loading';
-
-      if (rows.length === 0 && isLoadingCoursework) {
-        return {
-          ...translatedCard,
-          rows: createLoadingRows(dictionary.canvasCourseworkLoading),
-        };
-      }
-
       if (rows.length === 0 && canvasCourseworkLoadStatus === 'failed') {
         return {
           ...translatedCard,
@@ -4241,10 +4237,7 @@ export function DashboardCards({
       return {
         ...translatedCard,
         rows: rows.length > 0
-          ? [
-              ...rows,
-              ...(isLoadingCoursework ? createLoadingRows(dictionary.canvasCourseworkLoading) : []),
-            ]
+          ? rows
           : createMessageRows(dictionary.canvasCourseworkEmpty),
       };
     }

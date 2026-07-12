@@ -45,6 +45,118 @@ largely mock/configuration data. A future persistence migration should keep mode
 configuration separate from user-owned records so UI changes do not silently rewrite
 stored data.
 
+## Academy architecture
+
+Academy is a feature configuration inside the shared workspace shell, not a separate
+frontend or backend application. `defaultModes.ts` declares the Academy navigation
+(`Dashboard`, `Courses`, `Grades`, `Inbox`, `People`, `Outlook`, and `Settings`),
+calendar item types, dashboard cards, and the Canvas/Outlook integration choices.
+`App.tsx` applies access grants and maps the Academy navigation ids to lazy-loaded
+feature views. The large dashboard orchestration remains in `DashboardCards.tsx`;
+the course, grade, inbox, and people experiences are split into their own components.
+
+The main Academy data path is:
+
+```text
+Academy login/session
+        |
+        v
+Shared React shell -> Academy view -> workspaceApi.ts
+        |                         |
+        |                         +--> /api/academy/preferences
+        |                         +--> /api/canvas/*
+        v
+Local UI state and cross-view preference events
+        |
+        v
+ASP.NET API -> PostgreSQL user_settings (JSON preferences)
+            -> protected Canvas token + Canvas LMS API
+```
+
+### Identity and access
+
+Academy users can create and use an Academy ID/password account through
+`AuthEndpoints`. The account is represented by an `AdminUser` plus a unique
+`AcademyCredentialAccount`; passwords are stored as hashes, and the API issues the
+same protected cookie-session shape used by the rest of the workspace. The session
+contains an Academy provider marker and login id, allowing access grants to be
+filtered to Academy capabilities. Profile changes are deliberately limited to
+Academy credential accounts, while administrators can manage account status and
+Canvas token status.
+
+### Preferences and local state
+
+`WorkspaceEndpoints` stores the `academy.preferences` setting in the per-user
+`user_settings` table as JSONB. The document contains manual lectures, manual
+coursework and assessments, Canvas display/preferences, and calendar settings such
+as the selected semester and grade thresholds. `App.tsx`, `DashboardCards.tsx`,
+`CourseOverviewView.tsx`, and `AcademyGradesView.tsx` optimistically update local
+state, persist through `PUT /api/academy/preferences`, and broadcast a browser
+`academyPreferencesUpdated` event so mounted views converge without a full reload.
+The API normalizes older preference shapes when they are read, which preserves
+backward compatibility during the ongoing preference schema evolution.
+
+This is intentionally lightweight and user-scoped, but it also means the JSON
+document is the current source of truth for many Academy records. The relational
+`Course` and `Assignment` entities exist in the shared domain model, yet the live
+Academy course/grade views primarily consume Canvas DTOs and preference JSON rather
+than those tables. That keeps the prototype simple, but makes reporting, querying,
+conflict resolution, and offline use harder than they would be with normalized
+Academy records.
+
+### Canvas boundary
+
+`CanvasIntegrationEndpoints` is the server-side anti-corruption layer for Canvas.
+It resolves the current user's connection, decrypts the stored token with ASP.NET
+Data Protection, calls Canvas, and maps provider responses into stable DTOs. The
+browser never receives the raw token. The endpoint surface covers course lists,
+course sections (home, modules, assignments/grades, pages, people), individual
+assignment/quiz/discussion/file/module-item details and submissions, calendar
+items, and inbox items. Calendar aggregation performs several provider reads,
+deduplicates events, and uses memory caching; other content is loaded when the user
+opens a course or resource.
+
+Academy views therefore have two useful loading levels: summaries load courses,
+preferences, and calendar/inbox data; detailed course and grade panels fetch the
+smaller Canvas section or resource only when expanded. This limits initial payloads,
+but provider availability and rate limits remain visible to the user because the
+API is not yet a durable synchronization layer.
+
+### Academy quality review
+
+- **Functional suitability:** the split between shared shell behavior, user-owned
+  preferences, and Canvas-backed learning data fits the current Academy workflow.
+  Course, grade, content, people, calendar, inbox, and submission flows are
+  represented. The main product boundary to clarify is whether manual data and
+  Canvas data should eventually become one durable academic record model.
+- **Reliability:** request sequence refs, cancellation checks, `Promise.allSettled`,
+  loading states, and best-effort Canvas sections reduce stale or partial UI failures.
+  Add bounded retries/circuit breaking for Canvas and a durable sync or snapshot
+  strategy before users need reliable history during Canvas outages.
+- **Performance efficiency:** lazy-loaded views, section-level Canvas requests,
+  bounded course page sizes, calendar caching, and parallel summary requests are
+  good choices. The next constraint is repeated provider fan-out; enforce consistent
+  pagination, response-size limits, cache expiry, and per-user rate limits.
+- **Maintainability:** the API client and endpoint DTOs give the frontend a clear
+  boundary, and feature views isolate most Academy screens. `App.tsx` and
+  `DashboardCards.tsx` still contain substantial Academy orchestration; extracting
+  Academy hooks/services would make refresh, preference saves, and event contracts
+  easier to test without changing the public API.
+- **Compatibility and portability:** Canvas instance URL, token lifetime, reverse
+  proxy configuration, cookie settings, and JSON preference versions vary by
+  deployment. Validate these settings at startup and keep Canvas-specific mapping
+  out of shared UI components.
+- **Security and freedom from risk:** HTTP-only sessions, server-side Canvas calls,
+  encrypted tokens, authorization groups, and inactive-account checks are sound
+  foundations. Review CSRF protection for cookie-authenticated writes, admin
+  authorization on every administrative token route, token redaction in logs, and
+  secret management before production exposure.
+- **Usability and quality in use:** users get a unified Academy workspace and
+  actionable loading/error states, but slow-network, expired-token, partial-Canvas,
+  small-screen, keyboard, and screen-reader paths need regression coverage. Saving
+  JSON preferences should also surface a clear retry state when optimistic updates
+  cannot be persisted.
+
 ## Backend
 
 The backend is an ASP.NET Core minimal API. `Program.cs` configures dependency

@@ -45,6 +45,113 @@ largely mock/configuration data. A future persistence migration should keep mode
 configuration separate from user-owned records so UI changes do not silently rewrite
 stored data.
 
+## Workspace / Project architecture
+
+The Workspace mode is the generic work-management surface in the shared shell. It is
+not a separate application: the `project` entry in `defaultModes.ts` supplies the
+Workspace label, navigation, feature flags, calendar item types, board columns,
+timeline behavior, add-item fields, filters, and integration slots. The same React
+components render the dashboard, calendar, agenda, board, timeline, detail panel, and
+add-item dialog; the mode configuration changes their vocabulary and available
+capabilities.
+
+The current Workspace path is:
+
+```text
+Authenticated browser
+        |
+        v
+WorkspaceModeProvider -> ModeRegistry -> project WorkspaceModeConfig
+        |
+        +--> mockWorkspaceData.ts -> calendar/board/timeline/dashboard UI
+        |
+        +--> workspaceApi.ts -> /api/workspace/preferences (settings only)
+                                  /api/workspace-modes (available modes)
+                                  /api/workspace-modes/{modeKey}/calendar-items
+                                  /api/google/* (integration operations)
+        |
+        v
+ASP.NET WorkspaceEndpoints -> EF Core -> PostgreSQL
+                              shared records: WorkspaceMode, CalendarItem,
+                              ChecklistItem, ExternalLink, Note, Tag, Person
+                              Workspace records: Project, Issue, Customer, Colleague
+```
+
+The mode registry is a presentation and capability registry, not the system of
+record. Environment variables can enable, hide, or rename modes at build time, and
+the provider stores only the user's active mode id in browser local storage. This is
+useful for lightweight deployments and keeps the shell reusable, but it means a mode
+can appear in the UI without its records being loaded from the API. In particular,
+the Workspace dashboard and most calendar/board/timeline data currently come from
+`mockWorkspaceData.ts`; the generic calendar endpoints exist but are not yet the
+normal read/write path for those screens.
+
+### Domain and persistence boundary
+
+The backend has two complementary layers:
+
+- Shared work primitives (`CalendarItem`, `ChecklistItem`, `ExternalLink`, `Note`,
+  `Tag`, and `Person`) support common views across modes. `CalendarItem` can point to
+  a specialized record through `RelatedEntityType` and `RelatedEntityId`.
+- Workspace-specific entities (`Project`, `Issue`, `Customer`, and `Colleague`)
+  provide structure for development work, bugs, feature ideas, customer requests,
+  and people. Google, TopTrack, and PDM links are integration references rather than
+  provider data embedded in the browser.
+
+`WorkspaceEndpoints` currently exposes mode discovery, generic calendar-item reads
+and creates, image-asset operations, and per-user Workspace preferences. Preferences
+are JSON documents in `user_settings`, which is appropriate for UI settings such as
+theme, language, display density, and refresh behavior. Durable work records should
+remain relational so they can be filtered, indexed, assigned, audited, and queried
+without parsing a growing settings blob.
+
+The intended Workspace data path should therefore become:
+
+```text
+Workspace view -> typed workspaceApi client -> authorized API endpoint
+              -> user/mode-scoped query -> relational record + DTO
+              -> calendar/board/timeline projection
+```
+
+Until that migration is complete, the product should be described as a configurable
+Workspace prototype with persistence seams, rather than a fully persistent project
+management module.
+
+### Workspace quality review
+
+- **Functional suitability:** the configured Workspace vocabulary covers the intended
+  work lifecycle—ideas, todo, doing, solved, bugs, features, customers, meetings,
+  links, and integrations. The main missing capability is durable CRUD for the
+  records represented by the UI; adding a calendar item endpoint alone will not
+  persist board-specific fields such as assignee, customer, or category.
+- **Reliability:** local mock data makes the shell usable when the API or integrations
+  are unavailable, and preferences have a server-backed fallback. Once Workspace
+  records become persistent, add optimistic-update rollback, conflict handling, and
+  retryable error states so a failed save cannot leave the board and server divergent.
+- **Performance efficiency:** local rendering is fast and avoids initial API fan-out.
+  For real data, query by mode and date range, paginate board/list views, select only
+  required DTO fields, and index owner/mode/status/date combinations before loading
+  all records into the browser.
+- **Maintainability:** the mode contract is a good extension seam, but `App.tsx`
+  remains a large orchestration point and `mockWorkspaceData.ts` currently mixes
+  product examples with runtime data. Extract Workspace hooks/services and typed
+  DTO mappers before replacing mock data, preserving the component contracts.
+- **Compatibility and portability:** mode ids, API routes, local-storage keys, JSON
+  preference versions, and date/time-zone behavior are cross-layer contracts. Version
+  preference documents and use stable ids rather than display names so renamed modes
+  and future clients remain compatible.
+- **Security and freedom from risk:** cookie authentication protects the endpoint
+  group, but authorization must also scope every record query and mutation to the
+  current user or permitted workspace membership. The generic calendar and image
+  asset routes should be reviewed for owner/membership checks before they hold real
+  customer or project data; add CSRF protection for cookie-authenticated writes and
+  audit important mutations.
+- **Usability and quality in use:** the shared views give users a consistent way to
+  switch between calendar, board, and timeline representations. When persistence is
+  enabled, clearly distinguish mock/preview data from saved data, show save and retry
+  status, preserve filters across navigation, and test keyboard, narrow-screen, slow
+  network, and expired-session flows.
+
 ## Academy architecture
 
 Academy is a feature configuration inside the shared workspace shell, not a separate

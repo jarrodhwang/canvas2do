@@ -258,6 +258,90 @@ API is not yet a durable synchronization layer.
   foundations. Review CSRF protection for cookie-authenticated writes, admin
   authorization on every administrative token route, token redaction in logs, and
   secret management before production exposure.
+
+## Admin Console architecture
+
+Admin Console is another mode in the shared React shell. Its mode definition in
+`frontend/src/modes/defaultModes.ts` supplies the navigation and preview dashboard,
+while `App.tsx` selects the Users and Groups feature views. Those two views are
+lazy-loaded so the normal Academy and Workspace paths do not pay their bundle cost
+until an administrator opens them. `accessControl.ts` filters modes and sidebar
+items from the access grants returned by the authenticated session.
+
+The live admin data path is:
+
+```text
+Authenticated browser
+        |
+        v
+App.tsx -> AdminUsersView / AdminGroupsView -> workspaceApi.ts
+        |                         |
+        |                         +--> /api/admin/users
+        |                         +--> /api/admin/groups
+        |                         +--> /api/canvas/admin/users/{id}/token
+        v
+ASP.NET access middleware -> authenticated endpoint group -> EF Core/PostgreSQL
+                             AdminUser, AdminGroup, AdminGroupMember,
+                             AcademyCredentialAccount, Canvas token records
+```
+
+The API is the authority for user and group changes. The `/api/admin` endpoint
+group requires authentication, and the request middleware applies access grants
+before endpoint execution: `admin-users` gates user routes, `admin-groups` gates
+group routes, and other admin paths require an `admin-*` grant. Group records store
+three separate grant dimensions—`access`, `permissions`, and `settings`—which are
+then used to shape the session grants and the frontend navigation. Protected-group
+handling keeps the primary administrator recoverable, while account deactivation
+disables API access, revokes sessions, and removes stored Google tokens.
+
+The Users view loads users and groups together to support group-name search, then
+loads a selected user's detail, activity log, and Canvas token status on demand.
+It can update Academy credential fields, status, API access, session revocation, and
+Canvas token metadata. Google-managed users retain their Google identity and
+password ownership. The Groups view edits normalized grant lists and member ids;
+the API validates duplicate names, protected groups, and Academy grant
+compatibility before saving.
+
+This boundary is important: the console's navigation contains planned areas beyond
+Users and Groups, but those pages currently fall back to the shared mock/calendar
+surface. They should not be described as operational administration until they have
+typed API contracts, server-side authorization, persistence, and audit coverage.
+
+### Admin Console quality review
+
+- **Functional suitability:** live user/group administration covers the current
+  access-management workflow, including account lifecycle, group membership, and
+  Canvas token status. The remaining menu entries are product placeholders, and
+  the access model should distinguish menu visibility from action-level permissions
+  before more destructive operations are added.
+- **Reliability:** mounted-state guards, parallel initial loading, explicit loading
+  states, and API validation reduce stale updates and malformed changes. Add
+  transactional audit writes and idempotent mutation semantics so a membership or
+  token operation cannot succeed without a traceable record.
+- **Performance efficiency:** users/groups load in parallel and user details and
+  token status are deferred. For larger directories, move search/filtering and
+  pagination to the API, return only the fields needed for the list, and avoid
+  rebuilding every user's group-name index on unrelated edits.
+- **Maintainability:** the typed `workspaceApi` boundary and separate Users/Groups
+  views are good seams. The permission catalog is currently embedded in
+  `AdminGroupsView`; move it to a shared, versioned capability catalog so the
+  frontend, middleware, and seed/default-group logic cannot drift.
+- **Compatibility and portability:** grant ids, mode ids, account-status values,
+  and JSON grant columns are cross-layer contracts. Treat them as stable versioned
+  identifiers, and keep local Academy accounts distinct from Google directory
+  identities when deployments change identity providers.
+- **Security and freedom from risk:** server-side access checks, protected-group
+  rules, password hashing, token encryption, and token cleanup on deactivation are
+  strong foundations. Cookie-authenticated PATCH/POST/PUT/DELETE routes still need
+  explicit CSRF protection, action-level authorization rather than only route-level
+  grants, rate limiting for sensitive operations, and immutable audit records that
+  never log passwords or token values. Preview/impersonation must also be clearly
+  labeled and fully audited.
+- **Usability and quality in use:** search, status badges, refresh actions, and
+  focused detail panels support efficient administration. Add confirmation and
+  impact summaries for deactivation, group permission changes, and token resets;
+  show partial-failure states for the combined users/groups load; and test keyboard,
+  narrow-screen, expired-session, and slow-directory scenarios.
 - **Usability and quality in use:** users get a unified Academy workspace and
   actionable loading/error states, but slow-network, expired-token, partial-Canvas,
   small-screen, keyboard, and screen-reader paths need regression coverage. Saving

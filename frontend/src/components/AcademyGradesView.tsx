@@ -169,6 +169,23 @@ const noTermSemester = 'Default Term';
 const academyPreferencesUpdatedEvent = 'incos-academy-preferences-updated';
 const canvasAccessGracePeriodMs = 7 * 24 * 60 * 60 * 1000;
 
+function dispatchAcademyPreferencesSnapshot(preferences: AcademyPreferences) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  window.dispatchEvent(new CustomEvent(academyPreferencesUpdatedEvent, {
+    detail: {
+      canvasAssessmentPreferences: getCanvasAssessmentPreferencesFromAcademyPreferences(preferences),
+      canvasCourseworkPreferences: getCanvasCourseworkPreferencesFromAcademyPreferences(preferences),
+      canvasLecturePreferences: getCanvasLecturePreferencesFromAcademyPreferences(preferences),
+      manualAssessments: getManualAssessmentsFromAcademyPreferences(preferences),
+      manualCoursework: getManualCourseworkFromAcademyPreferences(preferences),
+      manualLectures: getManualLecturesFromAcademyPreferences(preferences),
+    },
+  }));
+}
+
 function getDateBasedAcademySemester(date = new Date()) {
   const month = date.getMonth();
   const term = month <= 3 ? 'Spring' : month <= 7 ? 'Summer' : 'Fall';
@@ -909,6 +926,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
       }).catch(() => undefined);
     }
 
+    dispatchAcademyPreferencesSnapshot(effectivePreferences);
     setAcademyPreferences(effectivePreferences);
     setGradeProgressThresholds(getGradeProgressThresholdsFromAcademyPreferences(effectivePreferences));
     if (selectedSemesterFromProp) {

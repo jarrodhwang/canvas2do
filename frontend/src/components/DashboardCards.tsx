@@ -171,9 +171,6 @@ function isManuallyManagedCanvasCourse(courseId: string | undefined, preferences
   return Boolean(courseId && preferences[courseId]?.convertedToManualAt);
 }
 
-function isRetainedCanvasCourseworkItem(item: Pick<ManualCourseworkItem | ManualAssessmentItem, 'id' | 'retainedFromCanvasCourseId'>) {
-  return Boolean(item.retainedFromCanvasCourseId) || /^manual-canvas-(?:coursework|assessment)-/i.test(item.id);
-}
 interface ManualCourseworkItem {
   id: string;
   title: string;
@@ -1146,8 +1143,7 @@ function createManualAssessmentRows(
     .filter((item) => (
       !item.hidden &&
       semesterMatches(item.semester, selectedSemester, fallbackSemester) &&
-      (isRetainedCanvasCourseworkItem(item) ||
-        shouldShowCourseworkItem(item.dueAt, Boolean(item.completed), item.completedAt, hideSettings))
+      shouldShowCourseworkItem(item.dueAt, Boolean(item.completed), item.completedAt, hideSettings)
     ))
     .sort((firstItem, secondItem) => (
       new Date(firstItem.dueAt || 0).getTime() - new Date(secondItem.dueAt || 0).getTime()
@@ -1281,8 +1277,7 @@ function createManualCourseworkRows(
     .filter((item) => (
       !item.hidden &&
       semesterMatches(item.semester, selectedSemester, fallbackSemester) &&
-      (isRetainedCanvasCourseworkItem(item) ||
-        shouldShowCourseworkItem(item.dueAt, Boolean(item.completed), item.completedAt, hideSettings))
+      shouldShowCourseworkItem(item.dueAt, Boolean(item.completed), item.completedAt, hideSettings)
     ))
     .sort((firstItem, secondItem) => (
       new Date(firstItem.dueAt || 0).getTime() - new Date(secondItem.dueAt || 0).getTime()

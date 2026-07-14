@@ -460,22 +460,22 @@ public static class WorkspaceEndpoints
     private static string SerializeAcademyPreferences(SaveAcademyPreferencesRequest request, string? existingSettingJson)
     {
         var manualLectures = request.ManualLectures.ValueKind == JsonValueKind.Array
-            ? MergeStoredArrayById(request.ManualLectures, existingSettingJson, "manualLectures")
+            ? request.ManualLectures
             : GetStoredArrayElement(existingSettingJson, "manualLectures");
         var canvasLecturePreferences = request.CanvasLecturePreferences.ValueKind == JsonValueKind.Object
-            ? MergeStoredObject(request.CanvasLecturePreferences, existingSettingJson, "canvasLecturePreferences")
+            ? request.CanvasLecturePreferences
             : GetStoredObjectElement(existingSettingJson, "canvasLecturePreferences");
         var manualCoursework = request.ManualCoursework.ValueKind == JsonValueKind.Array
-            ? MergeStoredArrayById(request.ManualCoursework, existingSettingJson, "manualCoursework")
+            ? request.ManualCoursework
             : GetStoredArrayElement(existingSettingJson, "manualCoursework");
         var canvasCourseworkPreferences = request.CanvasCourseworkPreferences.ValueKind == JsonValueKind.Object
-            ? MergeStoredObject(request.CanvasCourseworkPreferences, existingSettingJson, "canvasCourseworkPreferences")
+            ? request.CanvasCourseworkPreferences
             : GetStoredObjectElement(existingSettingJson, "canvasCourseworkPreferences");
         var manualAssessments = request.ManualAssessments.ValueKind == JsonValueKind.Array
-            ? MergeStoredArrayById(request.ManualAssessments, existingSettingJson, "manualAssessments")
+            ? request.ManualAssessments
             : GetStoredArrayElement(existingSettingJson, "manualAssessments");
         var canvasAssessmentPreferences = request.CanvasAssessmentPreferences.ValueKind == JsonValueKind.Object
-            ? MergeStoredObject(request.CanvasAssessmentPreferences, existingSettingJson, "canvasAssessmentPreferences")
+            ? request.CanvasAssessmentPreferences
             : GetStoredObjectElement(existingSettingJson, "canvasAssessmentPreferences");
         var calendarSettings = request.CalendarSettings.ValueKind == JsonValueKind.Object
             ? MergeStoredObject(request.CalendarSettings, existingSettingJson, "calendarSettings")
@@ -630,43 +630,6 @@ public static class WorkspaceEndpoints
         return jsonValue.TryGetValue<string>(out var stringValue) ? stringValue : null;
     }
 
-    private static JsonElement MergeStoredArrayById(JsonElement requestedArray, string? settingJson, string propertyName)
-    {
-        var mergedItems = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
-        var unkeyedItems = new List<JsonElement>();
-
-        foreach (var item in EnumerateStoredArray(settingJson, propertyName))
-        {
-            AddArrayItem(item, mergedItems, unkeyedItems);
-        }
-
-        foreach (var item in requestedArray.EnumerateArray())
-        {
-            AddArrayItem(item, mergedItems, unkeyedItems);
-        }
-
-        return JsonSerializer.SerializeToElement(
-            mergedItems.Values.Concat(unkeyedItems),
-            JsonOptions);
-    }
-
-    private static void AddArrayItem(
-        JsonElement item,
-        Dictionary<string, JsonElement> keyedItems,
-        List<JsonElement> unkeyedItems)
-    {
-        if (item.ValueKind == JsonValueKind.Object &&
-            item.TryGetProperty("id", out var idProperty) &&
-            idProperty.ValueKind == JsonValueKind.String &&
-            !string.IsNullOrWhiteSpace(idProperty.GetString()))
-        {
-            keyedItems[idProperty.GetString()!] = item.Clone();
-            return;
-        }
-
-        unkeyedItems.Add(item.Clone());
-    }
-
     private static JsonElement MergeStoredObject(JsonElement requestedObject, string? settingJson, string propertyName)
     {
         var mergedProperties = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
@@ -737,15 +700,6 @@ public static class WorkspaceEndpoints
         {
             return EmptyArrayElement();
         }
-    }
-
-    private static JsonElement[] EnumerateStoredArray(string? settingJson, string propertyName)
-    {
-        var storedArray = GetStoredArrayElement(settingJson, propertyName);
-
-        return storedArray.ValueKind == JsonValueKind.Array
-            ? storedArray.EnumerateArray().Select(item => item.Clone()).ToArray()
-            : [];
     }
 
     private static JsonProperty[] EnumerateStoredObject(string? settingJson, string propertyName)

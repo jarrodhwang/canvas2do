@@ -79,6 +79,7 @@ interface ManualCourseworkItem {
   completedAt?: string;
   chipColor?: ColorToken;
   hidden?: boolean;
+  retainedFromCanvasCourseId?: string;
   semester?: string;
   starred?: boolean;
 }
@@ -94,6 +95,7 @@ interface ManualAssessmentItem {
   completed?: boolean;
   completedAt?: string;
   hidden?: boolean;
+  retainedFromCanvasCourseId?: string;
   semester?: string;
   starred?: boolean;
 }
@@ -501,6 +503,7 @@ function createManualCourseworkFromCanvasPreference(
     completedAt: preference.submittedAt ?? preference.completedAt,
     chipColor: course.chipColor,
     hidden: preference.hidden,
+    retainedFromCanvasCourseId: courseId,
     semester: normalizeSemesterName(preference.semester ?? course.semester ?? course.termName, fallbackSemester),
     starred: preference.starred,
   };
@@ -524,6 +527,7 @@ function createManualAssessmentFromCanvasPreference(
     completed: Boolean(preference.isSubmitted) || Boolean(preference.completed),
     completedAt: preference.submittedAt ?? preference.completedAt,
     hidden: preference.hidden,
+    retainedFromCanvasCourseId: courseId,
     semester: normalizeSemesterName(preference.semester ?? course.semester ?? course.termName, fallbackSemester),
     starred: preference.starred,
   };
@@ -620,8 +624,9 @@ function migrateLostCanvasCourses(
       }
 
       const manualCourseworkId = `manual-canvas-coursework-${courseId}-${itemId}`;
+      const manualCourseworkIndex = nextManualCoursework.findIndex((item) => item.id === manualCourseworkId);
 
-      if (!nextManualCoursework.some((item) => item.id === manualCourseworkId)) {
+      if (manualCourseworkIndex === -1) {
         nextManualCoursework.push(createManualCourseworkFromCanvasPreference(
           courseId,
           itemId,
@@ -629,6 +634,12 @@ function migrateLostCanvasCourses(
           preference,
           fallbackSemester,
         ));
+        courseChanged = true;
+      } else if (!nextManualCoursework[manualCourseworkIndex].retainedFromCanvasCourseId) {
+        nextManualCoursework[manualCourseworkIndex] = {
+          ...nextManualCoursework[manualCourseworkIndex],
+          retainedFromCanvasCourseId: courseId,
+        };
         courseChanged = true;
       }
 
@@ -644,8 +655,9 @@ function migrateLostCanvasCourses(
       }
 
       const manualAssessmentId = `manual-canvas-assessment-${courseId}-${itemId}`;
+      const manualAssessmentIndex = nextManualAssessments.findIndex((item) => item.id === manualAssessmentId);
 
-      if (!nextManualAssessments.some((item) => item.id === manualAssessmentId)) {
+      if (manualAssessmentIndex === -1) {
         nextManualAssessments.push(createManualAssessmentFromCanvasPreference(
           courseId,
           itemId,
@@ -653,6 +665,12 @@ function migrateLostCanvasCourses(
           preference,
           fallbackSemester,
         ));
+        courseChanged = true;
+      } else if (!nextManualAssessments[manualAssessmentIndex].retainedFromCanvasCourseId) {
+        nextManualAssessments[manualAssessmentIndex] = {
+          ...nextManualAssessments[manualAssessmentIndex],
+          retainedFromCanvasCourseId: courseId,
+        };
         courseChanged = true;
       }
 

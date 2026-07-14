@@ -170,6 +170,10 @@ type CanvasLecturePreferences = Record<string, {
 function isManuallyManagedCanvasCourse(courseId: string | undefined, preferences: CanvasLecturePreferences) {
   return Boolean(courseId && preferences[courseId]?.convertedToManualAt);
 }
+
+function isRetainedCanvasCourseworkItem(item: Pick<ManualCourseworkItem | ManualAssessmentItem, 'id' | 'retainedFromCanvasCourseId'>) {
+  return Boolean(item.retainedFromCanvasCourseId) || /^manual-canvas-(?:coursework|assessment)-/i.test(item.id);
+}
 interface ManualCourseworkItem {
   id: string;
   title: string;
@@ -183,6 +187,7 @@ interface ManualCourseworkItem {
   completedAt?: string;
   chipColor?: ColorToken;
   hidden?: boolean;
+  retainedFromCanvasCourseId?: string;
   semester?: string;
   starred?: boolean;
 }
@@ -197,6 +202,7 @@ interface ManualAssessmentItem {
   completed?: boolean;
   completedAt?: string;
   hidden?: boolean;
+  retainedFromCanvasCourseId?: string;
   semester?: string;
   starred?: boolean;
 }
@@ -1140,7 +1146,8 @@ function createManualAssessmentRows(
     .filter((item) => (
       !item.hidden &&
       semesterMatches(item.semester, selectedSemester, fallbackSemester) &&
-      shouldShowCourseworkItem(item.dueAt, Boolean(item.completed), item.completedAt, hideSettings)
+      (isRetainedCanvasCourseworkItem(item) ||
+        shouldShowCourseworkItem(item.dueAt, Boolean(item.completed), item.completedAt, hideSettings))
     ))
     .sort((firstItem, secondItem) => (
       new Date(firstItem.dueAt || 0).getTime() - new Date(secondItem.dueAt || 0).getTime()
@@ -1274,7 +1281,8 @@ function createManualCourseworkRows(
     .filter((item) => (
       !item.hidden &&
       semesterMatches(item.semester, selectedSemester, fallbackSemester) &&
-      shouldShowCourseworkItem(item.dueAt, Boolean(item.completed), item.completedAt, hideSettings)
+      (isRetainedCanvasCourseworkItem(item) ||
+        shouldShowCourseworkItem(item.dueAt, Boolean(item.completed), item.completedAt, hideSettings))
     ))
     .sort((firstItem, secondItem) => (
       new Date(firstItem.dueAt || 0).getTime() - new Date(secondItem.dueAt || 0).getTime()

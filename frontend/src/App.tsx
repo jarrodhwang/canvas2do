@@ -421,6 +421,7 @@ interface StoredManualCoursework {
   completed?: boolean;
   completedAt?: string;
   hidden?: boolean;
+  retainedFromCanvasCourseId?: string;
   semester?: string;
   starred?: boolean;
 }
@@ -437,6 +438,7 @@ interface StoredManualAssessment {
   completed?: boolean;
   completedAt?: string;
   hidden?: boolean;
+  retainedFromCanvasCourseId?: string;
   semester?: string;
   starred?: boolean;
 }

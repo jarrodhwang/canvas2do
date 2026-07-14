@@ -66,6 +66,79 @@ interface CanvasLecturePreference {
 
 type CanvasLecturePreferences = Record<string, CanvasLecturePreference>;
 
+interface ManualCourseworkItem {
+  id: string;
+  title: string;
+  courseCode: string;
+  dueAt: string;
+  startAt?: string;
+  endAt?: string;
+  courseworkType: string;
+  submissionType: string;
+  completed?: boolean;
+  completedAt?: string;
+  chipColor?: ColorToken;
+  hidden?: boolean;
+  semester?: string;
+  starred?: boolean;
+}
+
+interface ManualAssessmentItem {
+  id: string;
+  title: string;
+  courseCode: string;
+  dueAt: string;
+  startAt?: string;
+  endAt?: string;
+  assessmentType: string;
+  completed?: boolean;
+  completedAt?: string;
+  hidden?: boolean;
+  semester?: string;
+  starred?: boolean;
+}
+
+interface CanvasCourseworkPreference {
+  assignmentId?: string;
+  chipColor?: ColorToken;
+  completed?: boolean;
+  completedAt?: string;
+  courseCode?: string;
+  courseId?: string;
+  courseworkType?: string;
+  dueAt?: string;
+  startAt?: string;
+  endAt?: string;
+  hidden?: boolean;
+  isSubmitted?: boolean;
+  semester?: string;
+  starred?: boolean;
+  submittedAt?: string;
+  submissionType?: string;
+  title?: string;
+}
+
+interface CanvasAssessmentPreference {
+  assignmentId?: string;
+  assessmentType?: string;
+  completed?: boolean;
+  completedAt?: string;
+  courseCode?: string;
+  courseId?: string;
+  dueAt?: string;
+  startAt?: string;
+  endAt?: string;
+  hidden?: boolean;
+  isSubmitted?: boolean;
+  semester?: string;
+  starred?: boolean;
+  submittedAt?: string;
+  title?: string;
+}
+
+type CanvasCourseworkPreferences = Record<string, CanvasCourseworkPreference>;
+type CanvasAssessmentPreferences = Record<string, CanvasAssessmentPreference>;
+
 interface GradeCourseRow {
   id: string;
   canvasCourseId?: string;
@@ -80,6 +153,7 @@ interface GradeCourseRow {
   credits?: string;
   assessments: ManualLecture['assessments'];
   manualLectureId?: string;
+  hasReadOnlyCanvasGradeSummary?: boolean;
 }
 
 interface CourseDetailState {
@@ -168,6 +242,34 @@ function getManualLecturesFromAcademyPreferences(preferences: Pick<AcademyPrefer
   return Array.isArray(preferences.manualLectures)
     ? preferences.manualLectures as ManualLecture[]
     : [];
+}
+
+function getManualCourseworkFromAcademyPreferences(preferences: Pick<AcademyPreferences, 'manualCoursework'>) {
+  return Array.isArray(preferences.manualCoursework)
+    ? preferences.manualCoursework as ManualCourseworkItem[]
+    : [];
+}
+
+function getManualAssessmentsFromAcademyPreferences(preferences: Pick<AcademyPreferences, 'manualAssessments'>) {
+  return Array.isArray(preferences.manualAssessments)
+    ? preferences.manualAssessments as ManualAssessmentItem[]
+    : [];
+}
+
+function getCanvasCourseworkPreferencesFromAcademyPreferences(
+  preferences: Pick<AcademyPreferences, 'canvasCourseworkPreferences'>,
+) {
+  return isRecord(preferences.canvasCourseworkPreferences)
+    ? preferences.canvasCourseworkPreferences as CanvasCourseworkPreferences
+    : {};
+}
+
+function getCanvasAssessmentPreferencesFromAcademyPreferences(
+  preferences: Pick<AcademyPreferences, 'canvasAssessmentPreferences'>,
+) {
+  return isRecord(preferences.canvasAssessmentPreferences)
+    ? preferences.canvasAssessmentPreferences as CanvasAssessmentPreferences
+    : {};
 }
 
 function getCanvasPreferenceForCourse(course: CanvasCourse, preferences: CanvasLecturePreferences) {
@@ -304,8 +406,10 @@ function createManualRows(lectures: ManualLecture[]): GradeCourseRow[] {
         semester: normalizeSemesterName(lecture.semester),
         color: isColorToken(lecture.chipColor) ? lecture.chipColor : 'blue',
         credits: lecture.credits,
-        score: summary.currentPercent,
+        score: lecture.canvasGradeSummary?.score ?? summary.currentPercent,
+        grade: lecture.canvasGradeSummary?.grade,
         assessments,
+        hasReadOnlyCanvasGradeSummary: Boolean(lecture.canvasGradeSummary),
       };
     });
 }
@@ -369,7 +473,59 @@ function createManualLectureFromCanvasPreference(
     friendlyName: preference.friendlyName,
     starred: preference.starred,
     chipColor: preference.chipColor,
+    canvasGradeSummary: {
+      grade: preference.currentGrade,
+      score: preference.currentScore,
+    },
     semester: normalizeSemesterName(preference.semester ?? preference.termName, fallbackSemester),
+  };
+}
+
+function createManualCourseworkFromCanvasPreference(
+  courseId: string,
+  itemId: string,
+  preference: CanvasCourseworkPreference,
+  course: CanvasLecturePreference,
+  fallbackSemester: string,
+): ManualCourseworkItem {
+  return {
+    id: `manual-canvas-coursework-${courseId}-${itemId}`,
+    title: preference.title?.trim() || 'Coursework',
+    courseCode: preference.courseCode?.trim() || course.friendlyCourseCode?.trim() || course.originalCourseCode?.trim() || courseId,
+    dueAt: preference.dueAt ?? preference.startAt ?? preference.endAt ?? '',
+    startAt: preference.startAt,
+    endAt: preference.endAt,
+    courseworkType: preference.courseworkType ?? 'assignment',
+    submissionType: preference.submissionType ?? 'assignment',
+    completed: Boolean(preference.isSubmitted) || Boolean(preference.completed),
+    completedAt: preference.submittedAt ?? preference.completedAt,
+    chipColor: course.chipColor,
+    hidden: preference.hidden,
+    semester: normalizeSemesterName(preference.semester ?? course.semester ?? course.termName, fallbackSemester),
+    starred: preference.starred,
+  };
+}
+
+function createManualAssessmentFromCanvasPreference(
+  courseId: string,
+  itemId: string,
+  preference: CanvasAssessmentPreference,
+  course: CanvasLecturePreference,
+  fallbackSemester: string,
+): ManualAssessmentItem {
+  return {
+    id: `manual-canvas-assessment-${courseId}-${itemId}`,
+    title: preference.title?.trim() || 'Assessment',
+    courseCode: preference.courseCode?.trim() || course.friendlyCourseCode?.trim() || course.originalCourseCode?.trim() || courseId,
+    dueAt: preference.dueAt ?? preference.startAt ?? preference.endAt ?? '',
+    startAt: preference.startAt,
+    endAt: preference.endAt,
+    assessmentType: preference.assessmentType ?? 'quiz',
+    completed: Boolean(preference.isSubmitted) || Boolean(preference.completed),
+    completedAt: preference.submittedAt ?? preference.completedAt,
+    hidden: preference.hidden,
+    semester: normalizeSemesterName(preference.semester ?? course.semester ?? course.termName, fallbackSemester),
+    starred: preference.starred,
   };
 }
 
@@ -391,12 +547,25 @@ function migrateLostCanvasCourses(
     ...getCanvasLecturePreferencesFromAcademyPreferences(preferences),
   } as CanvasLecturePreferences;
   const nextManualLectures = [...getManualLecturesFromAcademyPreferences(preferences)];
+  const nextManualCoursework = [...getManualCourseworkFromAcademyPreferences(preferences)];
+  const nextCanvasCourseworkPreferences = {
+    ...getCanvasCourseworkPreferencesFromAcademyPreferences(preferences),
+  };
+  const nextManualAssessments = [...getManualAssessmentsFromAcademyPreferences(preferences)];
+  const nextCanvasAssessmentPreferences = {
+    ...getCanvasAssessmentPreferencesFromAcademyPreferences(preferences),
+  };
   let changed = false;
   let migratedCount = 0;
 
   liveCourses.forEach((course) => {
     const courseId = String(course.id ?? '');
     const currentPreference = nextCanvasLecturePreferences[courseId] ?? {};
+
+    if (currentPreference.convertedToManualAt) {
+      return;
+    }
+
     const nextPreference = getCanvasCourseSnapshot(course, currentPreference, fallbackSemester, nowIso);
 
     if (JSON.stringify(currentPreference) !== JSON.stringify(nextPreference)) {
@@ -406,37 +575,105 @@ function migrateLostCanvasCourses(
   });
 
   Object.entries(nextCanvasLecturePreferences).forEach(([courseId, preference]) => {
-    if (preference.deleted || preference.convertedToManualAt) {
+    if (preference.archivedAsManualLectureId || (preference.deleted && !preference.convertedToManualAt)) {
       return;
     }
 
-    const lastSeenAt = preference.lastSeenAt ? Date.parse(preference.lastSeenAt) : Number.NaN;
-    const canvasAccessLostAt = preference.canvasAccessLostAt
-      ? Date.parse(preference.canvasAccessLostAt)
-      : lastSeenAt;
+    const isAlreadyConverted = Boolean(preference.convertedToManualAt);
 
-    if (
-      !Number.isFinite(canvasAccessLostAt) ||
-      (liveCourseIds.has(courseId) && !preference.canvasAccessLostAt) ||
-      now - canvasAccessLostAt < canvasAccessGracePeriodMs
-    ) {
-      return;
+    if (!isAlreadyConverted) {
+      const lastSeenAt = preference.lastSeenAt ? Date.parse(preference.lastSeenAt) : Number.NaN;
+      const canvasAccessLostAt = preference.canvasAccessLostAt
+        ? Date.parse(preference.canvasAccessLostAt)
+        : lastSeenAt;
+
+      if (
+        !Number.isFinite(canvasAccessLostAt) ||
+        (liveCourseIds.has(courseId) && !preference.canvasAccessLostAt) ||
+        now - canvasAccessLostAt < canvasAccessGracePeriodMs
+      ) {
+        return;
+      }
     }
 
     const manualLectureId = `manual-canvas-${courseId}`;
+    let courseChanged = false;
+    const manualLectureIndex = nextManualLectures.findIndex((lecture) => lecture.id === manualLectureId);
 
-    if (!nextManualLectures.some((lecture) => lecture.id === manualLectureId)) {
+    if (manualLectureIndex === -1) {
       nextManualLectures.push(createManualLectureFromCanvasPreference(courseId, preference, fallbackSemester));
+      courseChanged = true;
+    } else if (!nextManualLectures[manualLectureIndex].canvasGradeSummary) {
+      nextManualLectures[manualLectureIndex] = {
+        ...nextManualLectures[manualLectureIndex],
+        canvasGradeSummary: {
+          grade: preference.currentGrade,
+          score: preference.currentScore,
+        },
+      };
+      courseChanged = true;
     }
 
-    nextCanvasLecturePreferences[courseId] = {
-      ...preference,
-      convertedToManualAt: nowIso,
-      deleted: true,
-      hidden: true,
-    };
-    changed = true;
-    migratedCount += 1;
+    Object.entries(nextCanvasCourseworkPreferences).forEach(([itemId, courseworkPreference]) => {
+      if (courseworkPreference.courseId !== courseId) {
+        return;
+      }
+
+      const manualCourseworkId = `manual-canvas-coursework-${courseId}-${itemId}`;
+
+      if (!nextManualCoursework.some((item) => item.id === manualCourseworkId)) {
+        nextManualCoursework.push(createManualCourseworkFromCanvasPreference(
+          courseId,
+          itemId,
+          courseworkPreference,
+          preference,
+          fallbackSemester,
+        ));
+        courseChanged = true;
+      }
+
+      if (!courseworkPreference.hidden) {
+        nextCanvasCourseworkPreferences[itemId] = { ...courseworkPreference, hidden: true };
+        courseChanged = true;
+      }
+    });
+
+    Object.entries(nextCanvasAssessmentPreferences).forEach(([itemId, assessmentPreference]) => {
+      if (assessmentPreference.courseId !== courseId) {
+        return;
+      }
+
+      const manualAssessmentId = `manual-canvas-assessment-${courseId}-${itemId}`;
+
+      if (!nextManualAssessments.some((item) => item.id === manualAssessmentId)) {
+        nextManualAssessments.push(createManualAssessmentFromCanvasPreference(
+          courseId,
+          itemId,
+          assessmentPreference,
+          preference,
+          fallbackSemester,
+        ));
+        courseChanged = true;
+      }
+
+      if (!assessmentPreference.hidden) {
+        nextCanvasAssessmentPreferences[itemId] = { ...assessmentPreference, hidden: true };
+        courseChanged = true;
+      }
+    });
+
+    if (!isAlreadyConverted) {
+      nextCanvasLecturePreferences[courseId] = {
+        ...preference,
+        convertedToManualAt: nowIso,
+        deleted: true,
+        hidden: true,
+      };
+      courseChanged = true;
+      migratedCount += 1;
+    }
+
+    changed ||= courseChanged;
   });
 
   return {
@@ -444,6 +681,10 @@ function migrateLostCanvasCourses(
     migratedCount,
     nextCanvasLecturePreferences,
     nextManualLectures,
+    nextCanvasCourseworkPreferences,
+    nextManualCoursework,
+    nextCanvasAssessmentPreferences,
+    nextManualAssessments,
   };
 }
 
@@ -605,13 +846,21 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
       : {
         changed: false,
         migratedCount: 0,
+        nextCanvasAssessmentPreferences: getCanvasAssessmentPreferencesFromAcademyPreferences(preferences),
+        nextCanvasCourseworkPreferences: getCanvasCourseworkPreferencesFromAcademyPreferences(preferences),
         nextCanvasLecturePreferences: getCanvasLecturePreferencesFromAcademyPreferences(preferences),
+        nextManualAssessments: getManualAssessmentsFromAcademyPreferences(preferences),
+        nextManualCoursework: getManualCourseworkFromAcademyPreferences(preferences),
         nextManualLectures: getManualLecturesFromAcademyPreferences(preferences),
       };
     const effectivePreferences = migration.changed
       ? {
         ...preferences,
+        canvasAssessmentPreferences: migration.nextCanvasAssessmentPreferences,
+        canvasCourseworkPreferences: migration.nextCanvasCourseworkPreferences,
         canvasLecturePreferences: migration.nextCanvasLecturePreferences,
+        manualAssessments: migration.nextManualAssessments,
+        manualCoursework: migration.nextManualCoursework,
         manualLectures: migration.nextManualLectures,
       }
       : preferences;
@@ -633,7 +882,11 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
 
     if (migration.changed) {
       void workspaceApi.saveAcademyPreferences({
+        canvasAssessmentPreferences: migration.nextCanvasAssessmentPreferences,
+        canvasCourseworkPreferences: migration.nextCanvasCourseworkPreferences,
         canvasLecturePreferences: migration.nextCanvasLecturePreferences,
+        manualAssessments: migration.nextManualAssessments,
+        manualCoursework: migration.nextManualCoursework,
         manualLectures: migration.nextManualLectures,
       }).catch(() => undefined);
     }
@@ -1034,6 +1287,14 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
       ) : (
         <div className="rounded-lg border bg-background/70 px-3 py-3 text-sm text-muted-foreground">
           {dictionary.academyGradesNoBreakdown}
+        </div>
+      );
+    }
+
+    if (row.hasReadOnlyCanvasGradeSummary) {
+      return (
+        <div className="rounded-lg border bg-background/70 px-3 py-3 text-sm text-muted-foreground">
+          {dictionary.academyGradesCanvasSummaryReadOnly}
         </div>
       );
     }

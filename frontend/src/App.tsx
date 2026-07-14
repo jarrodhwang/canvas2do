@@ -380,6 +380,7 @@ interface StoredCoursePreference {
   credits?: string;
   currentGrade?: string;
   currentScore?: number;
+  convertedToManualAt?: string;
   deleted?: boolean;
   dueAt?: string;
   startAt?: string;
@@ -2876,8 +2877,11 @@ function getCalendarSourceItems(
       const preference = isAssessment
         ? canvasAssessmentPreferences[item.id]
         : canvasCourseworkPreferences[item.id];
+      const coursePreference = item.courseId
+        ? canvasLecturePreferences[item.courseId]
+        : undefined;
 
-      return !preference?.hidden;
+      return !preference?.hidden && !coursePreference?.convertedToManualAt;
     })
     .map((item) => {
       const isAssessment = isAssessmentType(item.type, item.title);

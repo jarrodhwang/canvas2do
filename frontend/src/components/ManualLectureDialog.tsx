@@ -97,6 +97,10 @@ export interface ManualLecture {
   hidden?: boolean;
   deleted?: boolean;
   chipColor?: ColorToken;
+  canvasGradeSummary?: {
+    grade?: string;
+    score?: number;
+  };
   semester?: string;
 }
 

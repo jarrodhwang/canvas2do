@@ -611,7 +611,11 @@ function createManualRows(lectures: ManualLecture[]): CourseOverviewRow[] {
     lectureSection: formatSection(lecture.lectureSection || getManualSection(lecture, 'lecture')),
     labSection: formatSection(lecture.labSection || getManualSection(lecture, 'lab')),
     tutorialSection: formatSection(lecture.tutorialSection || getManualSection(lecture, 'tutorial')),
-    grade: '--',
+    grade: lecture.canvasGradeSummary?.grade ?? (
+      typeof lecture.canvasGradeSummary?.score === 'number'
+        ? `${Math.round(lecture.canvasGradeSummary.score * 10) / 10}%`
+        : '--'
+    ),
     notificationCount: 0,
     color: lecture.chipColor ?? defaultCourseChipColor,
     hidden: Boolean(lecture.hidden),
@@ -2457,6 +2461,10 @@ function CourseDetailView({
 
   const renderGrades = () => {
     if (row.source === 'manual') {
+      if (row.manualLecture?.canvasGradeSummary) {
+        return renderEmpty(dictionary.academyGradesCanvasSummaryReadOnly);
+      }
+
       return row.manualLecture && enabledAssessments.length > 0 ? (
         <ManualGradeEditor
           assessments={row.manualLecture.assessments}

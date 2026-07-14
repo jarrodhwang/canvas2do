@@ -141,11 +141,13 @@ type DashboardSnackbar = {
 type CanvasLecturePreferences = Record<string, {
   assessments?: ManualLectureAssessment[];
   archivedAsManualLectureId?: string;
+  canvasAccessLostAt?: string | null;
   chipColor?: ColorToken;
   courseName?: string;
   credits?: string;
   currentGrade?: string;
   currentScore?: number;
+  convertedToManualAt?: string;
   deleted?: boolean;
   friendlyCourseCode?: string;
   friendlyName?: string;
@@ -164,6 +166,10 @@ type CanvasLecturePreferences = Record<string, {
   tutorialSection?: string;
   workflowState?: string;
 }>;
+
+function isManuallyManagedCanvasCourse(courseId: string | undefined, preferences: CanvasLecturePreferences) {
+  return Boolean(courseId && preferences[courseId]?.convertedToManualAt);
+}
 interface ManualCourseworkItem {
   id: string;
   title: string;
@@ -1046,6 +1052,11 @@ function createCanvasAssessmentRows(
     .filter(isAssessmentCanvasItem)
     .filter((item) => {
       const itemPreferences = preferences[item.id] ?? {};
+
+      if (isManuallyManagedCanvasCourse(item.courseId, lecturePreferences)) {
+        return false;
+      }
+
       const dueAt = item.dueAt || item.startAt;
       const submissionStatus = getEffectiveCanvasSubmissionStatus(item, itemPreferences);
       const semester = getCanvasItemSemester(
@@ -1169,6 +1180,11 @@ function createCanvasCourseworkRows(
     .filter(isCourseworkCanvasItem)
     .filter((item) => {
       const itemPreferences = preferences[item.id] ?? {};
+
+      if (isManuallyManagedCanvasCourse(item.courseId, lecturePreferences)) {
+        return false;
+      }
+
       const dueAt = item.dueAt || item.startAt;
       const submissionStatus = getEffectiveCanvasSubmissionStatus(item, itemPreferences);
       const semester = getCanvasItemSemester(
@@ -4839,7 +4855,7 @@ export function DashboardCards({
     let changed = false;
 
     Object.entries(currentPreferences).forEach(([courseId, preference]) => {
-      if (liveCourseIds.has(courseId) || preference.archivedAsManualLectureId) {
+      if (liveCourseIds.has(courseId) || preference.archivedAsManualLectureId || preference.convertedToManualAt) {
         return;
       }
 
@@ -4911,6 +4927,10 @@ export function DashboardCards({
       const nextPreferences = { ...currentPreferences };
 
       canvasCourseworkItems.filter(isCourseworkCanvasItem).forEach((item) => {
+        if (isManuallyManagedCanvasCourse(item.courseId, canvasLecturePreferencesRef.current)) {
+          return;
+        }
+
         const preference = currentPreferences[item.id] ?? {};
         const coursePreferences = item.courseId ? canvasLecturePreferencesRef.current[item.courseId] : undefined;
         const courseCode =
@@ -4962,6 +4982,10 @@ export function DashboardCards({
       const nextPreferences = { ...currentPreferences };
 
       canvasCourseworkItems.filter(isAssessmentCanvasItem).forEach((item) => {
+        if (isManuallyManagedCanvasCourse(item.courseId, canvasLecturePreferencesRef.current)) {
+          return;
+        }
+
         const preference = currentPreferences[item.id] ?? {};
         const coursePreferences = item.courseId ? canvasLecturePreferencesRef.current[item.courseId] : undefined;
         const courseCode =

@@ -562,7 +562,7 @@ const academyFontFamilyCss = Object.fromEntries(
 const academyFontSizeOptions = [85, 95, 100, 110, 120];
 const defaultAcademySemester = getDateBasedAcademySemester();
 const defaultCanvasTermSemester = 'Default Term';
-const defaultAcademyLogoSrc = '/brand/SFU_block_colour_rgb.png';
+const defaultAcademyTabIconSrc = '/brand/academy-tab-icon.png';
 const defaultWorkspaceTabIconSrc = '/brand/incos-workspace-tab-icon.png';
 const defaultWorkspaceTouchIconSrc = '/brand/incos-workspace-touch-icon.png';
 const topTrackExternalUrl = 'https://toptrack.topsolid.com/';
@@ -7834,20 +7834,15 @@ function App() {
   }, [activeMode.id, selectedCalendarDayIso, workspaceSettings.timeZone]);
 
   useEffect(() => {
-    const academyLogoSrc = academyCalendarSettings.academyLogoSrc;
-    const academyIconSrc = academyLogoSrc && academyLogoSrc !== 'none'
-      ? academyLogoSrc
-      : defaultAcademyLogoSrc;
-
     applyDocumentBranding({
-      iconSrc: isAcademyOnlySession ? academyIconSrc : defaultWorkspaceTabIconSrc,
+      iconSrc: isAcademyMode ? defaultAcademyTabIconSrc : defaultWorkspaceTabIconSrc,
       title: isAcademyOnlySession ? dictionary.academyManagerName : dictionary.workspaceName,
-      touchIconSrc: isAcademyOnlySession ? academyIconSrc : defaultWorkspaceTouchIconSrc,
+      touchIconSrc: isAcademyMode ? defaultAcademyTabIconSrc : defaultWorkspaceTouchIconSrc,
     });
   }, [
-    academyCalendarSettings.academyLogoSrc,
     dictionary.academyManagerName,
     dictionary.workspaceName,
+    isAcademyMode,
     isAcademyOnlySession,
   ]);
 

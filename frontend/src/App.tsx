@@ -1896,13 +1896,19 @@ function coursePreferenceMatchesCourse(
   );
 }
 
-function isCourseReferenceHidden(course: Pick<CalendarSourceItem, 'courseCode' | 'courseId' | 'courseName'>) {
+function isCourseReferenceHidden(
+  course: Pick<CalendarSourceItem, 'courseCode' | 'courseId' | 'courseName'> & { source?: CalendarSourceItem['source'] },
+) {
   const hiddenManualLecture = getStoredManualLectures().some((lecture) => (
     Boolean(lecture.hidden || lecture.deleted) && coursePreferenceMatchesCourse(lecture, course)
   ));
 
   if (hiddenManualLecture) {
     return true;
+  }
+
+  if (course.source && course.source !== 'canvas') {
+    return false;
   }
 
   return Object.entries(getStoredCanvasLecturePreferences()).some(([courseId, preference]) => (

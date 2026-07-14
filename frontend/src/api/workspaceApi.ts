@@ -3,6 +3,51 @@ import { modeRegistry } from '../modes/ModeRegistry';
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '/api';
 const canvasCalendarRequests = new Map<string, Promise<CanvasCalendarItems>>();
+const academyPreferenceOwnerHeader = 'X-Incos-Academy-Owner-Key';
+let academyPreferenceOwnerKey: string | null = null;
+let academyPreferenceOwnerVersion = 0;
+
+interface AcademyPreferenceRequestScope {
+  ownerKey: string;
+  version: number;
+}
+
+function normalizeAcademyPreferenceOwnerKey(value?: string | null) {
+  const normalizedValue = value?.trim().toLowerCase();
+
+  return normalizedValue || null;
+}
+
+function setAcademyPreferenceOwnerKey(value?: string | null) {
+  const nextOwnerKey = normalizeAcademyPreferenceOwnerKey(value);
+
+  if (nextOwnerKey === academyPreferenceOwnerKey) {
+    return;
+  }
+
+  academyPreferenceOwnerKey = nextOwnerKey;
+  academyPreferenceOwnerVersion += 1;
+}
+
+function getAcademyPreferenceRequestScope(): AcademyPreferenceRequestScope {
+  if (!academyPreferenceOwnerKey) {
+    throw new Error('Academy account changed. Reload this view before accessing coursework.');
+  }
+
+  return {
+    ownerKey: academyPreferenceOwnerKey,
+    version: academyPreferenceOwnerVersion,
+  };
+}
+
+function assertCurrentAcademyPreferenceScope(scope: AcademyPreferenceRequestScope) {
+  if (
+    scope.version !== academyPreferenceOwnerVersion ||
+    scope.ownerKey !== academyPreferenceOwnerKey
+  ) {
+    throw new Error('Academy account changed. Discarding data from the previous user.');
+  }
+}
 
 function getDownloadFileName(contentDisposition: string | null) {
   if (!contentDisposition) {
@@ -176,6 +221,7 @@ export type AdminUserStatus = 'active' | 'inactive' | 'pending';
 export interface AuthSession {
   accountStatus?: AdminUserStatus;
   access?: string[];
+  academyPreferenceOwnerKey?: string;
   canAccessWorkspace?: boolean;
   displayName?: string;
   email?: string;
@@ -875,6 +921,10 @@ export interface GoogleChatSpaces {
 export const workspaceApi = {
   apiBaseUrl,
 
+  getAcademyPreferenceRequestScope,
+
+  setAcademyPreferenceOwnerKey,
+
   getGoogleLoginUrl(returnUrl = '/', options: { forceConsent?: boolean; forceLogin?: boolean } = {}) {
     const params = new URLSearchParams({ returnUrl });
 
@@ -910,6 +960,7 @@ export const workspaceApi = {
   },
 
   async logout() {
+    setAcademyPreferenceOwnerKey(null);
     const response = await fetch(`${apiBaseUrl}/auth/logout`, {
       credentials: 'include',
       method: 'POST',
@@ -923,6 +974,7 @@ export const workspaceApi = {
   },
 
   async previewAdminUser(userId: string) {
+    setAcademyPreferenceOwnerKey(null);
     const response = await fetch(`${apiBaseUrl}/auth/preview/users/${encodeURIComponent(userId)}`, {
       credentials: 'include',
       method: 'POST',
@@ -937,6 +989,7 @@ export const workspaceApi = {
   },
 
   async exitPreviewMode() {
+    setAcademyPreferenceOwnerKey(null);
     const response = await fetch(`${apiBaseUrl}/auth/preview/exit`, {
       credentials: 'include',
       method: 'POST',
@@ -982,6 +1035,7 @@ export const workspaceApi = {
   },
 
   async loginWithAcademyCredentials(request: { loginId: string; password: string }) {
+    setAcademyPreferenceOwnerKey(null);
     const response = await fetch(`${apiBaseUrl}/auth/academy/login`, {
       body: JSON.stringify(request),
       credentials: 'include',
@@ -1547,10 +1601,17 @@ export const workspaceApi = {
     return response.json() as Promise<CanvasInboxItems>;
   },
 
-  async getAcademyPreferences() {
+  async getAcademyPreferences(
+    scope: AcademyPreferenceRequestScope = getAcademyPreferenceRequestScope(),
+  ) {
     const response = await fetch(`${apiBaseUrl}/academy/preferences`, {
       credentials: 'include',
+      headers: {
+        [academyPreferenceOwnerHeader]: scope.ownerKey,
+      },
     });
+
+    assertCurrentAcademyPreferenceScope(scope);
 
     if (!response.ok) {
       const { message } = await readErrorResponse(response, 'Unable to load Academy preferences.');
@@ -1561,15 +1622,22 @@ export const workspaceApi = {
     return response.json() as Promise<AcademyPreferences>;
   },
 
-  async saveAcademyPreferences(preferences: SaveAcademyPreferencesRequest) {
+  async saveAcademyPreferences(
+    preferences: SaveAcademyPreferencesRequest,
+    scope: AcademyPreferenceRequestScope = getAcademyPreferenceRequestScope(),
+  ) {
+    assertCurrentAcademyPreferenceScope(scope);
     const response = await fetch(`${apiBaseUrl}/academy/preferences`, {
       body: JSON.stringify(preferences),
       credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
+        [academyPreferenceOwnerHeader]: scope.ownerKey,
       },
       method: 'PUT',
     });
+
+    assertCurrentAcademyPreferenceScope(scope);
 
     if (!response.ok) {
       const { message } = await readErrorResponse(response, 'Unable to save Academy preferences.');

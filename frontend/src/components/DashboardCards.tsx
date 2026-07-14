@@ -1786,7 +1786,10 @@ function persistAcademyPreferencePatch(patch: SaveAcademyPreferencesRequest) {
 }
 
 function saveAcademyPreferencesInOrder(request: SaveAcademyPreferencesRequest) {
-  const saveTask = academyPreferencesSaveQueue.then(() => workspaceApi.saveAcademyPreferences(request));
+  const requestScope = workspaceApi.getAcademyPreferenceRequestScope();
+  const saveTask = academyPreferencesSaveQueue.then(() => (
+    workspaceApi.saveAcademyPreferences(request, requestScope)
+  ));
 
   academyPreferencesSaveQueue = saveTask.then(
     () => undefined,

@@ -1527,7 +1527,7 @@ function getAuthSessionIdentityKey(session: AuthSession) {
   return [
     session.isPreview ? 'preview' : 'user',
     session.provider ?? '',
-    session.loginId ?? session.email ?? '',
+    session.academyPreferenceOwnerKey ?? session.loginId ?? session.email ?? '',
   ].join(':');
 }
 
@@ -6914,6 +6914,7 @@ function App() {
     setHasLoadedAcademyPreferences(false);
     setAcademyPreferencesLoadStatus('idle');
     academyPreferencesLoadSequenceRef.current += 1;
+    academyPreferencesSaveSequenceRef.current += 1;
     academySettingsProtectedUntilRef.current = 0;
     isAcademyPreferencesSavingRef.current = false;
     setAcademyPreferencesSaveStatus('idle');
@@ -8591,6 +8592,8 @@ function App() {
   const applyAuthSession = (session: AuthSession) => {
     const nextSessionKey = getAuthSessionIdentityKey(session);
 
+    workspaceApi.setAcademyPreferenceOwnerKey(session.academyPreferenceOwnerKey);
+
     if (authSessionKeyRef.current !== nextSessionKey) {
       authSessionKeyRef.current = nextSessionKey;
       resetAcademyRuntimeState();
@@ -9557,7 +9560,10 @@ function App() {
                   : 'overflow-y-auto'),
           )}
         >
-          <Suspense fallback={<WorkspaceViewFallback />}>
+          <Suspense
+            fallback={<WorkspaceViewFallback />}
+            key={authSession ? getAuthSessionIdentityKey(authSession) ?? 'anonymous' : 'anonymous'}
+          >
             {isDriveView ? (
               <DriveFilesView onSelectedItemChange={setSelectedDriveItem} />
             ) : isEmailView ? (

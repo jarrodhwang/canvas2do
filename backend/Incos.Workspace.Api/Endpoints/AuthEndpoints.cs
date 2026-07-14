@@ -76,6 +76,7 @@ public static class AuthEndpoints
                 IncosWorkspaceDbContext db,
                 CancellationToken cancellationToken) =>
             {
+                context.Response.Headers.CacheControl = "no-store";
                 var user = context.User;
                 var isAuthenticated = user.Identity?.IsAuthenticated == true;
                 var email = isAuthenticated ? user.FindFirstValue(ClaimTypes.Email) : null;
@@ -92,6 +93,7 @@ public static class AuthEndpoints
                         provider = (string?)null,
                         displayName = (string?)null,
                         email = (string?)null,
+                        academyPreferenceOwnerKey = (string?)null,
                         loginId = (string?)null,
                         pictureUrl = (string?)null,
                         hostedDomain = (string?)null,
@@ -149,6 +151,7 @@ public static class AuthEndpoints
                         : null,
                     displayName = isAuthenticated ? user.FindFirstValue(ClaimTypes.Name) : null,
                     email = sessionEmail,
+                    academyPreferenceOwnerKey = isAuthenticated ? email?.Trim().ToLowerInvariant() : null,
                     loginId = isAuthenticated ? user.FindFirstValue("incos:login_id") : null,
                     pictureUrl,
                     hostedDomain,

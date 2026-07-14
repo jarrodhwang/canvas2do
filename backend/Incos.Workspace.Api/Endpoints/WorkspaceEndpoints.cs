@@ -14,6 +14,7 @@ public static class WorkspaceEndpoints
 {
     public const string AcademyPreferencesSettingKey = "academy.preferences";
     public const string WorkspacePreferencesSettingKey = "workspace.preferences";
+    private const string AcademyPreferenceOwnerHeader = "X-Incos-Academy-Owner-Key";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public static IEndpointRouteBuilder MapWorkspaceEndpoints(this IEndpointRouteBuilder app)
@@ -252,11 +253,17 @@ public static class WorkspaceEndpoints
         IncosWorkspaceDbContext db,
         CancellationToken cancellationToken)
     {
+        context.Response.Headers.CacheControl = "no-store";
         var userKey = GetUserKey(context);
 
         if (string.IsNullOrWhiteSpace(userKey))
         {
             return Results.Unauthorized();
+        }
+
+        if (ValidateAcademyPreferenceOwner(context, userKey) is { } ownerMismatchResult)
+        {
+            return ownerMismatchResult;
         }
 
         await EnsureUserSettingsTableAsync(db, cancellationToken);
@@ -285,11 +292,17 @@ public static class WorkspaceEndpoints
         IncosWorkspaceDbContext db,
         CancellationToken cancellationToken)
     {
+        context.Response.Headers.CacheControl = "no-store";
         var userKey = GetUserKey(context);
 
         if (string.IsNullOrWhiteSpace(userKey))
         {
             return Results.Unauthorized();
+        }
+
+        if (ValidateAcademyPreferenceOwner(context, userKey) is { } ownerMismatchResult)
+        {
+            return ownerMismatchResult;
         }
 
         await EnsureUserSettingsTableAsync(db, cancellationToken);
@@ -426,6 +439,22 @@ public static class WorkspaceEndpoints
         var email = context.User.FindFirstValue(ClaimTypes.Email);
 
         return string.IsNullOrWhiteSpace(email) ? null : email.Trim().ToLowerInvariant();
+    }
+
+    private static IResult? ValidateAcademyPreferenceOwner(HttpContext context, string userKey)
+    {
+        var expectedOwnerKey = context.Request.Headers[AcademyPreferenceOwnerHeader].ToString().Trim();
+
+        if (string.IsNullOrWhiteSpace(expectedOwnerKey) ||
+            !string.Equals(expectedOwnerKey, userKey, StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Problem(
+                title: "Academy session changed.",
+                detail: "Reload Academy data before accessing preferences for this account.",
+                statusCode: StatusCodes.Status409Conflict);
+        }
+
+        return null;
     }
 
     private static string SerializeAcademyPreferences(SaveAcademyPreferencesRequest request, string? existingSettingJson)

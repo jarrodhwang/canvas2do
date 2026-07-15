@@ -199,6 +199,79 @@ public sealed class Project : AuditableEntity
     public string? Category { get; set; }
 }
 
+// Workspace workload records are intentionally separate from the original prototype
+// entities above. They are user-scoped and form the persistence boundary used by the
+// live Workspace UI, while the legacy entities remain available to existing seed data.
+public sealed class WorkspaceCustomer : AuditableEntity
+{
+    public string OwnerKey { get; set; } = string.Empty;
+    public string CompanyName { get; set; } = string.Empty;
+    public string? ContactName { get; set; }
+    public string? ContactEmail { get; set; }
+    public string? Phone { get; set; }
+    public List<WorkspaceWorkProject> Projects { get; set; } = [];
+    public List<WorkspaceWorkIssue> Issues { get; set; } = [];
+}
+
+public sealed class WorkspaceWorkProject : AuditableEntity
+{
+    public string OwnerKey { get; set; } = string.Empty;
+    public Guid CustomerId { get; set; }
+    public WorkspaceCustomer? Customer { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public string Category { get; set; } = "Eureka";
+    public string? Subcategory { get; set; }
+    public string Status { get; set; } = "active";
+    public DateTimeOffset? StartAtUtc { get; set; }
+    public DateTimeOffset? DueAtUtc { get; set; }
+    public List<WorkspaceWorkIssue> Issues { get; set; } = [];
+    public List<WorkspaceCalendarEntry> CalendarEntries { get; set; } = [];
+}
+
+public sealed class WorkspaceWorkIssue : AuditableEntity
+{
+    public string OwnerKey { get; set; } = string.Empty;
+    public Guid CustomerId { get; set; }
+    public WorkspaceCustomer? Customer { get; set; }
+    public Guid? ProjectId { get; set; }
+    public WorkspaceWorkProject? Project { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public string IssueType { get; set; } = "issue";
+    public string Status { get; set; } = "todo";
+    public string Priority { get; set; } = "normal";
+    public DateTimeOffset? DueAtUtc { get; set; }
+    public List<WorkspaceCalendarEntry> CalendarEntries { get; set; } = [];
+}
+
+public sealed class WorkspaceCalendarEntry : AuditableEntity
+{
+    public string OwnerKey { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public string ItemType { get; set; } = "work";
+    public string Status { get; set; } = "scheduled";
+    public DateTimeOffset StartAtUtc { get; set; }
+    public DateTimeOffset EndAtUtc { get; set; }
+    public string SourceTimeZone { get; set; } = "UTC";
+    public bool IsAllDay { get; set; }
+    public Guid? ProjectId { get; set; }
+    public WorkspaceWorkProject? Project { get; set; }
+    public Guid? IssueId { get; set; }
+    public WorkspaceWorkIssue? Issue { get; set; }
+    public List<WorkspaceCalendarShare> Shares { get; set; } = [];
+}
+
+public sealed class WorkspaceCalendarShare : AuditableEntity
+{
+    public Guid CalendarEntryId { get; set; }
+    public WorkspaceCalendarEntry? CalendarEntry { get; set; }
+    public string TargetType { get; set; } = "user";
+    public string TargetKey { get; set; } = string.Empty;
+    public string TargetLabel { get; set; } = string.Empty;
+}
+
 public sealed class Issue : AuditableEntity
 {
     public Guid? ProjectId { get; set; }

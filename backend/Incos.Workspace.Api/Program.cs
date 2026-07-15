@@ -462,6 +462,8 @@ app.Use(async (context, next) =>
             ? AuthEndpoints.FilterAcademyOnlyGrants(grants)
             : grants;
         var access = grants.Access.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        context.Items["Incos.Workspace.Access"] = grants.Access;
+        context.Items["Incos.Workspace.Permissions"] = grants.Permissions;
 
         if (access.Count == 0)
         {
@@ -512,6 +514,7 @@ app.MapCanvasIntegrationEndpoints();
 app.MapGoogleIntegrationEndpoints();
 app.MapMicrosoftIntegrationEndpoints();
 app.MapWorkspaceEndpoints();
+app.MapWorkspaceManagementEndpoints();
 
 if (app.Configuration.GetValue("Database:EnsureCreated", false))
 {
@@ -789,6 +792,11 @@ static bool IsApiPathAllowedByAccess(PathString path, IReadOnlySet<string> acces
     if (path.StartsWithSegments("/api/microsoft"))
     {
         return HasAccess(access, "academy-outlook");
+    }
+
+    if (path.StartsWithSegments("/api/workspace"))
+    {
+        return HasPrefixAccess(access, "workspace-") || HasAccess(access, "workspace");
     }
 
     if (path.StartsWithSegments("/api/workspace-modes"))

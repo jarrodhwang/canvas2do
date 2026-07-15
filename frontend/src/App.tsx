@@ -117,6 +117,19 @@ const DashboardCards = lazy(() => import('./components/DashboardCards').then((mo
 const DriveFilesView = lazy(() => import('./components/DriveFilesView').then((module) => ({ default: module.DriveFilesView })));
 const GoogleCommunicationView = lazy(() => import('./components/GoogleCommunicationView').then((module) => ({ default: module.GoogleCommunicationView })));
 const OutlookEmailView = lazy(() => import('./components/OutlookEmailView').then((module) => ({ default: module.OutlookEmailView })));
+const WorkspaceManagementView = lazy(() => import('./components/WorkspaceManagementView').then((module) => ({ default: module.WorkspaceManagementView })));
+const workspaceManagementSidebarItems = new Set([
+  'dashboard',
+  'project',
+  'calendar',
+  'board',
+  'timeline',
+  'issues',
+  'bugs',
+  'features',
+  'customers',
+  'categories',
+]);
 
 interface WorkspaceNavigation {
   modeId: string;
@@ -5866,183 +5879,6 @@ function WorkspaceSettingsView({
   );
 }
 
-function WorkspaceProjectView({
-  data,
-  onOpenAddItem,
-  onOpenBoard,
-  onOpenCalendar,
-}: {
-  data: WorkspaceModeMockData;
-  onOpenAddItem: () => void;
-  onOpenBoard: () => void;
-  onOpenCalendar: () => void;
-}) {
-  const columnCounts = data.boardItems.reduce<Record<string, number>>((counts, item) => ({
-    ...counts,
-    [item.columnId]: (counts[item.columnId] ?? 0) + 1,
-  }), {});
-  const activeItems = data.boardItems.filter((item) => item.columnId === 'doing');
-  const backlogCount = (columnCounts.ideas ?? 0) + (columnCounts.todo ?? 0);
-  const solvedCount = columnCounts.solved ?? 0;
-  const projectRows = [
-    {
-      color: 'teal' as ColorToken,
-      name: 'Study App',
-      owner: 'Product',
-      progress: 68,
-      status: 'Doing',
-      summary: 'Calendar, coursework, and workspace tools.',
-    },
-    {
-      color: 'red' as ColorToken,
-      name: 'Login Reliability',
-      owner: 'Platform',
-      progress: 42,
-      status: 'Risk',
-      summary: 'Auth, account approval, and session behavior.',
-    },
-    {
-      color: 'orange' as ColorToken,
-      name: 'Customer Requests',
-      owner: 'Support',
-      progress: 55,
-      status: 'Review',
-      summary: 'Meeting follow-ups, issues, and release notes.',
-    },
-  ];
-
-  return (
-    <div className="grid min-h-0 content-start gap-3">
-      <section className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
-        <Card className="rounded-xl bg-card shadow-none">
-          <CardHeader className="gap-3 pb-3 md:flex-row md:items-center md:justify-between">
-            <div className="min-w-0">
-              <CardTitle className="flex items-center gap-2 text-xl font-black">
-                <WorkspaceIcon name="clipboard-list" size={20} />
-                Project
-              </CardTitle>
-              <p className="mt-1 text-sm font-semibold text-muted-foreground">
-                Workspace project status, active work, and delivery timeline.
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Button onClick={onOpenAddItem} size="sm" type="button">
-                <Plus className="size-4" />
-                Add item
-              </Button>
-              <Button onClick={onOpenBoard} size="sm" type="button" variant="outline">
-                <WorkspaceIcon name="columns-3" size={16} />
-                Board
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent className="grid gap-3">
-            <div className="grid gap-2 sm:grid-cols-3">
-              {[
-                { label: 'Backlog', value: backlogCount, icon: 'lightbulb' },
-                { label: 'In progress', value: activeItems.length, icon: 'wrench' },
-                { label: 'Solved', value: solvedCount, icon: 'list-checks' },
-              ].map((metric) => (
-                <div className="rounded-lg border bg-muted/20 p-3" key={metric.label}>
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-xs font-black uppercase text-muted-foreground">{metric.label}</span>
-                    <WorkspaceIcon className="text-muted-foreground" name={metric.icon} size={16} />
-                  </div>
-                  <div className="mt-2 text-2xl font-black">{metric.value}</div>
-                </div>
-              ))}
-            </div>
-
-            <div className="grid gap-2">
-              {projectRows.map((project) => (
-                <div className="grid gap-3 rounded-lg border bg-background p-3 md:grid-cols-[minmax(0,1fr)_160px]" key={project.name}>
-                  <div className="min-w-0">
-                    <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <span className="truncate text-sm font-black">{project.name}</span>
-                      <span className="rounded-md border px-2 py-0.5 text-[11px] font-black uppercase text-muted-foreground">
-                        {project.status}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-sm font-semibold text-muted-foreground">{project.summary}</p>
-                    <div className="mt-2 text-xs font-bold text-muted-foreground">Owner: {project.owner}</div>
-                  </div>
-                  <div className="grid content-center gap-1">
-                    <div className="flex items-center justify-between text-xs font-black uppercase text-muted-foreground">
-                      <span>Progress</span>
-                      <span>{project.progress}%</span>
-                    </div>
-                    <div className="h-2 overflow-hidden rounded-full bg-muted">
-                      <div
-                        className={cn('h-full rounded-full', dotColorClasses[project.color])}
-                        style={{ width: `${project.progress}%` }}
-                      />
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="rounded-xl bg-card shadow-none">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base font-black">Active Work</CardTitle>
-          </CardHeader>
-          <CardContent className="grid gap-2">
-            {activeItems.length === 0 ? (
-              <div className="rounded-lg border bg-muted/20 p-3 text-sm font-bold text-muted-foreground">
-                No items are currently in progress.
-              </div>
-            ) : activeItems.map((item) => (
-              <button
-                className="grid gap-1 rounded-lg border bg-background p-3 text-left transition hover:bg-muted/35"
-                key={item.id}
-                onClick={onOpenBoard}
-                type="button"
-              >
-                <div className="flex min-w-0 items-center justify-between gap-3">
-                  <span className="truncate text-sm font-black">{item.title}</span>
-                  <span className={cn('size-2 rounded-full', dotColorClasses[item.color])} />
-                </div>
-                <div className="flex flex-wrap gap-2 text-xs font-bold text-muted-foreground">
-                  <span>{item.type}</span>
-                  <span>{item.checklistProgress}</span>
-                </div>
-              </button>
-            ))}
-          </CardContent>
-        </Card>
-      </section>
-
-      <Card className="rounded-xl bg-card shadow-none">
-        <CardHeader className="gap-3 pb-3 md:flex-row md:items-center md:justify-between">
-          <CardTitle className="text-base font-black">Timeline</CardTitle>
-          <Button onClick={onOpenCalendar} size="sm" type="button" variant="outline">
-            <WorkspaceIcon name="calendar-days" size={16} />
-            Calendar
-          </Button>
-        </CardHeader>
-        <CardContent className="grid gap-3">
-          {data.timeline.map((item) => (
-            <div className="grid gap-1" key={item.id}>
-              <div className="flex items-center justify-between gap-3 text-sm">
-                <span className="font-black">{item.name}</span>
-                <span className="text-xs font-bold text-muted-foreground">{item.label}</span>
-              </div>
-              <div className="relative h-3 rounded-full bg-muted">
-                <div
-                  className={cn('absolute top-0 h-3 rounded-full', dotColorClasses[item.color])}
-                  style={{ left: `${item.offsetPercent}%`, width: `${item.widthPercent}%` }}
-                />
-              </div>
-            </div>
-          ))}
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
 function WaitingApprovalPage({
   isChecking,
   onRefresh,
@@ -6539,7 +6375,8 @@ function App() {
   const isCommunicationView = isEmailView || isOutlookView || isChatView;
   const isCoursesView = activeMode.id === 'academy' && activeSidebarItem === 'courses';
   const isAcademySettingsView = activeMode.id === 'academy' && activeSidebarItem === 'settings';
-  const isWorkspaceProjectView = activeMode.id === 'project' && activeSidebarItem === 'project';
+  const isWorkspaceManagementView = activeMode.id === 'project' &&
+    workspaceManagementSidebarItems.has(activeSidebarItem);
   const isWorkspaceSettingsView = activeMode.id === 'project' && activeSidebarItem === 'settings';
   const isAdminUsersView = activeMode.id === 'admin-console' && activeSidebarItem === 'users';
   const isAdminGroupsView = activeMode.id === 'admin-console' && activeSidebarItem === 'groups';
@@ -6553,7 +6390,7 @@ function App() {
     isAcademyPeopleView ||
     isAcademySettingsView ||
     isWorkspaceSettingsView ||
-    isWorkspaceProjectView ||
+    isWorkspaceManagementView ||
     isAdminUsersView ||
     isAdminGroupsView ||
     isAdminGeneralSettingsView;
@@ -9605,12 +9442,15 @@ function App() {
                 settingsSaveError={academyPreferencesSaveError}
                 settingsSaveStatus={academyPreferencesSaveStatus}
               />
-            ) : isWorkspaceProjectView ? (
-              <WorkspaceProjectView
-                data={activeData}
-                onOpenAddItem={openAcademyCourseworkDialog}
-                onOpenBoard={() => navigateWorkspace({ modeId: activeMode.id, sidebarItemId: 'board', view: 'board' })}
-                onOpenCalendar={() => navigateWorkspace({ modeId: activeMode.id, sidebarItemId: 'calendar', view: 'month' })}
+            ) : isWorkspaceManagementView ? (
+              <WorkspaceManagementView
+                access={authSession?.access ?? []}
+                canManageCalendar={(authSession?.permissions ?? []).some(
+                  (permission) => permission.toLowerCase() === 'workspace-manage-calendar',
+                )}
+                onNavigate={handleSelectSidebarItem}
+                section={activeSidebarItem}
+                timeZone={workspaceSettings.timeZone}
               />
             ) : isWorkspaceSettingsView ? (
               <WorkspaceSettingsView

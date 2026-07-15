@@ -151,7 +151,7 @@ const permissionDomains: PermissionDomain[] = [
       },
       {
         id: 'workspace-project',
-        label: 'Project',
+        label: 'Projects',
         items: [
           { field: 'access', id: 'workspace-project', label: 'Access menu' },
         ],
@@ -166,7 +166,7 @@ const permissionDomains: PermissionDomain[] = [
       },
       {
         id: 'workspace-board',
-        label: 'Board',
+        label: 'To Do',
         items: [
           { field: 'access', id: 'workspace-board', label: 'Access menu' },
         ],
@@ -187,14 +187,14 @@ const permissionDomains: PermissionDomain[] = [
       },
       {
         id: 'workspace-bugs',
-        label: 'Bugs',
+        label: 'Work Items',
         items: [
           { field: 'access', id: 'workspace-bugs', label: 'Access menu' },
         ],
       },
       {
         id: 'workspace-features',
-        label: 'Feature Ideas',
+        label: 'Customer Requests',
         items: [
           { field: 'access', id: 'workspace-features', label: 'Access menu' },
         ],

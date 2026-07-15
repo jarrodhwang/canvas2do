@@ -29,7 +29,7 @@ public static class SeedData
             ModeKey = "project",
             DisplayName = "Workspace",
             Icon = "rocket",
-            Purpose = "Manage workspace work, development todos, bugs, features, customer requests, and timelines.",
+            Purpose = "Manage general customer workload, projects, issues, shared schedules, follow-ups, and timelines.",
             AccentPrimary = "#0f8f95",
             AccentSecondary = "#3757d8",
             Enabled = true,
@@ -76,9 +76,9 @@ public static class SeedData
             new CalendarItem
             {
                 WorkspaceMode = project,
-                Type = "bug",
-                Title = "Login Bug on Mobile",
-                Description = "Bug issue linked to customer, category, colleague, and meeting link.",
+                Type = "follow-up",
+                Title = "TopSolid CAM customer follow-up",
+                Description = "General workload linked to a customer, category, colleague, and meeting.",
                 Status = "doing",
                 Priority = "high",
                 StartAt = new DateTimeOffset(2026, 5, 12, 9, 0, 0, TimeSpan.Zero),

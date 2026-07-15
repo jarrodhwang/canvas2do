@@ -47,13 +47,12 @@ stored data.
 
 ## Workspace / Project architecture
 
-The Workspace mode is the generic work-management surface in the shared shell. It is
-not a separate application: the `project` entry in `defaultModes.ts` supplies the
-Workspace label, navigation, feature flags, calendar item types, board columns,
-timeline behavior, add-item fields, filters, and integration slots. The same React
-components render the dashboard, calendar, agenda, board, timeline, detail panel, and
-add-item dialog; the mode configuration changes their vocabulary and available
-capabilities.
+The Workspace mode is the generic customer-work-management surface in the shared
+shell. It is not a programming-project tracker or a separate application. The
+`project` entry in `defaultModes.ts` supplies navigation and capability metadata,
+while the lazy-loaded `WorkspaceManagementView` owns the live dashboard, projects,
+issues, workload board, calendar, timeline, customers, categories, and modal flows.
+Academy components and persistence paths are not reused for Workspace mutations.
 
 The current Workspace path is:
 
@@ -61,96 +60,80 @@ The current Workspace path is:
 Authenticated browser
         |
         v
-WorkspaceModeProvider -> ModeRegistry -> project WorkspaceModeConfig
+WorkspaceModeProvider -> ModeRegistry -> WorkspaceManagementView
         |
-        +--> mockWorkspaceData.ts -> calendar/board/timeline/dashboard UI
-        |
-        +--> workspaceApi.ts -> /api/workspace/preferences (settings only)
-                                  /api/workspace-modes (available modes)
-                                  /api/workspace-modes/{modeKey}/calendar-items
-                                  /api/google/* (integration operations)
+        +--> workspaceManagementApi.ts -> /api/workspace/overview
+        |                              -> customer/project/issue CRUD
+        |                              -> calendar CRUD and sharing
+        +--> workspaceApi.ts ----------> /api/workspace/preferences
+        +--> existing Google views ----> Gmail, Drive, and Chat API routes
         |
         v
-ASP.NET WorkspaceEndpoints -> EF Core -> PostgreSQL
-                              shared records: WorkspaceMode, CalendarItem,
-                              ChecklistItem, ExternalLink, Note, Tag, Person
-                              Workspace records: Project, Issue, Customer, Colleague
+WorkspaceManagementEndpoints -> EF Core -> PostgreSQL
+                               WorkspaceCustomer
+                               WorkspaceWorkProject
+                               WorkspaceWorkIssue
+                               WorkspaceCalendarEntry -> WorkspaceCalendarShare
 ```
 
-The mode registry is a presentation and capability registry, not the system of
+The mode registry remains a presentation and capability registry, not the system of
 record. Environment variables can enable, hide, or rename modes at build time, and
-the provider stores only the user's active mode id in browser local storage. This is
-useful for lightweight deployments and keeps the shell reusable, but it means a mode
-can appear in the UI without its records being loaded from the API. In particular,
-the Workspace dashboard and most calendar/board/timeline data currently come from
-`mockWorkspaceData.ts`; the generic calendar endpoints exist but are not yet the
-normal read/write path for those screens.
+the provider stores only the active mode id in browser local storage. Workspace work
+records now come from the authenticated API; mock mode data remains only for legacy
+shared-shell views and other modes.
 
 ### Domain and persistence boundary
 
-The backend has two complementary layers:
+Every project belongs to its owner and one customer company. Issues also require a
+customer, but their project foreign key is nullable so an issue can stand alone.
+Changing a project's customer updates its linked issues to preserve that invariant.
+The controlled category taxonomy is TopSolid (CAM or Mold), Eureka, and Boxcon.
 
-- Shared work primitives (`CalendarItem`, `ChecklistItem`, `ExternalLink`, `Note`,
-  `Tag`, and `Person`) support common views across modes. `CalendarItem` can point to
-  a specialized record through `RelatedEntityType` and `RelatedEntityId`.
-- Workspace-specific entities (`Project`, `Issue`, `Customer`, and `Colleague`)
-  provide structure for development work, bugs, feature ideas, customer requests,
-  and people. Google, TopTrack, and PDM links are integration references rather than
-  provider data embedded in the browser.
+Calendar start and end values are converted from the user's configured IANA time
+zone and sent as ISO instants. The API normalizes them to UTC `timestamptz` values;
+each browser formats the same instant in its own configured time zone. Calendar
+shares are normalized rows targeting an active user email or group id. Owners can
+mutate an entry, while matching users and active group members receive read-only
+visibility. Important creates, updates, status transitions, and deletes write audit
+records.
 
-`WorkspaceEndpoints` currently exposes mode discovery, generic calendar-item reads
-and creates, image-asset operations, and per-user Workspace preferences. Preferences
-are JSON documents in `user_settings`, which is appropriate for UI settings such as
-theme, language, display density, and refresh behavior. Durable work records should
-remain relational so they can be filtered, indexed, assigned, audited, and queried
-without parsing a growing settings blob.
-
-The intended Workspace data path should therefore become:
-
-```text
-Workspace view -> typed workspaceApi client -> authorized API endpoint
-              -> user/mode-scoped query -> relational record + DTO
-              -> calendar/board/timeline projection
-```
-
-Until that migration is complete, the product should be described as a configurable
-Workspace prototype with persistence seams, rather than a fully persistent project
-management module.
+Workspace settings remain JSON in `user_settings`, which is appropriate for theme,
+language, time zone, display, refresh, and session preferences. Customer and workload
+records are relational so they can be validated, indexed, joined, and audited. The
+current deployment model creates the new tables idempotently on first Workspace API
+use; a versioned EF migration should replace this compatibility bridge before schema
+changes become frequent.
 
 ### Workspace quality review
 
-- **Functional suitability:** the configured Workspace vocabulary covers the intended
-  work lifecycle—ideas, todo, doing, solved, bugs, features, customers, meetings,
-  links, and integrations. The main missing capability is durable CRUD for the
-  records represented by the UI; adding a calendar item endpoint alone will not
-  persist board-specific fields such as assignee, customer, or category.
-- **Reliability:** local mock data makes the shell usable when the API or integrations
-  are unavailable, and preferences have a server-backed fallback. Once Workspace
-  records become persistent, add optimistic-update rollback, conflict handling, and
-  retryable error states so a failed save cannot leave the board and server divergent.
-- **Performance efficiency:** local rendering is fast and avoids initial API fan-out.
-  For real data, query by mode and date range, paginate board/list views, select only
-  required DTO fields, and index owner/mode/status/date combinations before loading
-  all records into the browser.
-- **Maintainability:** the mode contract is a good extension seam, but `App.tsx`
-  remains a large orchestration point and `mockWorkspaceData.ts` currently mixes
-  product examples with runtime data. Extract Workspace hooks/services and typed
-  DTO mappers before replacing mock data, preserving the component contracts.
+- **Functional suitability:** durable customer, project, issue, calendar, sharing,
+  board, and timeline flows cover the requested general workload. Standalone issues,
+  customer allocation, and TopSolid/Eureka/Boxcon categorization are explicit domain
+  rules rather than UI-only conventions.
+- **Reliability:** server refresh after mutations, owner checks, relationship
+  validation, disabled save states, retry feedback, and UTC normalization prevent the
+  most likely divergent states. Add optimistic concurrency tokens before multiple
+  browser sessions commonly edit the same owner record.
+- **Performance efficiency:** owner/status/date and share-target indexes support the
+  current overview query, and the feature is lazy-loaded. The overview is intentionally
+  one request for a modest workload; add date ranges and pagination before accounts
+  accumulate thousands of calendar items or issues.
+- **Maintainability:** the typed Workspace API and dedicated feature component isolate
+  Workspace behavior from `App.tsx` and Academy. Modal forms share DTO contracts with
+  server validation. Move schema creation to migrations and split the feature into
+  smaller view modules if its scope grows materially.
 - **Compatibility and portability:** mode ids, API routes, local-storage keys, JSON
   preference versions, and date/time-zone behavior are cross-layer contracts. Version
   preference documents and use stable ids rather than display names so renamed modes
   and future clients remain compatible.
-- **Security and freedom from risk:** cookie authentication protects the endpoint
-  group, but authorization must also scope every record query and mutation to the
-  current user or permitted workspace membership. The generic calendar and image
-  asset routes should be reviewed for owner/membership checks before they hold real
-  customer or project data; add CSRF protection for cookie-authenticated writes and
-  audit important mutations.
-- **Usability and quality in use:** the shared views give users a consistent way to
-  switch between calendar, board, and timeline representations. When persistence is
-  enabled, clearly distinguish mock/preview data from saved data, show save and retry
-  status, preserve filters across navigation, and test keyboard, narrow-screen, slow
-  network, and expired-session flows.
+- **Security and freedom from risk:** all records are owner-scoped, shared calendar
+  access is read-only, share targets must be active directory users/groups, and
+  mutations are audited. Add explicit antiforgery protection and finer route-level
+  manage permissions before broad external deployment.
+- **Usability and quality in use:** focused dialogs, empty states, status controls,
+  responsive layouts, local-time labels, retry feedback, and Google Calendar handoff
+  keep core tasks discoverable. Keyboard, screen-reader, DST-transition, narrow-screen,
+  slow-network, and expired-session paths still need automated regression coverage.
 
 ## Academy architecture
 

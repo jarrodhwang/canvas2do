@@ -26,6 +26,11 @@ public sealed class IncosWorkspaceDbContext(DbContextOptions<IncosWorkspaceDbCon
     public DbSet<Project> Projects => Set<Project>();
     public DbSet<Issue> Issues => Set<Issue>();
     public DbSet<Customer> Customers => Set<Customer>();
+    public DbSet<WorkspaceCustomer> WorkspaceCustomers => Set<WorkspaceCustomer>();
+    public DbSet<WorkspaceWorkProject> WorkspaceWorkProjects => Set<WorkspaceWorkProject>();
+    public DbSet<WorkspaceWorkIssue> WorkspaceWorkIssues => Set<WorkspaceWorkIssue>();
+    public DbSet<WorkspaceCalendarEntry> WorkspaceCalendarEntries => Set<WorkspaceCalendarEntry>();
+    public DbSet<WorkspaceCalendarShare> WorkspaceCalendarShares => Set<WorkspaceCalendarShare>();
     public DbSet<Colleague> Colleagues => Set<Colleague>();
     public DbSet<SupportCase> SupportCases => Set<SupportCase>();
     public DbSet<GoogleLink> GoogleLinks => Set<GoogleLink>();
@@ -222,6 +227,87 @@ public sealed class IncosWorkspaceDbContext(DbContextOptions<IncosWorkspaceDbCon
             entity.Property(project => project.Category).HasMaxLength(120);
         });
 
+        modelBuilder.Entity<WorkspaceCustomer>(entity =>
+        {
+            entity.ToTable("workspace_customers");
+            entity.HasIndex(customer => new { customer.OwnerKey, customer.CompanyName }).IsUnique();
+            entity.Property(customer => customer.OwnerKey).HasMaxLength(320);
+            entity.Property(customer => customer.CompanyName).HasMaxLength(180);
+            entity.Property(customer => customer.ContactName).HasMaxLength(160);
+            entity.Property(customer => customer.ContactEmail).HasMaxLength(320);
+            entity.Property(customer => customer.Phone).HasMaxLength(80);
+        });
+
+        modelBuilder.Entity<WorkspaceWorkProject>(entity =>
+        {
+            entity.ToTable("workspace_work_projects");
+            entity.HasIndex(project => new { project.OwnerKey, project.Status, project.DueAtUtc });
+            entity.Property(project => project.OwnerKey).HasMaxLength(320);
+            entity.Property(project => project.Name).HasMaxLength(180);
+            entity.Property(project => project.Description).HasColumnType("text");
+            entity.Property(project => project.Category).HasMaxLength(80);
+            entity.Property(project => project.Subcategory).HasMaxLength(80);
+            entity.Property(project => project.Status).HasMaxLength(40);
+            entity.HasOne(project => project.Customer)
+                .WithMany(customer => customer.Projects)
+                .HasForeignKey(project => project.CustomerId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<WorkspaceWorkIssue>(entity =>
+        {
+            entity.ToTable("workspace_work_issues");
+            entity.HasIndex(issue => new { issue.OwnerKey, issue.Status, issue.DueAtUtc });
+            entity.Property(issue => issue.OwnerKey).HasMaxLength(320);
+            entity.Property(issue => issue.Title).HasMaxLength(240);
+            entity.Property(issue => issue.Description).HasColumnType("text");
+            entity.Property(issue => issue.IssueType).HasMaxLength(40);
+            entity.Property(issue => issue.Status).HasMaxLength(40);
+            entity.Property(issue => issue.Priority).HasMaxLength(40);
+            entity.HasOne(issue => issue.Customer)
+                .WithMany(customer => customer.Issues)
+                .HasForeignKey(issue => issue.CustomerId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(issue => issue.Project)
+                .WithMany(project => project.Issues)
+                .HasForeignKey(issue => issue.ProjectId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<WorkspaceCalendarEntry>(entity =>
+        {
+            entity.ToTable("workspace_calendar_entries");
+            entity.HasIndex(entry => new { entry.OwnerKey, entry.StartAtUtc });
+            entity.Property(entry => entry.OwnerKey).HasMaxLength(320);
+            entity.Property(entry => entry.Title).HasMaxLength(240);
+            entity.Property(entry => entry.Description).HasColumnType("text");
+            entity.Property(entry => entry.ItemType).HasMaxLength(40);
+            entity.Property(entry => entry.Status).HasMaxLength(40);
+            entity.Property(entry => entry.SourceTimeZone).HasMaxLength(120);
+            entity.HasOne(entry => entry.Project)
+                .WithMany(project => project.CalendarEntries)
+                .HasForeignKey(entry => entry.ProjectId)
+                .OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne(entry => entry.Issue)
+                .WithMany(issue => issue.CalendarEntries)
+                .HasForeignKey(entry => entry.IssueId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<WorkspaceCalendarShare>(entity =>
+        {
+            entity.ToTable("workspace_calendar_shares");
+            entity.HasIndex(share => new { share.TargetType, share.TargetKey });
+            entity.HasIndex(share => new { share.CalendarEntryId, share.TargetType, share.TargetKey }).IsUnique();
+            entity.Property(share => share.TargetType).HasMaxLength(20);
+            entity.Property(share => share.TargetKey).HasMaxLength(320);
+            entity.Property(share => share.TargetLabel).HasMaxLength(180);
+            entity.HasOne(share => share.CalendarEntry)
+                .WithMany(entry => entry.Shares)
+                .HasForeignKey(share => share.CalendarEntryId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
         modelBuilder.Entity<Issue>(entity =>
         {
             entity.ToTable("issues");
@@ -326,7 +412,7 @@ public sealed class IncosWorkspaceDbContext(DbContextOptions<IncosWorkspaceDbCon
         modelBuilder.Entity<AuditLog>(entity =>
         {
             entity.ToTable("audit_logs");
-            entity.Property(log => log.ActorUserId).HasMaxLength(120);
+            entity.Property(log => log.ActorUserId).HasMaxLength(320);
             entity.Property(log => log.Action).HasMaxLength(120);
             entity.Property(log => log.EntityType).HasMaxLength(120);
             entity.Property(log => log.MetadataJson).HasColumnType("jsonb");

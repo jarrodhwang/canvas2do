@@ -6439,7 +6439,9 @@ function App() {
         ? 'failed'
         : canvasCalendarLoadStatus;
   const canvasCalendarEmptyMessage = activeMode.id === 'academy' && effectiveCanvasCalendarLoadStatus === 'failed'
-    ? dictionary.canvasCalendarUnavailable
+    ? hasFailedAcademyPreferencesLoad
+      ? dictionary.academyPreferencesUnavailable
+      : dictionary.canvasCalendarUnavailable
     : undefined;
   const canRenderAcademyCalendarSourceItems = activeMode.id === 'academy' && hasLoadedAcademyPreferences;
   const allCalendarSourceItems = canRenderAcademyCalendarSourceItems

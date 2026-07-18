@@ -6317,7 +6317,15 @@ export function DashboardCards({
     ) {
       showDashboardSnackbar({ message: dictionary.academyDashboardRefreshSuccess, tone: 'success' });
     } else {
-      showDashboardSnackbar({ message: dictionary.academyDashboardRefreshFailed, tone: 'error' });
+      const failureMessage = preferencesResult.status === 'rejected'
+        ? dictionary.academyDashboardPreferencesRefreshFailed
+        : coursesResult.status === 'rejected'
+          ? dictionary.academyDashboardCanvasCoursesRefreshFailed
+          : courseworkResult.status === 'rejected'
+            ? dictionary.academyDashboardCanvasCalendarRefreshFailed
+            : dictionary.academyDashboardRefreshFailed;
+
+      showDashboardSnackbar({ message: failureMessage, tone: 'error' });
     }
 
     return syncedCanvasCourseworkItems;

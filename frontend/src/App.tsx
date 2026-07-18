@@ -6298,6 +6298,14 @@ function App() {
   const [academyPreferencesSaveStatus, setAcademyPreferencesSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle');
   const [academyPreferencesSaveError, setAcademyPreferencesSaveError] = useState('');
   const [isAcademySettingsLeaveDialogOpen, setIsAcademySettingsLeaveDialogOpen] = useState(false);
+  const [canvasTokenStatus, setCanvasTokenStatus] = useState<CanvasTokenStatus | null>(null);
+  const [isCanvasTokenExpiryDialogOpen, setIsCanvasTokenExpiryDialogOpen] = useState(false);
+  const [isCanvasTokenExpirySaving, setIsCanvasTokenExpirySaving] = useState(false);
+  const [canvasTokenExpiryError, setCanvasTokenExpiryError] = useState('');
+  const [canvasTokenExpiryDraft, setCanvasTokenExpiryDraft] = useState({
+    accessToken: '',
+    expiresAt: '',
+  });
   const [focusedCalendarTodoId, setFocusedCalendarTodoId] = useState<string | null>(null);
   const [selectedCalendarTodoDetailsId, setSelectedCalendarTodoDetailsId] = useState<string | null>(null);
   const [canvasCalendarPages, setCanvasCalendarPages] = useState<Record<string, CanvasCalendarPage>>({});
@@ -6326,6 +6334,8 @@ function App() {
   const hasUnsavedAcademySettingsRef = useRef(false);
   const hasUnsavedWorkspaceSettingsRef = useRef(false);
   const authSessionKeyRef = useRef<string | null>(null);
+  const ignoredExpiredCanvasTokenOwnerRef = useRef<string | null>(null);
+  const canvasTokenStatusLoadSequenceRef = useRef(0);
   const pendingSettingsNavigationRef = useRef<(() => void) | null>(null);
   const academyResumeRefreshRef = useRef({
     isRunning: false,
@@ -6763,7 +6773,101 @@ function App() {
     isAcademyPreferencesSavingRef.current = false;
     setAcademyPreferencesSaveStatus('idle');
     setAcademyPreferencesSaveError('');
+    setCanvasTokenStatus(null);
+    setIsCanvasTokenExpiryDialogOpen(false);
+    setIsCanvasTokenExpirySaving(false);
+    setCanvasTokenExpiryError('');
+    setCanvasTokenExpiryDraft({ accessToken: '', expiresAt: '' });
+    ignoredExpiredCanvasTokenOwnerRef.current = null;
+    canvasTokenStatusLoadSequenceRef.current += 1;
   };
+
+  const canvasTokenOwnerKey = authSession
+    ? getAuthSessionIdentityKey(authSession) ?? authSession.email ?? null
+    : null;
+
+  const ignoreExpiredCanvasToken = () => {
+    ignoredExpiredCanvasTokenOwnerRef.current = canvasTokenOwnerKey;
+    setCanvasTokenExpiryDraft({ accessToken: '', expiresAt: '' });
+    setCanvasTokenExpiryError('');
+    setIsCanvasTokenExpiryDialogOpen(false);
+  };
+
+  const handleExpiredCanvasTokenSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!canvasTokenExpiryDraft.accessToken.trim()) {
+      setCanvasTokenExpiryError(dictionary.canvasTokenValueRequired);
+      return;
+    }
+
+    if (!canvasTokenExpiryDraft.expiresAt) {
+      setCanvasTokenExpiryError(dictionary.canvasTokenExpiryRequired);
+      return;
+    }
+
+    setIsCanvasTokenExpirySaving(true);
+    setCanvasTokenExpiryError('');
+    canvasTokenStatusLoadSequenceRef.current += 1;
+
+    workspaceApi
+      .updateCanvasToken({
+        accessToken: canvasTokenExpiryDraft.accessToken,
+        expiresAt: optionalIsoFromDateInput(canvasTokenExpiryDraft.expiresAt),
+        instanceUrl: canvasTokenStatus?.instanceUrl ?? 'https://canvas.sfu.ca',
+      })
+      .then((status) => {
+        setCanvasTokenStatus(status);
+        setCanvasTokenExpiryDraft({ accessToken: '', expiresAt: '' });
+        setIsCanvasTokenExpiryDialogOpen(false);
+        ignoredExpiredCanvasTokenOwnerRef.current = null;
+        window.dispatchEvent(new CustomEvent<AcademyRefreshRequestedDetail>(academyRefreshRequestedEvent, {
+          detail: { forceRefresh: true },
+        }));
+      })
+      .catch((error: unknown) => {
+        setCanvasTokenExpiryError(error instanceof Error ? error.message : dictionary.canvasTokenSaveFailed);
+      })
+      .finally(() => setIsCanvasTokenExpirySaving(false));
+  };
+
+  useEffect(() => {
+    if (
+      authStatus !== 'authenticated' ||
+      activeMode.id !== 'academy' ||
+      !canvasTokenOwnerKey
+    ) {
+      return undefined;
+    }
+
+    let isCancelled = false;
+    const loadSequence = ++canvasTokenStatusLoadSequenceRef.current;
+
+    workspaceApi
+      .getCanvasTokenStatus()
+      .then((status) => {
+        if (isCancelled || loadSequence !== canvasTokenStatusLoadSequenceRef.current) {
+          return;
+        }
+
+        setCanvasTokenStatus(status);
+
+        if (status.status === 'expired' && ignoredExpiredCanvasTokenOwnerRef.current !== canvasTokenOwnerKey) {
+          setCanvasTokenExpiryDraft({ accessToken: '', expiresAt: '' });
+          setCanvasTokenExpiryError('');
+          setIsCanvasTokenExpiryDialogOpen(true);
+        } else if (status.status !== 'expired') {
+          ignoredExpiredCanvasTokenOwnerRef.current = null;
+        }
+      })
+      .catch(() => {
+        // A status check must not block Academy when the workspace API is temporarily unavailable.
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activeMode.id, authStatus, canvasTokenOwnerKey]);
 
   const runPendingSettingsNavigation = () => {
     const pendingAction = pendingSettingsNavigationRef.current;
@@ -9338,6 +9442,71 @@ function App() {
               </Button>
             </div>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        onOpenChange={(open) => {
+          if (!open && !isCanvasTokenExpirySaving) {
+            ignoreExpiredCanvasToken();
+          }
+        }}
+        open={isCanvasTokenExpiryDialogOpen}
+      >
+        <DialogContent className="max-w-md" showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>{dictionary.canvasTokenExpiredDialogTitle}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm font-semibold text-muted-foreground">
+            {dictionary.canvasTokenExpiredDialogDescription}
+          </p>
+          <form className="grid gap-3" onSubmit={handleExpiredCanvasTokenSubmit}>
+            <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+              <span>{dictionary.canvasTokenValue}</span>
+              <Input
+                autoComplete="new-password"
+                disabled={isCanvasTokenExpirySaving}
+                onChange={(event) => setCanvasTokenExpiryDraft((currentDraft) => ({
+                  ...currentDraft,
+                  accessToken: event.target.value,
+                }))}
+                placeholder={dictionary.canvasTokenValuePlaceholder}
+                type="password"
+                value={canvasTokenExpiryDraft.accessToken}
+              />
+            </label>
+            <div className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+              <span>{dictionary.canvasTokenExpiresAt}</span>
+              <DateTimeField
+                defaultTime="23:59"
+                disabled={isCanvasTokenExpirySaving}
+                id="expired-canvas-token-expires-at"
+                onChange={(value) => setCanvasTokenExpiryDraft((currentDraft) => ({
+                  ...currentDraft,
+                  expiresAt: value,
+                }))}
+                value={canvasTokenExpiryDraft.expiresAt}
+              />
+            </div>
+            {canvasTokenExpiryError ? (
+              <div className="rounded-md border border-red-500/35 bg-red-500/10 px-3 py-2 text-xs font-bold text-red-700 dark:text-red-200">
+                {canvasTokenExpiryError}
+              </div>
+            ) : null}
+            <DialogFooter className="gap-2 sm:justify-between">
+              <Button
+                disabled={isCanvasTokenExpirySaving}
+                onClick={ignoreExpiredCanvasToken}
+                type="button"
+                variant="outline"
+              >
+                {dictionary.canvasTokenIgnoreAndContinue}
+              </Button>
+              <Button disabled={isCanvasTokenExpirySaving} type="submit">
+                {isCanvasTokenExpirySaving ? dictionary.canvasTokenSaving : dictionary.canvasTokenSave}
+              </Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
 

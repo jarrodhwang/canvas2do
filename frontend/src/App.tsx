@@ -149,7 +149,11 @@ interface DriveBrowserHistoryState {
 type CanvasCalendarLoadStatus = 'idle' | 'loading' | 'loaded' | 'failed';
 type CalendarTodoStyle = 'comfortable' | 'compact';
 
-const canvasCalendarLoadingTimeoutMs = 12_000;
+// Keep the view-level timeout aligned with the API client's cancellation timeout.
+// Canvas calendar aggregation can involve several paginated upstream requests, so
+// a shorter UI timeout incorrectly reported an unavailable calendar while the
+// request was still in progress.
+const canvasCalendarLoadingTimeoutMs = 30_000;
 const academyProfileImageMaxBytes = 256 * 1024;
 const previewBannerPositionStorageKey = 'incos-preview-banner-position';
 const previewBannerDragHoldMs = 90;

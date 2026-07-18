@@ -370,7 +370,7 @@ public static class CanvasIntegrationEndpoints
                 .Where(course => !string.IsNullOrWhiteSpace(course.Id))
                 .Select(course => $"course_{course.Id}")
                 .ToArray();
-            var assignmentEventsTask = GetCanvasCalendarEventsAsync(
+            var assignmentEventsTask = GetCanvasCalendarEventsBestEffortAsync(
                 httpClientFactory,
                 instanceUrl,
                 accessToken,
@@ -380,7 +380,7 @@ public static class CanvasIntegrationEndpoints
                 safePageSize,
                 contextCodes,
                 cancellationToken);
-            var calendarEventsTask = GetCanvasCalendarEventsAsync(
+            var calendarEventsTask = GetCanvasCalendarEventsBestEffortAsync(
                 httpClientFactory,
                 instanceUrl,
                 accessToken,
@@ -392,8 +392,19 @@ public static class CanvasIntegrationEndpoints
                 cancellationToken);
             await Task.WhenAll(assignmentEventsTask, calendarEventsTask);
 
-            var assignmentEvents = await assignmentEventsTask;
-            var calendarEvents = await calendarEventsTask;
+            var assignmentEventsResult = await assignmentEventsTask;
+            var calendarEventsResult = await calendarEventsTask;
+
+            if (assignmentEventsResult.Error is not null && calendarEventsResult.Error is not null)
+            {
+                return Results.Problem(
+                    title: "Canvas calendar failed to load.",
+                    detail: "Canvas could not provide assignment or event calendar data.",
+                    statusCode: GetMostRelevantCanvasStatusCode(assignmentEventsResult.Error, calendarEventsResult.Error));
+            }
+
+            var assignmentEvents = assignmentEventsResult.Events;
+            var calendarEvents = calendarEventsResult.Events;
             var submissionLookupResult = await GetCanvasAssignmentSubmissionLookupBestEffortAsync(
                 httpClientFactory,
                 instanceUrl,
@@ -1865,6 +1876,47 @@ public static class CanvasIntegrationEndpoints
         var batchEvents = await Task.WhenAll(batchTasks);
 
         return batchEvents.SelectMany(events => events).ToArray();
+    }
+
+    private static async Task<CanvasCalendarEventsResult> GetCanvasCalendarEventsBestEffortAsync(
+        IHttpClientFactory httpClientFactory,
+        string instanceUrl,
+        string accessToken,
+        string type,
+        DateTimeOffset startAt,
+        DateTimeOffset endAt,
+        int pageSize,
+        string[] contextCodes,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var events = await GetCanvasCalendarEventsAsync(
+                httpClientFactory,
+                instanceUrl,
+                accessToken,
+                type,
+                startAt,
+                endAt,
+                pageSize,
+                contextCodes,
+                cancellationToken);
+
+            return new CanvasCalendarEventsResult(events, null);
+        }
+        catch (CanvasApiRequestException exception)
+        {
+            return new CanvasCalendarEventsResult([], exception);
+        }
+    }
+
+    private static int GetMostRelevantCanvasStatusCode(
+        CanvasApiRequestException firstException,
+        CanvasApiRequestException secondException)
+    {
+        return firstException.StatusCode is >= 400 and < 500
+            ? firstException.StatusCode
+            : secondException.StatusCode;
     }
 
     private static async Task<JsonElement[]> GetCanvasCalendarEventsBatchAsync(
@@ -3345,6 +3397,7 @@ public static class CanvasIntegrationEndpoints
     }
 
     private sealed record CanvasApiPage(string Payload, string? NextUrl);
+    private sealed record CanvasCalendarEventsResult(JsonElement[] Events, CanvasApiRequestException? Error);
 
     private sealed class CanvasApiRequestException(string title, string detail, int statusCode) : Exception(title)
     {

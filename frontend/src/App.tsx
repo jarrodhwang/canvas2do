@@ -160,6 +160,7 @@ const previewBannerDragHoldMs = 90;
 const previewBannerDragCancelDistance = 14;
 
 interface CanvasCalendarPage {
+  errorMessage?: string;
   items: CanvasCalendarItem[];
   requestedAt?: number;
   status: CanvasCalendarLoadStatus;
@@ -6441,7 +6442,7 @@ function App() {
   const canvasCalendarEmptyMessage = activeMode.id === 'academy' && effectiveCanvasCalendarLoadStatus === 'failed'
     ? hasFailedAcademyPreferencesLoad
       ? dictionary.academyPreferencesUnavailable
-      : dictionary.canvasCalendarUnavailable
+      : canvasCalendarPage?.errorMessage ?? dictionary.canvasCalendarUnavailable
     : undefined;
   const canRenderAcademyCalendarSourceItems = activeMode.id === 'academy' && hasLoadedAcademyPreferences;
   const allCalendarSourceItems = canRenderAcademyCalendarSourceItems
@@ -8236,6 +8237,7 @@ function App() {
             ...currentPages,
             [monthKey]: {
               items: [],
+              errorMessage: error instanceof Error ? error.message : undefined,
               status: 'failed',
             },
           };
@@ -8341,6 +8343,7 @@ function App() {
               ...currentPages,
               [monthKey]: {
                 items: [],
+                errorMessage: error instanceof Error ? error.message : undefined,
                 status: 'failed',
               },
             };

@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -18,7 +19,9 @@ public static class CanvasIntegrationEndpoints
     private const string CanvasTokenSettingKey = "canvas.token";
     private const string CanvasTokenProtectorPurpose = "incos.workspace.canvas-token.v1";
     private const string CanvasUserAgent = "INCOS-Workspace/1.0 (Canvas LMS integration)";
+    private const int CanvasActiveCourseFetchPageSize = 50;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> CanvasActiveCourseCacheLocks = new(StringComparer.Ordinal);
 
     public static IEndpointRouteBuilder MapCanvasIntegrationEndpoints(this IEndpointRouteBuilder app)
     {
@@ -1726,34 +1729,48 @@ public static class CanvasIntegrationEndpoints
         var courseCacheKey = string.Join(
             ':',
             "canvas-active-courses",
-            "v2",
+            "v3",
             userCacheKey,
-            instanceUrl,
-            safePageSize.ToString(CultureInfo.InvariantCulture));
+            instanceUrl);
 
         if (memoryCache.TryGetValue(courseCacheKey, out CanvasCourseDto[]? courses) &&
             courses is not null)
         {
-            return courses;
+            return courses.Take(safePageSize).ToArray();
         }
 
-        courses = await GetActiveStudentCoursesAsync(
-            httpClientFactory,
-            instanceUrl,
-            accessToken,
-            safePageSize,
-            cancellationToken);
+        var cacheLock = CanvasActiveCourseCacheLocks.GetOrAdd(courseCacheKey, _ => new SemaphoreSlim(1, 1));
+        await cacheLock.WaitAsync(cancellationToken);
 
-        memoryCache.Set(
-            courseCacheKey,
-            courses,
-            new MemoryCacheEntryOptions
+        try
+        {
+            if (memoryCache.TryGetValue(courseCacheKey, out courses) && courses is not null)
             {
-                AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5),
-                SlidingExpiration = TimeSpan.FromMinutes(1),
-            });
+                return courses.Take(safePageSize).ToArray();
+            }
 
-        return courses;
+            courses = await GetActiveStudentCoursesAsync(
+                httpClientFactory,
+                instanceUrl,
+                accessToken,
+                CanvasActiveCourseFetchPageSize,
+                cancellationToken);
+
+            memoryCache.Set(
+                courseCacheKey,
+                courses,
+                new MemoryCacheEntryOptions
+                {
+                    AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5),
+                    SlidingExpiration = TimeSpan.FromMinutes(1),
+                });
+
+            return courses.Take(safePageSize).ToArray();
+        }
+        finally
+        {
+            cacheLock.Release();
+        }
     }
 
     private static async Task<CanvasCourseDto[]> GetActiveStudentCoursesAsync(
@@ -2998,10 +3015,7 @@ public static class CanvasIntegrationEndpoints
 
         if (!response.IsSuccessStatusCode)
         {
-            throw new CanvasApiRequestException(
-                "Canvas request failed.",
-                string.IsNullOrWhiteSpace(payload) ? response.ReasonPhrase ?? "Canvas returned an error." : payload,
-                (int)response.StatusCode);
+            throw CreateCanvasRequestException(response.StatusCode);
         }
 
         return new CanvasApiPage(payload, GetNextLinkUrl(response));
@@ -3025,10 +3039,7 @@ public static class CanvasIntegrationEndpoints
 
         if (!response.IsSuccessStatusCode)
         {
-            throw new CanvasApiRequestException(
-                "Canvas request failed.",
-                string.IsNullOrWhiteSpace(payload) ? response.ReasonPhrase ?? "Canvas returned an error." : payload,
-                (int)response.StatusCode);
+            throw CreateCanvasRequestException(response.StatusCode);
         }
 
         using var document = JsonDocument.Parse(payload);
@@ -3048,6 +3059,38 @@ public static class CanvasIntegrationEndpoints
     {
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         request.Headers.TryAddWithoutValidation("User-Agent", CanvasUserAgent);
+    }
+
+    private static CanvasApiRequestException CreateCanvasRequestException(System.Net.HttpStatusCode statusCode)
+    {
+        if (statusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+        {
+            return new CanvasApiRequestException(
+                "Canvas access was denied.",
+                "Canvas rejected the saved token or this account no longer has access. Paste a current Canvas API token in Academy Settings, then refresh.",
+                StatusCodes.Status409Conflict);
+        }
+
+        if (statusCode == System.Net.HttpStatusCode.TooManyRequests)
+        {
+            return new CanvasApiRequestException(
+                "Canvas is temporarily rate limited.",
+                "Canvas asked the workspace to slow down. Wait a moment, then refresh.",
+                StatusCodes.Status429TooManyRequests);
+        }
+
+        if ((int)statusCode >= StatusCodes.Status500InternalServerError)
+        {
+            return new CanvasApiRequestException(
+                "Canvas is temporarily unavailable.",
+                "Canvas could not complete this request. Try again in a moment.",
+                StatusCodes.Status502BadGateway);
+        }
+
+        return new CanvasApiRequestException(
+            "Canvas request failed.",
+            $"Canvas could not complete this request (HTTP {(int)statusCode}).",
+            (int)statusCode);
     }
 
     private static string? GetNextLinkUrl(HttpResponseMessage response)

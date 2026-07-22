@@ -257,7 +257,6 @@ const academyPreferencesUpdatedEvent = 'incos-academy-preferences-updated';
 const academyOpenCourseworkDialogEvent = 'incos-academy-open-coursework-dialog';
 const academyRefreshRequestedEvent = 'incos-academy-refresh-requested';
 const defaultAcademyAutoRefreshIntervalMs = 10 * 60_000;
-const defaultAcademyRefocusRefreshThrottleMs = 5 * 60_000;
 type AcademyOpenCourseworkDialogDetail = Partial<Pick<
   ManualCourseworkItem,
   'courseCode' | 'dueAt' | 'startAt' | 'title' | 'semester'
@@ -3647,7 +3646,6 @@ function AssessmentDialog({
 
 interface DashboardCardsProps {
   academyAutoRefreshIntervalMs?: number;
-  academyRefocusRefreshThrottleMs?: number;
   compactAcademySummary?: boolean;
   courseworkHideSettings?: CourseworkHideSettings;
   courseworkShowStudyItems?: boolean;
@@ -3664,7 +3662,6 @@ interface DashboardCardsProps {
 
 export function DashboardCards({
   academyAutoRefreshIntervalMs = defaultAcademyAutoRefreshIntervalMs,
-  academyRefocusRefreshThrottleMs = defaultAcademyRefocusRefreshThrottleMs,
   compactAcademySummary = false,
   courseworkHideSettings = defaultCourseworkHideSettings,
   courseworkShowStudyItems = true,
@@ -3729,9 +3726,14 @@ export function DashboardCards({
   const academyRefreshLongPressTimeoutRef = useRef<number | null>(null);
   const academyRefreshLongPressTriggeredRef = useRef(false);
   const canvasCourseworkRequestSequenceRef = useRef(0);
+  const isAcademyDashboardRefreshingRef = useRef(false);
   const protectedCanvasSubmissionStatusesRef = useRef(new Map<string, ProtectedCanvasSubmissionStatus>());
   const refreshAcademyDashboardDataEvent = useEffectEvent(refreshAcademyDashboardData);
   const dateLocale = getDateLocale(language);
+
+  useEffect(() => {
+    isAcademyDashboardRefreshingRef.current = isAcademyDashboardRefreshing;
+  }, [isAcademyDashboardRefreshing]);
   const selectedManualLecture = selectedManualLectureId
     ? manualLectures.find((lecture) => lecture.id === selectedManualLectureId)
     : undefined;
@@ -4455,9 +4457,8 @@ export function DashboardCards({
     }
 
     let isSyncing = false;
-    let lastFocusSyncStartedAt = 0;
     const refreshAcademyData = () => {
-      if (isSyncing || isAcademyDashboardRefreshing || document.visibilityState === 'hidden') {
+      if (isSyncing || isAcademyDashboardRefreshingRef.current || document.visibilityState === 'hidden') {
         return;
       }
 
@@ -4468,36 +4469,14 @@ export function DashboardCards({
           isSyncing = false;
         });
     };
-    const refreshAcademyDataOnFocus = () => {
-      const now = Date.now();
-
-      if (now - lastFocusSyncStartedAt < academyRefocusRefreshThrottleMs) {
-        return;
-      }
-
-      lastFocusSyncStartedAt = now;
-      refreshAcademyData();
-    };
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        refreshAcademyDataOnFocus();
-      }
-    };
-
-    window.addEventListener('focus', refreshAcademyDataOnFocus);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
     const refreshInterval = window.setInterval(refreshAcademyData, academyAutoRefreshIntervalMs);
 
     return () => {
-      window.removeEventListener('focus', refreshAcademyDataOnFocus);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.clearInterval(refreshInterval);
     };
   }, [
     academyAutoRefreshIntervalMs,
-    academyRefocusRefreshThrottleMs,
     activeMode.id,
-    isAcademyDashboardRefreshing,
   ]);
 
   useEffect(() => {

@@ -8061,9 +8061,6 @@ function App() {
     }
 
     let isSyncing = false;
-    // Treat the initial page load as the first refresh baseline. Otherwise a
-    // focus event from the first interaction can immediately restart loading.
-    let lastFocusSyncStartedAt = Date.now();
     const syncAcademyPreferences = () => {
       if (isSyncing || isAcademyPreferencesSavingRef.current || document.visibilityState === 'hidden') {
         return;
@@ -8111,34 +8108,12 @@ function App() {
         });
     };
     const syncInterval = window.setInterval(syncAcademyPreferences, academyAutoRefreshIntervalMs);
-    const syncAcademyPreferencesOnFocus = () => {
-      const now = Date.now();
-
-      if (now - lastFocusSyncStartedAt < academyRefocusRefreshThrottleMs) {
-        return;
-      }
-
-      lastFocusSyncStartedAt = now;
-      syncAcademyPreferences();
-    };
-    const handleFocus = () => syncAcademyPreferencesOnFocus();
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        syncAcademyPreferencesOnFocus();
-      }
-    };
-
-    window.addEventListener('focus', handleFocus);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.clearInterval(syncInterval);
-      window.removeEventListener('focus', handleFocus);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [
     academyAutoRefreshIntervalMs,
-    academyRefocusRefreshThrottleMs,
     activeMode.id,
     authStatus,
     hasLoadedAcademyPreferences,
@@ -9668,7 +9643,6 @@ function App() {
                 >
                   <DashboardCards
                     academyAutoRefreshIntervalMs={academyAutoRefreshIntervalMs}
-                    academyRefocusRefreshThrottleMs={academyRefocusRefreshThrottleMs}
                     compactAcademySummary={shouldUseCompactDashboardMonth}
                     courseworkHideSettings={{
                       completedAfterHours: academyCalendarSettings.courseworkHideCompletedAfterHours,

@@ -257,6 +257,8 @@ const academyPreferencesUpdatedEvent = 'incos-academy-preferences-updated';
 const academyOpenCourseworkDialogEvent = 'incos-academy-open-coursework-dialog';
 const academyRefreshRequestedEvent = 'incos-academy-refresh-requested';
 const defaultAcademyAutoRefreshIntervalMs = 10 * 60_000;
+const dashboardRefreshFreshThresholdMs = 30 * 60_000;
+const dashboardRefreshRecentThresholdMs = 60 * 60_000;
 type AcademyOpenCourseworkDialogDetail = Partial<Pick<
   ManualCourseworkItem,
   'courseCode' | 'dueAt' | 'startAt' | 'title' | 'semester'
@@ -1961,6 +1963,32 @@ function getCourseworkDueChipClass(state?: CourseworkDueState) {
   }
 
   return 'border-neutral-200 bg-neutral-100 text-neutral-600 dark:border-white/10 dark:bg-white/10 dark:text-muted-foreground';
+}
+
+type DashboardRefreshAge = 'fresh' | 'recent' | 'stale';
+
+const dashboardRefreshAgeClasses: Record<DashboardRefreshAge, string> = {
+  fresh: 'border-yellow-500/60 bg-yellow-400 text-yellow-950 hover:bg-yellow-300 dark:border-yellow-300 dark:bg-yellow-300 dark:text-yellow-950',
+  recent: 'border-orange-500/60 bg-orange-500 text-white hover:bg-orange-400 dark:border-orange-300 dark:bg-orange-400 dark:text-orange-950',
+  stale: 'border-red-500/60 bg-red-600 text-white hover:bg-red-500 dark:border-red-300 dark:bg-red-500',
+};
+
+function getDashboardRefreshAge(lastSuccessfulRefreshAt: number | null, now: number): DashboardRefreshAge {
+  if (lastSuccessfulRefreshAt === null) {
+    return 'stale';
+  }
+
+  const ageMs = Math.max(0, now - lastSuccessfulRefreshAt);
+
+  if (ageMs < dashboardRefreshFreshThresholdMs) {
+    return 'fresh';
+  }
+
+  if (ageMs < dashboardRefreshRecentThresholdMs) {
+    return 'recent';
+  }
+
+  return 'stale';
 }
 
 interface DashboardRowsProps {
@@ -3684,6 +3712,8 @@ export function DashboardCards({
   const [canvasCourseworkItems, setCanvasCourseworkItems] = useState<CanvasCalendarItem[]>([]);
   const [canvasCourseworkLoadStatus, setCanvasCourseworkLoadStatus] = useState<CanvasCourseLoadStatus>('idle');
   const [isAcademyDashboardRefreshInProgress, setIsAcademyDashboardRefreshInProgress] = useState(false);
+  const [lastSuccessfulDashboardRefreshAt, setLastSuccessfulDashboardRefreshAt] = useState<number | null>(null);
+  const [dashboardRefreshClock, setDashboardRefreshClock] = useState(() => Date.now());
   const isAcademyDashboardRefreshing =
     isAcademyDashboardRefreshInProgress ||
     canvasCourseLoadStatus === 'loading' ||
@@ -3730,10 +3760,30 @@ export function DashboardCards({
   const protectedCanvasSubmissionStatusesRef = useRef(new Map<string, ProtectedCanvasSubmissionStatus>());
   const refreshAcademyDashboardDataEvent = useEffectEvent(refreshAcademyDashboardData);
   const dateLocale = getDateLocale(language);
+  const dashboardRefreshAge = getDashboardRefreshAge(lastSuccessfulDashboardRefreshAt, dashboardRefreshClock);
+  const dashboardRefreshAgeLabel = dashboardRefreshAge === 'fresh'
+    ? dictionary.academyDashboardRefreshFresh
+    : dashboardRefreshAge === 'recent'
+      ? dictionary.academyDashboardRefreshRecent
+      : dictionary.academyDashboardRefreshStale;
 
   useEffect(() => {
     isAcademyDashboardRefreshingRef.current = isAcademyDashboardRefreshing;
   }, [isAcademyDashboardRefreshing]);
+
+  useEffect(() => {
+    if (activeMode.id !== 'academy') {
+      return undefined;
+    }
+
+    const refreshClockInterval = window.setInterval(() => {
+      setDashboardRefreshClock(Date.now());
+    }, 60_000);
+
+    return () => {
+      window.clearInterval(refreshClockInterval);
+    };
+  }, [activeMode.id]);
   const selectedManualLecture = selectedManualLectureId
     ? manualLectures.find((lecture) => lecture.id === selectedManualLectureId)
     : undefined;
@@ -6294,6 +6344,9 @@ export function DashboardCards({
       courseworkResult.status === 'fulfilled' &&
       externalResults.every((result) => result.status === 'fulfilled')
     ) {
+      const refreshedAt = Date.now();
+      setLastSuccessfulDashboardRefreshAt(refreshedAt);
+      setDashboardRefreshClock(refreshedAt);
       showDashboardSnackbar({ message: dictionary.academyDashboardRefreshSuccess, tone: 'success' });
     } else {
       const failureMessage = preferencesResult.status === 'rejected'
@@ -6707,8 +6760,11 @@ export function DashboardCards({
             </div>
           ) : null}
           <Button
-            aria-label={dictionary.academyDashboardRefresh}
-            className="fixed bottom-5 right-5 z-40 size-12 rounded-full border-border bg-background/90 text-muted-foreground shadow-lg backdrop-blur hover:bg-muted hover:text-foreground max-lg:bottom-24 max-[520px]:bottom-20"
+            aria-label={`${dictionary.academyDashboardRefresh} · ${dashboardRefreshAgeLabel}`}
+            className={cn(
+              'fixed bottom-5 right-5 z-40 size-12 rounded-full shadow-lg backdrop-blur max-lg:bottom-24 max-[520px]:bottom-20',
+              dashboardRefreshAgeClasses[dashboardRefreshAge],
+            )}
             disabled={isAcademyDashboardRefreshing}
             onClick={handleRefreshAcademyDashboard}
             onPointerCancel={cancelAcademyRefreshLongPress}
@@ -6716,7 +6772,7 @@ export function DashboardCards({
             onPointerLeave={cancelAcademyRefreshLongPress}
             onPointerUp={cancelAcademyRefreshLongPress}
             size="icon"
-            title={`${dictionary.academyDashboardRefresh} · Hold to reload page`}
+            title={`${dictionary.academyDashboardRefresh} · ${dashboardRefreshAgeLabel} · Hold to reload page`}
             type="button"
             variant="outline"
           >

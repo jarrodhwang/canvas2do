@@ -7989,7 +7989,9 @@ function App() {
     }
 
     let isSyncing = false;
-    let lastFocusSyncStartedAt = 0;
+    // Loading the app in an unfocused tab must not make the first click trigger
+    // a second preferences sync just because it focuses the tab.
+    let lastFocusSyncStartedAt = Date.now();
     const syncWorkspacePreferences = () => {
       if (isSyncing || isWorkspacePreferencesSavingRef.current || document.visibilityState === 'hidden') {
         return;
@@ -8059,7 +8061,9 @@ function App() {
     }
 
     let isSyncing = false;
-    let lastFocusSyncStartedAt = 0;
+    // Treat the initial page load as the first refresh baseline. Otherwise a
+    // focus event from the first interaction can immediately restart loading.
+    let lastFocusSyncStartedAt = Date.now();
     const syncAcademyPreferences = () => {
       if (isSyncing || isAcademyPreferencesSavingRef.current || document.visibilityState === 'hidden') {
         return;
@@ -8609,6 +8613,11 @@ function App() {
     if (authStatus === 'unauthenticated') {
       return undefined;
     }
+
+    // The initial page lifecycle may finish in a background tab. Establish the
+    // resume baseline here so the first click used to focus that tab does not
+    // refresh the entire page again.
+    academyResumeRefreshRef.current.lastStartedAt = Date.now();
 
     const refreshAuthSessionWithRetry = async () => {
       let lastError: unknown;

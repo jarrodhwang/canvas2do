@@ -1965,9 +1965,10 @@ function getCourseworkDueChipClass(state?: CourseworkDueState) {
   return 'border-neutral-200 bg-neutral-100 text-neutral-600 dark:border-white/10 dark:bg-white/10 dark:text-muted-foreground';
 }
 
-type DashboardRefreshAge = 'fresh' | 'recent' | 'stale';
+type DashboardRefreshAge = 'unknown' | 'fresh' | 'recent' | 'stale';
 
 const dashboardRefreshAgeClasses: Record<DashboardRefreshAge, string> = {
+  unknown: 'border-border bg-background/90 text-muted-foreground hover:bg-muted hover:text-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50',
   fresh: 'border-border bg-background/90 text-muted-foreground hover:bg-muted hover:text-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50',
   recent: 'border-orange-500/60 bg-orange-500 text-white hover:bg-orange-400 dark:border-orange-300 dark:bg-orange-400 dark:text-orange-950',
   stale: 'border-red-500/60 bg-red-600 text-white hover:bg-red-500 dark:border-red-300 dark:bg-red-500',
@@ -1975,7 +1976,7 @@ const dashboardRefreshAgeClasses: Record<DashboardRefreshAge, string> = {
 
 function getDashboardRefreshAge(lastSuccessfulRefreshAt: number | null, now: number): DashboardRefreshAge {
   if (lastSuccessfulRefreshAt === null) {
-    return 'stale';
+    return 'unknown';
   }
 
   const ageMs = Math.max(0, now - lastSuccessfulRefreshAt);
@@ -3761,11 +3762,13 @@ export function DashboardCards({
   const refreshAcademyDashboardDataEvent = useEffectEvent(refreshAcademyDashboardData);
   const dateLocale = getDateLocale(language);
   const dashboardRefreshAge = getDashboardRefreshAge(lastSuccessfulDashboardRefreshAt, dashboardRefreshClock);
-  const dashboardRefreshAgeLabel = dashboardRefreshAge === 'fresh'
-    ? dictionary.academyDashboardRefreshFresh
-    : dashboardRefreshAge === 'recent'
-      ? dictionary.academyDashboardRefreshRecent
-      : dictionary.academyDashboardRefreshStale;
+  const dashboardRefreshAgeLabel = dashboardRefreshAge === 'unknown'
+    ? dictionary.academyDashboardRefreshUnknown
+    : dashboardRefreshAge === 'fresh'
+      ? dictionary.academyDashboardRefreshFresh
+      : dashboardRefreshAge === 'recent'
+        ? dictionary.academyDashboardRefreshRecent
+        : dictionary.academyDashboardRefreshStale;
 
   useEffect(() => {
     isAcademyDashboardRefreshingRef.current = isAcademyDashboardRefreshing;

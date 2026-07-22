@@ -258,7 +258,7 @@ const academyOpenCourseworkDialogEvent = 'incos-academy-open-coursework-dialog';
 const academyRefreshRequestedEvent = 'incos-academy-refresh-requested';
 const defaultAcademyAutoRefreshIntervalMs = 10 * 60_000;
 const dashboardRefreshFreshThresholdMs = 30 * 60_000;
-const dashboardRefreshRecentThresholdMs = 60 * 60_000;
+const dashboardRefreshRecentThresholdMs = 45 * 60_000;
 type AcademyOpenCourseworkDialogDetail = Partial<Pick<
   ManualCourseworkItem,
   'courseCode' | 'dueAt' | 'startAt' | 'title' | 'semester'
@@ -1968,7 +1968,7 @@ function getCourseworkDueChipClass(state?: CourseworkDueState) {
 type DashboardRefreshAge = 'fresh' | 'recent' | 'stale';
 
 const dashboardRefreshAgeClasses: Record<DashboardRefreshAge, string> = {
-  fresh: 'border-yellow-500/60 bg-yellow-400 text-yellow-950 hover:bg-yellow-300 dark:border-yellow-300 dark:bg-yellow-300 dark:text-yellow-950',
+  fresh: 'border-border bg-background/90 text-muted-foreground hover:bg-muted hover:text-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50',
   recent: 'border-orange-500/60 bg-orange-500 text-white hover:bg-orange-400 dark:border-orange-300 dark:bg-orange-400 dark:text-orange-950',
   stale: 'border-red-500/60 bg-red-600 text-white hover:bg-red-500 dark:border-red-300 dark:bg-red-500',
 };

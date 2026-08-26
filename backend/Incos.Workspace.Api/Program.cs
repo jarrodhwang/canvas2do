@@ -393,6 +393,23 @@ app.UseExceptionHandler(errorApp =>
 });
 
 app.UseForwardedHeaders();
+app.Use(async (context, next) =>
+{
+    if (context.Request.PathBase == PathString.Empty &&
+        context.Request.Headers.TryGetValue("X-Forwarded-Prefix", out var forwardedPrefix))
+    {
+        var prefix = forwardedPrefix.FirstOrDefault()?.TrimEnd('/');
+
+        if (!string.IsNullOrWhiteSpace(prefix) &&
+            prefix.StartsWith('/') &&
+            !prefix.StartsWith("//", StringComparison.Ordinal))
+        {
+            context.Request.PathBase = prefix;
+        }
+    }
+
+    await next();
+});
 
 if (app.Environment.IsDevelopment())
 {

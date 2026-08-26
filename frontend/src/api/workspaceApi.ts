@@ -1,7 +1,8 @@
 import { getMockDataForMode } from '../data/mockWorkspaceData';
+import { appPath } from '../lib/appPath';
 import { modeRegistry } from '../modes/ModeRegistry';
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '/api';
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || appPath('/api');
 const canvasCalendarRequests = new Map<string, Promise<CanvasCalendarItems>>();
 const academyPreferenceOwnerHeader = 'X-Incos-Academy-Owner-Key';
 let academyPreferenceOwnerKey: string | null = null;
@@ -925,7 +926,7 @@ export const workspaceApi = {
 
   setAcademyPreferenceOwnerKey,
 
-  getGoogleLoginUrl(returnUrl = '/', options: { forceConsent?: boolean; forceLogin?: boolean } = {}) {
+  getGoogleLoginUrl(returnUrl = appPath('/'), options: { forceConsent?: boolean; forceLogin?: boolean } = {}) {
     const params = new URLSearchParams({ returnUrl });
 
     if (options.forceConsent) {

@@ -113,7 +113,7 @@ Production-like full stack with Docker:
 docker compose up -d --build
 ```
 
-Then open `http://localhost:6173`.
+Then open `http://localhost:6173/workspace/`.
 
 Production Docker files:
 

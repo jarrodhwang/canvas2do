@@ -1,4 +1,6 @@
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '/api';
+import { appPath } from '../lib/appPath';
+
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || appPath('/api');
 
 export interface WorkspaceCustomer {
   id: string;

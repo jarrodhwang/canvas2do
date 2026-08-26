@@ -96,6 +96,7 @@ import {
 } from './lib/accessControl';
 import { badgeColorClasses, dotColorClasses } from './lib/colorStyles';
 import { defaultGradeProgressColorThresholds } from './lib/gradeProgress';
+import { appPath } from './lib/appPath';
 import { cn } from './lib/utils';
 import type { BoardColumnConfig, ColorToken, WorkspaceView } from './modes/types';
 import { applyTheme, getInitialTheme, type AppTheme } from './theme';
@@ -580,9 +581,9 @@ const academyFontFamilyCss = Object.fromEntries(
 const academyFontSizeOptions = [85, 95, 100, 110, 120];
 const defaultAcademySemester = getDateBasedAcademySemester();
 const defaultCanvasTermSemester = 'Default Term';
-const defaultAcademyTabIconSrc = '/brand/academy-tab-icon.png';
-const defaultWorkspaceTabIconSrc = '/brand/incos-workspace-tab-icon.png';
-const defaultWorkspaceTouchIconSrc = '/brand/incos-workspace-touch-icon.png';
+const defaultAcademyTabIconSrc = appPath('/brand/academy-tab-icon.png');
+const defaultWorkspaceTabIconSrc = appPath('/brand/incos-workspace-tab-icon.png');
+const defaultWorkspaceTouchIconSrc = appPath('/brand/incos-workspace-touch-icon.png');
 const topTrackExternalUrl = 'https://toptrack.topsolid.com/';
 const academyAccentColors: ColorToken[] = [
   'gold',
@@ -3515,7 +3516,7 @@ function AcademySettingsView({
   const dateLocale = language === 'ko' ? 'ko-KR' : 'en-CA';
   const selectedFontFamilyOption = academyFontFamilyOptions.find((option) => option.value === settings.fontFamily) ??
     academyFontFamilyOptions[0];
-  const defaultAcademyLogoSrc = '/brand/SFU_block_colour_rgb.png';
+  const defaultAcademyLogoSrc = appPath('/brand/SFU_block_colour_rgb.png');
   const isAcademyLogoHidden = settings.academyLogoSrc === 'none';
   const academyLogoPreviewSrc = isAcademyLogoHidden
     ? ''

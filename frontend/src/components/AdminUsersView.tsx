@@ -10,6 +10,7 @@ import {
   type CanvasTokenStatus,
   type UpdateAdminUserRequest,
 } from '../api/workspaceApi';
+import { appPath } from '../lib/appPath';
 import { cn } from '../lib/utils';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -413,7 +414,7 @@ export function AdminUsersView() {
       }
 
       await workspaceApi.previewAdminUser(selectedUser.id);
-      window.location.assign('/');
+      window.location.assign(appPath('/'));
     } catch (previewError: unknown) {
       setDetailError(previewError instanceof Error ? previewError.message : 'Unable to preview this user.');
       setIsStartingPreview(false);

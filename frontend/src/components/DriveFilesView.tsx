@@ -20,6 +20,7 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { appPath } from '../lib/appPath';
 import {
   workspaceApi,
   type GoogleDriveFile,
@@ -1382,7 +1383,7 @@ export function DriveFilesView({ onSelectedItemChange }: DriveFilesViewProps) {
             <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4">
               <p className="text-sm font-bold text-destructive">{error}</p>
               <Button asChild className="mt-4 h-9 rounded-lg font-black" type="button">
-                <a href="/api/google/integrations/google_drive/connect">
+                <a href={appPath('/api/google/integrations/google_drive/connect')}>
                   <WorkspaceIcon name="google-drive" size={16} />
                   <span>{dictionary.connectGoogleDrive}</span>
                 </a>

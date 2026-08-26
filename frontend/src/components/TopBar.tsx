@@ -4,6 +4,7 @@ import { workspaceApi, type AuthSession } from '../api/workspaceApi';
 import { useLanguage } from '../context/LanguageContext';
 import { useWorkspaceMode } from '../context/WorkspaceModeContext';
 import { languageOptions, type Language } from '../i18n';
+import { appPath } from '../lib/appPath';
 import { cn } from '../lib/utils';
 import type { AppTheme } from '../theme';
 import { CanvasConnectionDialog } from './CanvasConnectionDialog';
@@ -93,8 +94,8 @@ export function TopBar({
     authSession?.email?.trim() ||
     dictionary.notSet;
   const accountInitials = getAccountInitials(accountDisplayName || accountId);
-  const fallbackBrandLogoSrc = '/brand/INCOS%20New%20Logo_Crop.png';
-  const defaultAcademyLogoSrc = '/brand/SFU_block_colour_rgb.png';
+  const fallbackBrandLogoSrc = appPath('/brand/INCOS%20New%20Logo_Crop.png');
+  const defaultAcademyLogoSrc = appPath('/brand/SFU_block_colour_rgb.png');
   const brandLogoAlt = isAcademyMode ? 'SFU' : 'INCOS';
   const isAcademyLogoHidden = isAcademyMode && academyLogoSrc === 'none';
   const brandLogoSrc = isAcademyMode ? (academyLogoSrc || defaultAcademyLogoSrc) : fallbackBrandLogoSrc;

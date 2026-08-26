@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { CalendarClock, CheckCircle2, Loader2, RefreshCw } from 'lucide-react';
 import { workspaceApi, type GoogleIntegrationStatus } from '../api/workspaceApi';
 import { useLanguage } from '../context/LanguageContext';
+import { appPath } from '../lib/appPath';
 import type { WorkspaceModeConfig } from '../modes/types';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -156,7 +157,7 @@ export function GoogleIntegrationPanel({ mode }: GoogleIntegrationPanelProps) {
                   variant={isConnected ? 'secondary' : 'default'}
                 >
                   {isConfigured ? (
-                    <a href={status?.connectUrl ?? '/api/auth/google/workspace/login?forceConsent=true&forceLogin=true'}>
+                    <a href={status?.connectUrl ?? `${appPath('/api/auth/google/workspace/login')}?forceConsent=true&forceLogin=true`}>
                       {isConnected ? (
                         <RefreshCw aria-hidden="true" className="size-4" />
                       ) : null}

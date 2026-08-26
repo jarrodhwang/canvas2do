@@ -37,6 +37,7 @@ import {
 } from 'lucide-react';
 import type { ComponentType } from 'react';
 
+import { appPath } from '../lib/appPath';
 import { GoogleProductIcon } from './GoogleProductIcon';
 import { MicrosoftProductIcon } from './MicrosoftProductIcon';
 
@@ -69,7 +70,7 @@ function TopTrackIcon({ size = 18, className }: IconProps) {
       aria-hidden="true"
       className={className}
       height={size}
-      src="/brand/toptrack-icon.ico"
+      src={appPath('/brand/toptrack-icon.ico')}
       style={{ height: size, width: size }}
       width={size}
     />

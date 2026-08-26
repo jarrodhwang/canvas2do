@@ -15,6 +15,7 @@ import {
 import { workspaceApi } from '../api/workspaceApi';
 import { useLanguage } from '../context/LanguageContext';
 import { languageOptions, type Language } from '../i18n';
+import { appPath } from '../lib/appPath';
 import type { AppTheme } from '../theme';
 import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
@@ -82,8 +83,8 @@ export function LoginPage({
   const loginLogoSrc = isAcademyBranded
     ? academyLogoSrc && academyLogoSrc !== 'none'
       ? academyLogoSrc
-      : '/brand/SFU_block_colour_rgb.png'
-    : '/brand/INCOS%20New%20Logo_Crop.png';
+      : appPath('/brand/SFU_block_colour_rgb.png')
+    : appPath('/brand/INCOS%20New%20Logo_Crop.png');
   const loginLogoAlt = isAcademyBranded ? 'Academy' : 'INCOS';
 
   const handleGoogleLogin = async () => {
@@ -100,7 +101,7 @@ export function LoginPage({
         return;
       }
 
-      window.location.assign(workspaceApi.getGoogleLoginUrl('/', { forceConsent: true, forceLogin: true }));
+      window.location.assign(workspaceApi.getGoogleLoginUrl(appPath('/'), { forceConsent: true, forceLogin: true }));
     } catch {
       setLoginError(dictionary.googleOAuthNotConfigured);
       setIsStartingLogin(false);

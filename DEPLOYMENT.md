@@ -44,7 +44,7 @@ repository:
 
 ```bash
 sudo apt update
-sudo apt install -y ca-certificates curl git nginx certbot python3-certbot-nginx
+sudo apt install -y ca-certificates curl git nginx openssl snapd
 sudo install -m 0755 -d /etc/apt/keyrings
 sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
 sudo chmod a+r /etc/apt/keyrings/docker.asc
@@ -58,6 +58,17 @@ sudo usermod -aG docker "$USER"
 
 Log out and back in after the group change. Enable unattended security updates and
 reboot when Ubuntu indicates that a kernel restart is required.
+
+Install Certbot using its officially recommended Snap package rather than relying on
+optional Ubuntu repository components:
+
+```bash
+sudo systemctl enable --now snapd.socket
+sudo snap wait system seed.loaded
+sudo snap install --classic certbot
+sudo ln -sf /snap/bin/certbot /usr/local/bin/certbot
+certbot --version
+```
 
 ## 2. Configure the application
 

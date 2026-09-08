@@ -1,10 +1,12 @@
+/* eslint-disable react-hooks/set-state-in-effect -- This restored integration view synchronizes selection and request state in effects. */
 import { BarChart3, ChevronDown, LoaderCircle, RefreshCw, TrendingUp } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
-import { workspaceApi } from '../api/workspaceApi';
-import type { AcademyPreferences, CanvasCourse, CanvasCourseContent } from '../api/workspaceApi';
+import { canvasToDoApi } from '../api/canvasToDoApi';
+import type { AcademyPreferences, CanvasCourse, CanvasCourseContent } from '../api/canvasToDoApi';
 import { useLanguage } from '../context/LanguageContext';
 import { badgeColorClasses, dotColorClasses } from '../lib/colorStyles';
+import { shouldConvertCanvasCourseToManual } from '../lib/canvasCourseMigration';
 import {
   defaultGradeProgressColorThresholds,
   getGradeProgressColor,
@@ -37,6 +39,8 @@ type LoadStatus = 'idle' | 'loading' | 'loaded' | 'failed';
 
 interface CanvasLecturePreference {
   assessments?: ManualLecture['assessments'];
+  accessClosed?: boolean;
+  accessRestrictedByDate?: boolean;
   archivedAsManualLectureId?: string;
   canvasAccessLostAt?: string | null;
   chipColor?: ColorToken;
@@ -61,6 +65,8 @@ interface CanvasLecturePreference {
   starred?: boolean;
   tutorialSection?: string;
   termName?: string;
+  termEndAt?: string;
+  termStartAt?: string;
   workflowState?: string;
 }
 
@@ -166,8 +172,7 @@ interface CourseDetailState {
 
 const defaultAcademySemester = getDateBasedAcademySemester();
 const noTermSemester = 'Default Term';
-const academyPreferencesUpdatedEvent = 'incos-academy-preferences-updated';
-const canvasAccessGracePeriodMs = 7 * 24 * 60 * 60 * 1000;
+const academyPreferencesUpdatedEvent = 'canvas-to-do-preferences-updated';
 
 function dispatchAcademyPreferencesSnapshot(preferences: AcademyPreferences) {
   if (typeof window === 'undefined') {
@@ -334,7 +339,14 @@ function createCanvasRows(courses: CanvasCourse[], preferences: CanvasLecturePre
     const courseId = String(course.id ?? '');
     const preference = getCanvasPreferenceForCourse(course, preferences);
 
-    if (preference.hidden || preference.deleted) {
+    const restoreAccessibleConversion = Boolean(
+      preference.convertedToManualAt && course.accessClosed !== true,
+    );
+
+    if (
+      course.accessClosed ||
+      (!restoreAccessibleConversion && (preference.hidden || preference.deleted))
+    ) {
       return [];
     }
 
@@ -405,8 +417,27 @@ function createStoredCanvasRows(
   });
 }
 
-function isGeneratedArchivedCanvasLecture(lecture: ManualLecture, preferences: CanvasLecturePreferences) {
-  return Object.values(preferences).some((preference) => preference.archivedAsManualLectureId === lecture.id);
+function isGeneratedArchivedCanvasLectureForAccessibleCourse(
+  lecture: ManualLecture,
+  preferences: CanvasLecturePreferences,
+  courses: CanvasCourse[],
+) {
+  const archivedCourseId = Object.entries(preferences).find(([, preference]) => (
+    preference.archivedAsManualLectureId === lecture.id
+  ))?.[0];
+
+  return Boolean(archivedCourseId && courses.some((course) => (
+    String(course.id ?? '') === archivedCourseId && course.accessClosed !== true
+  )));
+}
+
+function isGeneratedConvertedCanvasLectureForAccessibleCourse(
+  lecture: ManualLecture,
+  courses: CanvasCourse[],
+) {
+  return courses.some((course) => (
+    course.accessClosed !== true && lecture.id === `manual-canvas-${course.id}`
+  ));
 }
 
 function createManualRows(lectures: ManualLecture[]): GradeCourseRow[] {
@@ -447,6 +478,8 @@ function getCanvasCourseSnapshot(
 
   return {
     ...preference,
+    accessClosed: course.accessClosed === true,
+    accessRestrictedByDate: course.accessRestrictedByDate === true,
     canvasAccessLostAt: preference.canvasAccessLostAt ?? null,
     courseName: course.name,
     currentGrade: course.currentGrade,
@@ -457,6 +490,8 @@ function getCanvasCourseSnapshot(
     semester,
     semesterSource: preference.semesterSource || (course.termName ? 'canvas' : 'fallback'),
     termName: semester,
+    termEndAt: course.termEndAt,
+    termStartAt: course.termStartAt,
     workflowState: course.workflowState,
   };
 }
@@ -556,13 +591,13 @@ function isCanvasAccessDeniedError(error: unknown) {
   return /unauthori[sz]ed|not authorized|forbidden|permission|access/i.test(message);
 }
 
-function migrateLostCanvasCourses(
+function migrateClosedCanvasCourses(
   preferences: AcademyPreferences,
   liveCourses: CanvasCourse[],
   fallbackSemester: string,
   now = Date.now(),
 ) {
-  const liveCourseIds = new Set(liveCourses.map((course) => String(course.id ?? '')));
+  const courseById = new Map(liveCourses.map((course) => [String(course.id ?? ''), course]));
   const nowIso = new Date(now).toISOString();
   const nextCanvasLecturePreferences = {
     ...getCanvasLecturePreferencesFromAcademyPreferences(preferences),
@@ -583,10 +618,6 @@ function migrateLostCanvasCourses(
     const courseId = String(course.id ?? '');
     const currentPreference = nextCanvasLecturePreferences[courseId] ?? {};
 
-    if (currentPreference.convertedToManualAt) {
-      return;
-    }
-
     const nextPreference = getCanvasCourseSnapshot(course, currentPreference, fallbackSemester, nowIso);
 
     if (JSON.stringify(currentPreference) !== JSON.stringify(nextPreference)) {
@@ -602,19 +633,8 @@ function migrateLostCanvasCourses(
 
     const isAlreadyConverted = Boolean(preference.convertedToManualAt);
 
-    if (!isAlreadyConverted) {
-      const lastSeenAt = preference.lastSeenAt ? Date.parse(preference.lastSeenAt) : Number.NaN;
-      const canvasAccessLostAt = preference.canvasAccessLostAt
-        ? Date.parse(preference.canvasAccessLostAt)
-        : lastSeenAt;
-
-      if (
-        !Number.isFinite(canvasAccessLostAt) ||
-        (liveCourseIds.has(courseId) && !preference.canvasAccessLostAt) ||
-        now - canvasAccessLostAt < canvasAccessGracePeriodMs
-      ) {
-        return;
-      }
+    if (!shouldConvertCanvasCourseToManual(courseById.get(courseId), now)) {
+      return;
     }
 
     const manualLectureId = `manual-canvas-${courseId}`;
@@ -854,8 +874,8 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
     setCanvasWarning('');
 
     const [preferencesResult, coursesResult] = await Promise.allSettled([
-      workspaceApi.getAcademyPreferences(),
-      workspaceApi.getCanvasCourses(100),
+      canvasToDoApi.getAcademyPreferences(),
+      canvasToDoApi.getCanvasCourses(100),
     ]);
 
     if (!isMountedRef.current || loadSequence !== loadGradesSequenceRef.current) {
@@ -877,7 +897,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
       ? coursesResult.value.courses
       : [];
     const migration = coursesResult.status === 'fulfilled'
-      ? migrateLostCanvasCourses(preferences, liveCanvasCourses, selectedSemesterFromProp ?? defaultAcademySemester)
+      ? migrateClosedCanvasCourses(preferences, liveCanvasCourses, selectedSemesterFromProp ?? defaultAcademySemester)
       : {
         changed: false,
         migratedCount: 0,
@@ -904,7 +924,12 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
     const canvasRows = createCanvasRows(liveCanvasCourses, canvasLecturePreferences);
     const storedCanvasRows = createStoredCanvasRows(canvasLecturePreferences, liveCanvasCourses);
     const manualRows = createManualRows(getManualLecturesFromAcademyPreferences(effectivePreferences).filter((lecture) => (
-      !isGeneratedArchivedCanvasLecture(lecture, canvasLecturePreferences)
+      !isGeneratedArchivedCanvasLectureForAccessibleCourse(
+        lecture,
+        canvasLecturePreferences,
+        liveCanvasCourses,
+      ) &&
+      !isGeneratedConvertedCanvasLectureForAccessibleCourse(lecture, liveCanvasCourses)
     )));
 
     if (coursesResult.status === 'rejected') {
@@ -916,7 +941,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
     }
 
     if (migration.changed) {
-      void workspaceApi.saveAcademyPreferences({
+      void canvasToDoApi.saveAcademyPreferences({
         canvasAssessmentPreferences: migration.nextCanvasAssessmentPreferences,
         canvasCourseworkPreferences: migration.nextCanvasCourseworkPreferences,
         canvasLecturePreferences: migration.nextCanvasLecturePreferences,
@@ -1025,7 +1050,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
         return;
       }
 
-      workspaceApi.getCanvasCourseContent(row.canvasCourseId, 'grades')
+      canvasToDoApi.getCanvasCourseContent(row.canvasCourseId, 'grades')
         .then((content) => {
           if (!isMountedRef.current) {
             return;
@@ -1047,7 +1072,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
               setAcademyPreferences((current) => current
                 ? { ...current, canvasLecturePreferences: nextCanvasLecturePreferences }
                 : current);
-              void workspaceApi.saveAcademyPreferences({
+              void canvasToDoApi.saveAcademyPreferences({
                 canvasLecturePreferences: nextCanvasLecturePreferences,
               }).catch(() => undefined);
             }
@@ -1079,7 +1104,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
               setAcademyPreferences((current) => current
                 ? { ...current, canvasLecturePreferences: nextCanvasLecturePreferences }
                 : current);
-              void workspaceApi.saveAcademyPreferences({
+              void canvasToDoApi.saveAcademyPreferences({
                 canvasLecturePreferences: nextCanvasLecturePreferences,
               }).catch(() => undefined);
             }
@@ -1165,7 +1190,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
       }));
     }
 
-    void workspaceApi.saveAcademyPreferences({
+    void canvasToDoApi.saveAcademyPreferences({
       calendarSettings: { selectedSemester: normalizedSemester },
     }).then((savedPreferences) => {
       setAcademyPreferences(savedPreferences);
@@ -1228,7 +1253,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
       }));
     }
 
-    void workspaceApi.saveAcademyPreferences({
+    void canvasToDoApi.saveAcademyPreferences({
       canvasAssessmentPreferences: nextPreferences.canvasAssessmentPreferences,
       canvasCourseworkPreferences: nextPreferences.canvasCourseworkPreferences,
       canvasLecturePreferences: nextPreferences.canvasLecturePreferences,

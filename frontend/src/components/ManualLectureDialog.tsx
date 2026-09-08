@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useState, type FormEvent } from 'react';
 import { CalendarDays, ChevronDown, ChevronRight, Link, Plus, Save, Trash2 } from 'lucide-react';
 
 import { useLanguage } from '../context/LanguageContext';
@@ -582,22 +582,24 @@ export function ManualLectureDialog({
   title,
 }: ManualLectureDialogProps) {
   const { dictionary } = useLanguage();
-  const [name, setName] = useState('');
-  const [code, setCode] = useState('');
-  const [semester, setSemester] = useState(selectedSemester ?? '');
-  const [lectureSection, setLectureSection] = useState('');
-  const [labSection, setLabSection] = useState('');
-  const [tutorialSection, setTutorialSection] = useState('');
-  const [credits, setCredits] = useState('');
-  const [lectureWebsiteLink, setLectureWebsiteLink] = useState('');
-  const [submissionLink, setSubmissionLink] = useState('');
-  const [onlineLectureLink, setOnlineLectureLink] = useState('');
-  const [onlineOfficeHourLink, setOnlineOfficeHourLink] = useState('');
-  const [usefulLinks, setUsefulLinks] = useState('');
-  const [scheduleEntries, setScheduleEntries] = useState<ManualLectureScheduleEntry[]>(() => [
-    createScheduleEntry(),
-  ]);
-  const [assessments, setAssessments] = useState<AssessmentFormState>(createAssessmentState);
+  const [name, setName] = useState(() => initialLecture?.name ?? '');
+  const [code, setCode] = useState(() => initialLecture?.code ?? '');
+  const [semester, setSemester] = useState(() => initialLecture?.semester ?? selectedSemester ?? '');
+  const [lectureSection, setLectureSection] = useState(() => initialLecture?.lectureSection ?? '');
+  const [labSection, setLabSection] = useState(() => initialLecture?.labSection ?? '');
+  const [tutorialSection, setTutorialSection] = useState(() => initialLecture?.tutorialSection ?? '');
+  const [credits, setCredits] = useState(() => initialLecture?.credits ?? '');
+  const [lectureWebsiteLink, setLectureWebsiteLink] = useState(() => getKnownLinkUrl(initialLecture, 'lecture-website'));
+  const [submissionLink, setSubmissionLink] = useState(() => getKnownLinkUrl(initialLecture, 'submission-link'));
+  const [onlineLectureLink, setOnlineLectureLink] = useState(() => getKnownLinkUrl(initialLecture, 'online-lecture-link'));
+  const [onlineOfficeHourLink, setOnlineOfficeHourLink] = useState(() => getKnownLinkUrl(initialLecture, 'online-office-hour-link'));
+  const [usefulLinks, setUsefulLinks] = useState(() => createUsefulLinksValue(initialLecture));
+  const [scheduleEntries, setScheduleEntries] = useState<ManualLectureScheduleEntry[]>(
+    () => createScheduleEntriesFromLecture(initialLecture),
+  );
+  const [assessments, setAssessments] = useState<AssessmentFormState>(
+    () => createAssessmentState(initialLecture?.assessments),
+  );
   const [areAssessmentsExpanded, setAreAssessmentsExpanded] = useState(false);
   const [previewScheduleEntryId, setPreviewScheduleEntryId] = useState<string | null>(null);
   const hasOnlineSchedule = scheduleEntries.some((entry) => entry.deliveryMode === 'online');
@@ -644,38 +646,6 @@ export function ManualLectureDialog({
     setAreAssessmentsExpanded(false);
     setPreviewScheduleEntryId(null);
   };
-
-  const loadLecture = (lecture: ManualLecture) => {
-    setName(lecture.name);
-    setCode(lecture.code);
-    setSemester(lecture.semester ?? selectedSemester ?? '');
-    setLectureSection(lecture.lectureSection);
-    setLabSection(lecture.labSection);
-    setTutorialSection(lecture.tutorialSection);
-    setCredits(lecture.credits);
-    setLectureWebsiteLink(getKnownLinkUrl(lecture, 'lecture-website'));
-    setSubmissionLink(getKnownLinkUrl(lecture, 'submission-link'));
-    setOnlineLectureLink(getKnownLinkUrl(lecture, 'online-lecture-link'));
-    setOnlineOfficeHourLink(getKnownLinkUrl(lecture, 'online-office-hour-link'));
-    setUsefulLinks(createUsefulLinksValue(lecture));
-    setScheduleEntries(createScheduleEntriesFromLecture(lecture));
-    setAssessments(createAssessmentState(lecture.assessments));
-    setAreAssessmentsExpanded(false);
-    setPreviewScheduleEntryId(null);
-  };
-
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-
-    if (initialLecture) {
-      loadLecture(initialLecture);
-      return;
-    }
-
-    resetForm();
-  }, [initialLecture?.id, open]);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();

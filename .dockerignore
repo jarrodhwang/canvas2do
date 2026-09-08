@@ -1,8 +1,12 @@
 **/bin/
 **/obj/
+**/*.root-owned-backup/
 **/node_modules/
 **/dist/
 **/.vite/
 **/.git/
 **/.DS_Store
-frontend/.env*
+**/.env
+**/.env.*
+**/.codex*/
+**/.agents/

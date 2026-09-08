@@ -1,5 +1,5 @@
 import { CalendarDays, ChevronLeft, ChevronRight, Clock, Minus, Plus, X } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 
 import { useLanguage } from '../context/LanguageContext';
 import { cn } from '../lib/utils';
@@ -141,12 +141,6 @@ export function DateTimeField({
   const currentHour = currentTime.slice(0, 2);
   const currentMinute = currentTime.slice(3, 5);
 
-  useEffect(() => {
-    if (selectedDate) {
-      setVisibleMonth(selectedDate);
-    }
-  }, [value]);
-
   const chooseRelativeDate = (offsetDays: number) => {
     const nextDate = new Date();
 
@@ -162,7 +156,13 @@ export function DateTimeField({
   };
 
   return (
-    <Popover>
+    <Popover
+      onOpenChange={(isOpen) => {
+        if (isOpen) {
+          setVisibleMonth(selectedDate ?? new Date());
+        }
+      }}
+    >
       <PopoverTrigger asChild>
         <Button
           aria-label={label}

@@ -1,7 +1,8 @@
+/* eslint-disable react-hooks/set-state-in-effect -- This restored integration view synchronizes request and selection state in effects. */
 import { ArrowLeft, ArrowRight, ChevronDown, ChevronRight, ExternalLink, Inbox, LoaderCircle, RefreshCw } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 
-import { workspaceApi, type AcademyPreferences, type CanvasCourse, type CanvasInboxItem } from '../api/workspaceApi';
+import { canvasToDoApi, type AcademyPreferences, type CanvasCourse, type CanvasInboxItem } from '../api/canvasToDoApi';
 import { useLanguage } from '../context/LanguageContext';
 import { isColorToken } from '../lib/colorStyles';
 import { cn } from '../lib/utils';
@@ -11,7 +12,7 @@ import { Button } from './ui/button';
 import { Card } from './ui/card';
 
 type LoadStatus = 'idle' | 'loading' | 'loaded' | 'failed';
-const academyPreferencesUpdatedEvent = 'incos-academy-preferences-updated';
+const academyPreferencesUpdatedEvent = 'canvas-to-do-preferences-updated';
 const defaultCanvasTermSemester = 'Default Term';
 
 function getDateBasedAcademySemester(date = new Date()) {
@@ -49,6 +50,7 @@ function normalizeCanvasSemesterName(value?: string) {
 
 interface CanvasLecturePreference {
   chipColor?: ColorToken;
+  convertedToManualAt?: string;
   courseId?: string;
   courseCode?: string;
   courseName?: string;
@@ -358,8 +360,11 @@ function getCourseLabel(course: CanvasCourse, preferences: CanvasLecturePreferen
 
 function isCourseHidden(course: CanvasCourse, preferences: CanvasLecturePreferences) {
   const preference = getCoursePreference(course, preferences);
+  const restoreAccessibleConversion = Boolean(
+    preference?.convertedToManualAt && course.accessClosed !== true,
+  );
 
-  return Boolean(preference?.hidden || preference?.deleted);
+  return !restoreAccessibleConversion && Boolean(preference?.hidden || preference?.deleted);
 }
 
 function getCanvasCourseSemester(course: CanvasCourse, preferences: CanvasLecturePreferences) {
@@ -394,7 +399,7 @@ function groupCanvasInboxItems(
   selectedSemester: string,
 ) {
   return courses
-    .filter((course) => !isCourseHidden(course, preferences) && courseMatchesSemester(course, preferences, selectedSemester))
+    .filter((course) => !course.accessClosed && !isCourseHidden(course, preferences) && courseMatchesSemester(course, preferences, selectedSemester))
     .map((course) => {
       const state = courseInbox[course.id] ?? { items: [], status: 'idle' as LoadStatus };
 
@@ -434,7 +439,7 @@ export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasI
   const visibleCourseIds = useMemo(() => new Set(
     hasLoadedAcademyPreferences
       ? courses
-          .filter((course) => !isCourseHidden(course, canvasLecturePreferences) &&
+          .filter((course) => !course.accessClosed && !isCourseHidden(course, canvasLecturePreferences) &&
             courseMatchesSemester(course, canvasLecturePreferences, effectiveSelectedSemester))
           .map((course) => course.id)
       : [],
@@ -491,7 +496,7 @@ export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasI
       if (!hasLoadedAcademyPreferences) {
         setAcademyPreferencesLoadStatus('loading');
       }
-      workspaceApi
+      canvasToDoApi
         .getAcademyPreferences()
         .then(applyAcademyPreferences)
         .catch(() => {
@@ -551,7 +556,7 @@ export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasI
       },
     }));
 
-    workspaceApi
+    canvasToDoApi
       .getCanvasInboxItems(75, { courseId })
       .then(({ items: nextItems }) => {
         if (!isMountedRef.current) {
@@ -610,8 +615,8 @@ export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasI
     setSelectedItemId(null);
     setSelectionHistory({ ids: [], index: -1 });
 
-    workspaceApi
-      .getCanvasCourses(50)
+    canvasToDoApi
+      .getCanvasCourses(100)
       .then(({ courses: nextCourses }) => {
         if (!isMountedRef.current) {
           return;

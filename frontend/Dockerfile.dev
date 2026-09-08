@@ -1,4 +1,5 @@
 FROM node:22-alpine
+LABEL org.opencontainers.image.title="Canvas To Do (development frontend)"
 
 WORKDIR /app
 

@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- The shared grade calculation intentionally lives beside the editor that defines its input model. */
 import { Calculator, CheckCircle2 } from 'lucide-react';
 
 import { useLanguage } from '../context/LanguageContext';

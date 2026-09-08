@@ -1,8 +1,9 @@
+/* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps -- This restored integration view reloads and groups roster state by selected term. */
 import { ChevronDown, ChevronRight, ExternalLink, LoaderCircle, Mail, RefreshCw, Search, Users } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { workspaceApi } from '../api/workspaceApi';
-import type { AcademyPreferences, CanvasCourse, CanvasCourseUser } from '../api/workspaceApi';
+import { canvasToDoApi } from '../api/canvasToDoApi';
+import type { AcademyPreferences, CanvasCourse, CanvasCourseUser } from '../api/canvasToDoApi';
 import { useLanguage } from '../context/LanguageContext';
 import { isColorToken } from '../lib/colorStyles';
 import { cn } from '../lib/utils';
@@ -14,7 +15,7 @@ import { Card } from './ui/card';
 import { Input } from './ui/input';
 
 type LoadStatus = 'idle' | 'loading' | 'loaded' | 'failed';
-const academyPreferencesUpdatedEvent = 'incos-academy-preferences-updated';
+const academyPreferencesUpdatedEvent = 'canvas-to-do-preferences-updated';
 const defaultCanvasTermSemester = 'Default Term';
 
 function getDateBasedAcademySemester(date = new Date()) {
@@ -52,6 +53,7 @@ function normalizeCanvasSemesterName(value?: string) {
 
 interface CanvasLecturePreference {
   chipColor?: ColorToken;
+  convertedToManualAt?: string;
   courseId?: string;
   courseCode?: string;
   courseName?: string;
@@ -203,8 +205,11 @@ function getCourseName(course: CanvasCourse, preferences: CanvasLecturePreferenc
 
 function isCourseHidden(course: CanvasCourse, preferences: CanvasLecturePreferences) {
   const preference = getCoursePreference(course, preferences);
+  const restoreAccessibleConversion = Boolean(
+    preference?.convertedToManualAt && course.accessClosed !== true,
+  );
 
-  return Boolean(preference?.hidden || preference?.deleted);
+  return !restoreAccessibleConversion && Boolean(preference?.hidden || preference?.deleted);
 }
 
 function getCanvasCourseSemester(course: CanvasCourse, preferences: CanvasLecturePreferences) {
@@ -262,7 +267,7 @@ export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: Canva
   const visibleCourseIds = useMemo(() => new Set(
     hasLoadedAcademyPreferences
       ? courses
-          .filter((course) => !isCourseHidden(course, canvasLecturePreferences) &&
+          .filter((course) => !course.accessClosed && !isCourseHidden(course, canvasLecturePreferences) &&
             courseMatchesSemester(course, canvasLecturePreferences, effectiveSelectedSemester))
           .map((course) => course.id)
       : [],
@@ -341,7 +346,7 @@ export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: Canva
       },
     }));
 
-    workspaceApi
+    canvasToDoApi
       .getCanvasCoursePeople(courseId)
       .then(({ people }) => {
         if (!isMountedRef.current) {
@@ -392,8 +397,8 @@ export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: Canva
     setCoursePeople({});
     setExpandedCourseIds(new Set());
 
-    workspaceApi
-      .getCanvasCourses(50)
+    canvasToDoApi
+      .getCanvasCourses(100)
       .then(({ courses: nextCourses }) => {
         if (!isMountedRef.current) {
           return;
@@ -434,7 +439,7 @@ export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: Canva
       if (!hasLoadedAcademyPreferences) {
         setAcademyPreferencesLoadStatus('loading');
       }
-      workspaceApi
+      canvasToDoApi
         .getAcademyPreferences()
         .then(applyAcademyPreferences)
         .catch(() => {

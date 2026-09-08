@@ -1,416 +1,264 @@
-# Incos Workspace Architecture Review
+# Canvas To Do Architecture
 
-## System shape
+## Product boundary
 
-Incos Workspace is a browser application deployed as a small container stack:
+Canvas To Do is a public, multi-user academic calendar. It combines user-managed
+study data with a bounded Canvas LMS surface for courses, course content, grades,
+activity notifications, rosters, and calendar items. It is not an organization
+directory, Google Workspace client, SFU credential collector, or browser-side Canvas
+API client.
 
 ```text
 Browser
   |
   v
-Nginx / frontend container (6173)
-  |-- static React/Vite application
-  |-- /api/* --------------------+
-  |-- /signin-google ------------|--> ASP.NET Core API (6272)
-                                 |      |
-                                 |      +--> PostgreSQL
-                                 |      +--> Google OAuth and APIs
-                                 |      +--> Canvas LMS
-                                 |      +--> Microsoft OAuth/API
-                                 |      +--> filesystem-backed data-protection keys
+Nginx / React SPA (HTTPS, /canvas-to-do/)
+  |
+  +-- /canvas-to-do/api/* --------------------------+
+                                                     v
+                                      ASP.NET Core API
+                                        |     |     |
+                                        |     |     +-- SMTP
+                                        |     +-------- SFU Canvas API
+                                        +-------------- PostgreSQL + key ring
+
+Application identity
+  +-- confirmed email/password
+  +-- Google identity OAuth
+  +-- Facebook identity OAuth
+  +-- optional TOTP/recovery codes
+
+Canvas connection
+  +-- preferred: institution-approved Canvas OAuth authorization code
+  +-- fallback: user-supplied personal access token when operator-enabled
 ```
 
-`docker-compose.yml` supplies the production-like stack. `docker-compose.dev.yml`
-uses the same boundaries with Vite and `dotnet watch` for hot reload. Nginx is the
-browser-facing reverse proxy; the API can also be run directly during development.
+The backend owns authentication, authorization, provider exchanges, secrets, token
+protection, persistence, request validation, and audit-relevant mutations. The
+frontend owns presentation, accessible feedback, local calendar editing, and request
+orchestration.
 
-## Frontend
+## Identity and access
 
-The frontend is a React + TypeScript application built with Vite. `App.tsx` is the
-composition root for authentication state, navigation, settings, calendar and
-integration views. Reusable UI primitives are under `frontend/src/components/ui`.
+ASP.NET Core Identity with GUID user ids is the source of truth. Identity tables use
+their own EF migration history; Canvas tokens and Academy preferences use
+`user:{guid}` ownership. An unverified email string is never accepted as a data-owner
+key.
 
-The mode system is configuration-driven:
+Password signup creates an unconfirmed account and no application cookie. Email
+confirmation is required before login. Confirmation, resend, forgot-password, and
+reset endpoints use short-lived Identity tokens delivered through a small SMTP
+boundary. Responses for unknown/ineligible accounts are deliberately generic, and
+password reset rotates the security stamp so prior cookies stop working. Action
+tokens travel in URL fragments (not HTTP request targets) and are removed by the SPA
+before the exchange request.
 
-- `modes/types.ts` defines the mode contract.
-- `modes/defaultModes.ts` defines Academy and Project/Workspace capabilities,
-  navigation, fields, colors, views, and integration options.
-- `ModeRegistry` applies environment-based visibility and naming overrides.
-- `WorkspaceModeProvider` owns the active mode and persists that preference locally.
-- `workspaceApi.ts` is the browser's API boundary and translates failed responses
-  into user-facing errors.
+Google and Facebook are optional identity providers. They request identity-only
+scopes and application code stores no provider access token. A provider email is
+trusted only when a mapped verification claim says it is verified. Accounts are not
+merged merely because two providers return the same email address.
 
-This makes the shared workspace shell extensible, but the current mode data is still
-largely mock/configuration data. A future persistence migration should keep mode
-configuration separate from user-owned records so UI changes do not silently rewrite
-stored data.
+TOTP is optional per user. Setup requires an authenticated session, confirmation
+requires a valid authenticator code, recovery codes are shown once, and login can
+remember a device only when the user opts in.
 
-## Workspace / Project architecture
+Roles are `User` and `Admin`:
 
-The Workspace mode is the generic customer-work-management surface in the shared
-shell. It is not a programming-project tracker or a separate application. The
-`project` entry in `defaultModes.ts` supplies navigation and capability metadata,
-while the lazy-loaded `WorkspaceManagementView` owns the live dashboard, projects,
-issues, workload board, calendar, timeline, customers, categories, and modal flows.
-Academy components and persistence paths are not reused for Workspace mutations.
+- `User`: own profile/security, Academy preferences, Canvas connection, courses, and
+  calendar items.
+- `Admin`: all user access plus paged user search, display-name/role/status changes,
+  email-confirmation visibility, and session revocation.
 
-The current Workspace path is:
+Self-demotion/deactivation, removal of the final active admin, and changes to the
+configured bootstrap administrator are guarded. Security-stamp validation runs on
+every request so deactivation, demotion, and revocation take effect immediately.
+
+## Browser request boundary
+
+The application cookie is HTTP-only, `SameSite=Lax`, and secure outside Development.
+Every non-GET/HEAD/OPTIONS API request must include:
 
 ```text
-Authenticated browser
-        |
-        v
-WorkspaceModeProvider -> ModeRegistry -> WorkspaceManagementView
-        |
-        +--> workspaceManagementApi.ts -> /api/workspace/overview
-        |                              -> customer/project/issue CRUD
-        |                              -> calendar CRUD and sharing
-        +--> workspaceApi.ts ----------> /api/workspace/preferences
-        +--> existing Google views ----> Gmail, Drive, and Chat API routes
-        |
-        v
-WorkspaceManagementEndpoints -> EF Core -> PostgreSQL
-                               WorkspaceCustomer
-                               WorkspaceWorkProject
-                               WorkspaceWorkIssue
-                               WorkspaceCalendarEntry -> WorkspaceCalendarShare
+X-Canvas-To-Do-Request: 1
 ```
 
-The mode registry remains a presentation and capability registry, not the system of
-record. Environment variables can enable, hide, or rename modes at build time, and
-the provider stores only the active mode id in browser local storage. Workspace work
-records now come from the authenticated API; mock mode data remains only for legacy
-shared-shell views and other modes.
+A cross-site HTML form cannot set that header. Cross-origin JavaScript must first
+pass the credentialed CORS origin check, so the header and CORS policy form the CSRF
+boundary. OAuth callbacks remain GET requests and independently validate protected
+correlation/state values.
 
-### Domain and persistence boundary
+Academy preference and self-service Canvas requests also carry the session's opaque
+`X-Canvas-To-Do-Owner-Key`. The server compares it with the authenticated GUID owner,
+and the SPA discards responses if that owner changes while a request is in flight.
+Authenticated API responses are marked `no-store` to prevent browser or proxy cache
+replay across sign-out/sign-in transitions.
 
-Every project belongs to its owner and one customer company. Issues also require a
-customer, but their project foreign key is nullable so an issue can stand alone.
-Changing a project's customer updates its linked issues to preserve that invariant.
-The controlled category taxonomy is TopSolid (CAM or Mold), Eureka, and Boxcon.
+Authentication, recovery, 2FA, administrator writes, and Canvas reads have bounded
+rate-limit partitions. Forced calendar refreshes have a stricter partition than
+cache-eligible reads. Nginx adds CSP, frame-ancestor, referrer, permissions, and
+content-type headers. API/database Compose ports bind only to loopback.
 
-Calendar start and end values are converted from the user's configured IANA time
-zone and sent as ISO instants. The API normalizes them to UTC `timestamptz` values;
-each browser formats the same instant in its own configured time zone. Calendar
-shares are normalized rows targeting an active user email or group id. Owners can
-mutate an entry, while matching users and active group members receive read-only
-visibility. Important creates, updates, status transitions, and deletes write audit
-records.
+Production Compose explicitly enables forwarded-header trust because Nginx is the
+only API ingress and published service ports are loopback-only. The outer TLS proxy
+must overwrite `X-Forwarded-For` with one client address; frontend Nginx rejects a
+multi-hop value before passing one hop to the API. Direct deployments default to not
+trusting arbitrary forwarded headers. The public host must be supplied through
+`ALLOWED_HOSTS`.
 
-Workspace settings remain JSON in `user_settings`, which is appropriate for theme,
-language, time zone, display, refresh, and session preferences. Customer and workload
-records are relational so they can be validated, indexed, joined, and audited. The
-current deployment model creates the new tables idempotently on first Workspace API
-use; a versioned EF migration should replace this compatibility bridge before schema
-changes become frequent.
+## Canvas boundary
 
-### Workspace quality review
+`CanvasIntegrationEndpoints` exposes connection/token management, OAuth
+start/callback, course summaries and content, course rosters, activity-stream inbox
+items, calendar items, and selected course-resource routes. Assignment text/URL
+submissions, discussion replies, and quiz-attempt starts are explicit user-triggered
+writes with a separate rate limit; there are no background Canvas writes.
+Administrators cannot read or replace another user's Canvas credential.
 
-- **Functional suitability:** durable customer, project, issue, calendar, sharing,
-  board, and timeline flows cover the requested general workload. Standalone issues,
-  customer allocation, and TopSolid/Eureka/Boxcon categorization are explicit domain
-  rules rather than UI-only conventions.
-- **Reliability:** server refresh after mutations, owner checks, relationship
-  validation, disabled save states, retry feedback, and UTC normalization prevent the
-  most likely divergent states. Add optimistic concurrency tokens before multiple
-  browser sessions commonly edit the same owner record.
-- **Performance efficiency:** owner/status/date and share-target indexes support the
-  current overview query, and the feature is lazy-loaded. The overview is intentionally
-  one request for a modest workload; add date ranges and pagination before accounts
-  accumulate thousands of calendar items or issues.
-- **Maintainability:** the typed Workspace API and dedicated feature component isolate
-  Workspace behavior from `App.tsx` and Academy. Modal forms share DTO contracts with
-  server validation. Move schema creation to migrations and split the feature into
-  smaller view modules if its scope grows materially.
-- **Compatibility and portability:** mode ids, API routes, local-storage keys, JSON
-  preference versions, and date/time-zone behavior are cross-layer contracts. Version
-  preference documents and use stable ids rather than display names so renamed modes
-  and future clients remain compatible.
-- **Security and freedom from risk:** all records are owner-scoped, shared calendar
-  access is read-only, share targets must be active directory users/groups, and
-  mutations are audited. Add explicit antiforgery protection and finer route-level
-  manage permissions before broad external deployment.
-- **Usability and quality in use:** focused dialogs, empty states, status controls,
-  responsive layouts, local-time labels, retry feedback, and Google Calendar handoff
-  keep core tasks discoverable. Keyboard, screen-reader, DST-transition, narrow-screen,
-  slow-network, and expired-session paths still need automated regression coverage.
+The default allowlisted origin is `https://sfu.instructure.com`. User-entered URLs
+are normalized to configured HTTPS origins; paths, credentials, fragments, unexpected
+redirect origins, and non-allowlisted pagination links are rejected. Each calendar
+request shares one deadline plus page, byte, and final-item budgets across every
+course, event type, and submission lookup. Active-course data uses short bounded
+caching and striped refresh locks. The shared cache has a 64 MiB size budget;
+outbound work admits at most 64 active-or-waiting calls, performs at most 16 calls at
+once, and abandons capacity waits after three seconds. A partial best-effort calendar
+response carries `isComplete: false`, is shown with a warning, and is never cached as
+authoritative. The pooled Canvas HTTP handler stores no cookies between users.
 
-## Academy architecture
+Course-to-manual migration is fail-safe: it requires a current Canvas course result
+whose term end is in the past and whose `access_restricted_by_date` signal says the
+user is prevented from viewing it. A completed/read-only enrollment and absence from
+an active-course response are not treated as closed access. Previously generated
+manual copies are suppressed while the same Canvas course is accessible, without
+deleting the retained manual backup.
 
-Academy is a feature configuration inside the shared workspace shell, not a separate
-frontend or backend application. `defaultModes.ts` declares the Academy navigation
-(`Dashboard`, `Courses`, `Grades`, `Inbox`, `People`, `Outlook`, and `Settings`),
-calendar item types, dashboard cards, and the Canvas/Outlook integration choices.
-`App.tsx` applies access grants and maps the Academy navigation ids to lazy-loaded
-feature views. The large dashboard orchestration remains in `DashboardCards.tsx`;
-the course, grade, inbox, and people experiences are split into their own components.
+OAuth state is protected, user-bound, local-return-path-only, and expires quickly.
+The authorization code and refresh token exchange happens server-side. Access and
+refresh tokens are encrypted at rest with ASP.NET Core Data Protection and never
+returned to the SPA. Refresh operations are serialized per connection.
 
-The main Academy data path is:
+Manual tokens are a deployment-controlled fallback and are off by default outside
+Development. They improve compatibility when SFU has not issued a developer key but
+shift creation, expiry, and revocation to each user. The application never accepts
+an SFU username/password.
+
+## Persistence and migrations
+
+`AuthDbContext` owns Identity users, roles, logins, tokens, lockouts, and migration
+history. `CanvasToDoDbContext` is intentionally narrow: it maps only the retained
+`user_settings` compatibility table used for encrypted Canvas connections and
+Academy preferences. Retired Workspace, Google, Microsoft, group, content, and image
+models/endpoints have been removed; existing unused database tables are not dropped
+automatically.
+
+Before compatibility-table initialization, Identity migrations, or administrator
+bootstrap runs, startup acquires a PostgreSQL session advisory lock on a dedicated
+non-pooled connection. This serializes initialization across API replicas; acquisition
+times out after 120 seconds and fails that replica's startup rather than allowing
+concurrent schema/bootstrap work.
+
+Verified external login may idempotently copy only legacy `canvas.token` and
+`academy.preferences` rows to `user:{guid}` when the destination is absent. Password
+and unverified identities never claim data by email. The source row remains for
+rollback/support, so deletion should happen only after a separately verified
+migration.
+
+The Settings import panel is the explicit bridge for retired Academy-ID accounts.
+Its authenticated, per-user rate-limited endpoint verifies the old active account's
+strictly bounded PBKDF2 credential behind a small process-wide CPU/database admission
+gate, then transactionally records a one-to-one legacy
+account GUID binding in `auth_user_tokens`. It copies only exact `canvas.token` and
+`academy.preferences` rows to `user:{guid}`. Existing destination values win, the
+source remains unchanged, and no contact email, profile property, or role is inferred
+from the legacy account. A filtered database-unique index plus a transaction advisory
+lock enforce the one-legacy-account/one-new-account invariant.
+
+Browser-only Academy values from older builds are deliberately left untouched:
+without a server-verifiable identity binding, silently uploading them to whichever
+public account signs in next could disclose one user's data to another. Theme and
+language values may remain local because they contain no account data.
+
+Visible code and runtime names are Canvas To Do. These values remain legacy
+compatibility contracts until a coordinated data/crypto migration:
 
 ```text
-Academy login/session
-        |
-        v
-Shared React shell -> Academy view -> workspaceApi.ts
-        |                         |
-        |                         +--> /api/academy/preferences
-        |                         +--> /api/canvas/*
-        v
-Local UI state and cross-view preference events
-        |
-        v
-ASP.NET API -> PostgreSQL user_settings (JSON preferences)
-            -> protected Canvas token + Canvas LMS API
+Database/user:                 incos_workspace / incos
+Development DB fallback:      incos123 (local compatibility only)
+Persistent volume keys:       incos-postgres-data*
+                              incos-data-protection-keys*
+Data Protection app name:     Incos.Workspace
+Canvas token purpose:          incos.workspace.canvas-token.v1
+Canvas OAuth-state purpose:    incos.workspace.canvas-oauth-state.v1
+Connection-key fallback:       IncosWorkspace
 ```
 
-### Identity and access
+New connection configuration uses `ConnectionStrings:CanvasToDo`. The legacy key is
+fallback-only. The Data Protection volume can be mounted at the new
+`/var/lib/canvas-to-do/...` path without changing its contents or cryptographic
+identity.
 
-Academy users can create and use an Academy ID/password account through
-`AuthEndpoints`. The account is represented by an `AdminUser` plus a unique
-`AcademyCredentialAccount`; passwords are stored as hashes, and the API issues the
-same protected cookie-session shape used by the rest of the workspace. The session
-contains an Academy provider marker and login id, allowing access grants to be
-filtered to Academy capabilities. Profile changes are deliberately limited to
-Academy credential accounts, while administrators can manage account status and
-Canvas token status.
+Changing a Compose project name can create new empty volumes. Back up PostgreSQL and
+the key ring together, inspect actual volume names, and never use `down -v` during a
+rename. A later crypto migration must decrypt and re-protect every Canvas envelope
+before the legacy discriminator/purpose can be removed. That migration should also
+bind each new envelope to its normalized Identity owner; legacy v1 ciphertext is not
+owner-associated additional data, so database write access remains privileged until
+the coordinated rewrite is complete.
 
-### Preferences and local state
+The checked-in stack persists Data Protection keys but cannot select a
+deployment-specific certificate or KMS. Protect the key-ring volume with restrictive
+host permissions and encrypted storage, and add certificate/KMS wrapping for
+higher-assurance production environments.
 
-`WorkspaceEndpoints` stores the `academy.preferences` setting in the per-user
-`user_settings` table as JSONB. The document contains manual lectures, manual
-coursework and assessments, Canvas display/preferences, and calendar settings such
-as the selected semester and grade thresholds. `App.tsx`, `DashboardCards.tsx`,
-`CourseOverviewView.tsx`, and `AcademyGradesView.tsx` optimistically update local
-state, persist through `PUT /api/academy/preferences`, and broadcast a browser
-`academyPreferencesUpdated` event so mounted views converge without a full reload.
-The API normalizes older preference shapes when they are read, which preserves
-backward compatibility during the ongoing preference schema evolution.
+## Deployment configuration
 
-This is intentionally lightweight and user-scoped, but it also means the JSON
-document is the current source of truth for many Academy records. The relational
-`Course` and `Assignment` entities exist in the shared domain model, yet the live
-Academy course/grade views primarily consume Canvas DTOs and preference JSON rather
-than those tables. That keeps the prototype simple, but makes reporting, querying,
-conflict resolution, and offline use harder than they would be with normalized
-Academy records.
+The public deployment requires explicit settings for:
 
-### Canvas boundary
+- PostgreSQL connection/password;
+- allowed host and forwarded-proxy trust;
+- SMTP sender, TLS, and public frontend base URL for account email;
+- optional Google/Facebook client credentials and exact callbacks;
+- Canvas origin allowlist; and
+- either institution-approved Canvas OAuth credentials or a deliberate manual-token
+  fallback decision.
 
-`CanvasIntegrationEndpoints` is the server-side anti-corruption layer for Canvas.
-It resolves the current user's connection, decrypts the stored token with ASP.NET
-Data Protection, calls Canvas, and maps provider responses into stable DTOs. The
-browser never receives the raw token. The endpoint surface covers course lists,
-course sections (home, modules, assignments/grades, pages, people), individual
-assignment/quiz/discussion/file/module-item details and submissions, calendar
-items, and inbox items. Calendar aggregation performs several provider reads,
-deduplicates events, and uses memory caching; other content is loaded when the user
-opens a course or resource.
-
-Academy views therefore have two useful loading levels: summaries load courses,
-preferences, and calendar/inbox data; detailed course and grade panels fetch the
-smaller Canvas section or resource only when expanded. This limits initial payloads,
-but provider availability and rate limits remain visible to the user because the
-API is not yet a durable synchronization layer.
-
-### Academy quality review
-
-- **Functional suitability:** the split between shared shell behavior, user-owned
-  preferences, and Canvas-backed learning data fits the current Academy workflow.
-  Course, grade, content, people, calendar, inbox, and submission flows are
-  represented. The main product boundary to clarify is whether manual data and
-  Canvas data should eventually become one durable academic record model.
-- **Reliability:** request sequence refs, cancellation checks, `Promise.allSettled`,
-  loading states, and best-effort Canvas sections reduce stale or partial UI failures.
-  Add bounded retries/circuit breaking for Canvas and a durable sync or snapshot
-  strategy before users need reliable history during Canvas outages.
-- **Performance efficiency:** lazy-loaded views, section-level Canvas requests,
-  bounded course page sizes, calendar caching, and parallel summary requests are
-  good choices. The next constraint is repeated provider fan-out; enforce consistent
-  pagination, response-size limits, cache expiry, and per-user rate limits.
-- **Maintainability:** the API client and endpoint DTOs give the frontend a clear
-  boundary, and feature views isolate most Academy screens. `App.tsx` and
-  `DashboardCards.tsx` still contain substantial Academy orchestration; extracting
-  Academy hooks/services would make refresh, preference saves, and event contracts
-  easier to test without changing the public API.
-- **Compatibility and portability:** Canvas instance URL, token lifetime, reverse
-  proxy configuration, cookie settings, and JSON preference versions vary by
-  deployment. Validate these settings at startup and keep Canvas-specific mapping
-  out of shared UI components.
-- **Security and freedom from risk:** HTTP-only sessions, server-side Canvas calls,
-  encrypted tokens, authorization groups, and inactive-account checks are sound
-  foundations. Review CSRF protection for cookie-authenticated writes, admin
-  authorization on every administrative token route, token redaction in logs, and
-  secret management before production exposure.
-
-## Admin Console architecture
-
-Admin Console is another mode in the shared React shell. Its mode definition in
-`frontend/src/modes/defaultModes.ts` supplies the navigation and preview dashboard,
-while `App.tsx` selects the Users and Groups feature views. Those two views are
-lazy-loaded so the normal Academy and Workspace paths do not pay their bundle cost
-until an administrator opens them. `accessControl.ts` filters modes and sidebar
-items from the access grants returned by the authenticated session.
-
-The live admin data path is:
-
-```text
-Authenticated browser
-        |
-        v
-App.tsx -> AdminUsersView / AdminGroupsView -> workspaceApi.ts
-        |                         |
-        |                         +--> /api/admin/users
-        |                         +--> /api/admin/groups
-        |                         +--> /api/canvas/admin/users/{id}/token
-        v
-ASP.NET access middleware -> authenticated endpoint group -> EF Core/PostgreSQL
-                             AdminUser, AdminGroup, AdminGroupMember,
-                             AcademyCredentialAccount, Canvas token records
-```
-
-The API is the authority for user and group changes. The `/api/admin` endpoint
-group requires authentication, and the request middleware applies access grants
-before endpoint execution: `admin-users` gates user routes, `admin-groups` gates
-group routes, and other admin paths require an `admin-*` grant. Group records store
-three separate grant dimensions—`access`, `permissions`, and `settings`—which are
-then used to shape the session grants and the frontend navigation. Protected-group
-handling keeps the primary administrator recoverable, while account deactivation
-disables API access, revokes sessions, and removes stored Google tokens.
-
-The Users view loads users and groups together to support group-name search, then
-loads a selected user's detail, activity log, and Canvas token status on demand.
-It can update Academy credential fields, status, API access, session revocation, and
-Canvas token metadata. Google-managed users retain their Google identity and
-password ownership. The Groups view edits normalized grant lists and member ids;
-the API validates duplicate names, protected groups, and Academy grant
-compatibility before saving.
-
-This boundary is important: the console's navigation contains planned areas beyond
-Users and Groups, but those pages currently fall back to the shared mock/calendar
-surface. They should not be described as operational administration until they have
-typed API contracts, server-side authorization, persistence, and audit coverage.
-
-### Admin Console quality review
-
-- **Functional suitability:** live user/group administration covers the current
-  access-management workflow, including account lifecycle, group membership, and
-  Canvas token status. The remaining menu entries are product placeholders, and
-  the access model should distinguish menu visibility from action-level permissions
-  before more destructive operations are added.
-- **Reliability:** mounted-state guards, parallel initial loading, explicit loading
-  states, and API validation reduce stale updates and malformed changes. Add
-  transactional audit writes and idempotent mutation semantics so a membership or
-  token operation cannot succeed without a traceable record.
-- **Performance efficiency:** users/groups load in parallel and user details and
-  token status are deferred. For larger directories, move search/filtering and
-  pagination to the API, return only the fields needed for the list, and avoid
-  rebuilding every user's group-name index on unrelated edits.
-- **Maintainability:** the typed `workspaceApi` boundary and separate Users/Groups
-  views are good seams. The permission catalog is currently embedded in
-  `AdminGroupsView`; move it to a shared, versioned capability catalog so the
-  frontend, middleware, and seed/default-group logic cannot drift.
-- **Compatibility and portability:** grant ids, mode ids, account-status values,
-  and JSON grant columns are cross-layer contracts. Treat them as stable versioned
-  identifiers, and keep local Academy accounts distinct from Google directory
-  identities when deployments change identity providers.
-- **Security and freedom from risk:** server-side access checks, protected-group
-  rules, password hashing, token encryption, and token cleanup on deactivation are
-  strong foundations. Cookie-authenticated PATCH/POST/PUT/DELETE routes still need
-  explicit CSRF protection, action-level authorization rather than only route-level
-  grants, rate limiting for sensitive operations, and immutable audit records that
-  never log passwords or token values. Preview/impersonation must also be clearly
-  labeled and fully audited.
-- **Usability and quality in use:** search, status badges, refresh actions, and
-  focused detail panels support efficient administration. Add confirmation and
-  impact summaries for deactivation, group permission changes, and token resets;
-  show partial-failure states for the combined users/groups load; and test keyboard,
-  narrow-screen, expired-session, and slow-directory scenarios.
-- **Usability and quality in use:** users get a unified Academy workspace and
-  actionable loading/error states, but slow-network, expired-token, partial-Canvas,
-  small-screen, keyboard, and screen-reader paths need regression coverage. Saving
-  JSON preferences should also surface a clear retry state when optimistic updates
-  cannot be persisted.
-
-## Backend
-
-The backend is an ASP.NET Core minimal API. `Program.cs` configures dependency
-injection, EF Core, cookies, Google authentication, data protection, CORS, forwarded
-headers, and endpoint mapping. Endpoint groups separate the main responsibilities:
-
-- `AuthEndpoints`: Google OAuth, Academy credentials, sessions, account status, and
-  access grants.
-- `WorkspaceEndpoints`: generic workspace records and preferences.
-- `GoogleIntegrationEndpoints`: Calendar, Drive, Gmail, Chat, and related provider
-  operations.
-- `CanvasIntegrationEndpoints`: Canvas LMS operations and encrypted token handling.
-- `MicrosoftIntegrationEndpoints`: Microsoft integration flows.
-
-EF Core's `IncosWorkspaceDbContext` maps shared workspace entities plus specialized
-integration and administration data. Provider tokens are intended to remain behind
-the API; the frontend receives status/data DTOs rather than provider credentials.
-
-## Request and security flow
-
-1. The browser requests `/api/auth/session` to establish the current session.
-2. Sign-in starts at the API, which performs Google OAuth and issues an HTTP-only
-   cookie. Academy accounts use a server-side password verification path.
-3. Protected endpoint groups require authorization and resolve the current user before
-   reading or writing user-scoped data.
-4. Google/Canvas/Microsoft calls are made server-side. Canvas credentials are protected
-   with ASP.NET Data Protection; persistent data-protection keys are mounted in Docker
-   so cookies remain valid across container restarts.
-5. Nginx forwards `X-Forwarded-*` headers, allowing the API to reconstruct the public
-   request scheme and host when OAuth redirects are generated.
+Secrets belong in an ignored `.env`, orchestrator secret, or managed secret store.
+The Docker build context excludes `.env`, local Codex data, dependency folders, and
+build output. Local operational exports are ignored by Git.
 
 ## Quality assessment
 
-### Strengths
+- Functional suitability/effectiveness: active frontend and backend contracts cover
+  confirmed local/social auth, 2FA, admin user management, Canvas connection,
+  calendar, course browser, grades, inbox, and people views without Workspace
+  dependencies.
+- Reliability/freedom from risk: lockout, generic recovery responses, immediate
+  revocation, migration safeguards, persistent keys, bounded Canvas reads, and
+  fail-safe email configuration reduce common failures. Durable last-known calendar
+  snapshots and operational alerting remain future work.
+- Performance efficiency: Canvas reads are paginated/cached/bounded and admin listing
+  is server-paged. Restored course views are route-split; React and Radix primitives
+  use stable cacheable chunks, and only the two Latin font subsets are shipped. The
+  Lightsail profile caps the in-process cache, EF connection pool, container memory,
+  and PostgreSQL working memory for a 1 GB host.
+- Maintainability: Identity, Canvas, Academy preference, admin, and email boundaries
+  are separate; canonical namespaces/folders replace former project branding.
+- Compatibility/portability: reverse-proxy paths, public URLs, allowed hosts, SMTP,
+  Canvas origins, and provider credentials are configuration rather than code.
+- Security: least-scope OAuth, confirmed email, optional 2FA, role guards, SSRF
+  controls, CSRF/CORS, CSP, secret-safe logging, dependency audit, and encrypted token
+  storage are treated as one system.
+- Usability/satisfaction/context coverage: the UI must keep recovery and connection
+  errors actionable and be tested with keyboards, screen readers, narrow devices,
+  slow networks, expired sessions, provider outages, and revoked Canvas consent.
 
-- **Functional suitability:** the API boundary centralizes OAuth and integrations, and
-  the mode contract supports multiple workflows without duplicating the entire shell.
-- **Reliability:** health-gated PostgreSQL startup, request cancellation, friendly API
-  error handling, session revocation checks, and persistent data-protection keys address
-  common operational failures.
-- **Maintainability:** endpoint groups, DTOs, entity/data layers, mode configuration,
-  and reusable UI primitives provide useful seams for change.
-- **Security:** HTTP-only cookies, server-side provider calls, domain restrictions,
-  authorization groups, encrypted Canvas tokens, and inactive-user rejection are good
-  foundations.
-- **Usability:** the client preserves navigation/mode preferences, lazy-loads heavier
-  views, supports English/Korean, and maps backend failures to actionable messages.
+## Next operational work
 
-### Risks and practical next steps
-
-- **Security/configuration:** the compose file contains a development database password,
-  CORS allows several localhost origins, and Vite has `allowedHosts: true`. Use secrets
-  and an explicit production origin/host allowlist before internet exposure. Also review
-  cookie `Secure`, CSRF protection for cookie-authenticated state-changing requests, and
-  OAuth scope minimization.
-- **Reliability:** `Database__EnsureCreated` is convenient for a prototype but does not
-  provide a safe schema migration history. Introduce EF Core migrations and a controlled
-  deployment step before production data matters. Add API health/readiness endpoints and
-  bounded retry/circuit-breaker behavior for provider calls.
-- **Performance:** provider endpoints should enforce pagination, response-size limits,
-  and per-user rate limits consistently. Keep the existing lazy loading and bounded
-  Gmail concurrency, and move long sync/download work to background jobs when it can
-  outlive an HTTP request.
-- **Maintainability:** `App.tsx` and the large integration endpoint classes are becoming
-  orchestration hotspots. Extract feature-level hooks/services and provider clients while
-  preserving the current endpoint contracts. Add contract tests for auth/session and
-  integration error shapes.
-- **Compatibility/portability:** OAuth callback URLs, CORS origins, ports, and the
-  PostgreSQL volume layout are environment-specific. Make these explicit deployment
-  settings and validate them at startup so misconfiguration fails clearly.
-- **Quality in use:** users can complete the main flows, but loading, retry, permission,
-  and expired-session states should be tested on slow networks and small screens. Keep
-  accessible labels/focus behavior under regression tests, especially for lazy-loaded
-  dialogs and integration panels.
-
-## Recommended boundary for future work
-
-Keep the browser responsible for presentation, local navigation preferences, and
-request orchestration. Keep authentication, authorization, provider credentials, sync
-coordination, data ownership, and audit-relevant actions in the API. Introduce a
-background sync layer only when provider latency or recurring synchronization makes
-request/response handling unreliable; until then, provider-specific service classes
-inside the API are a smaller and easier-to-operate step.
+1. Add automated backend integration and browser E2E coverage for every auth and
+   authorization branch, including CSRF failures and external-provider callbacks.
+2. Add readiness/telemetry for PostgreSQL, SMTP, and Canvas without logging account
+   addresses, codes, or tokens.
+3. Add durable, observable Canvas synchronization snapshots before deadlines depend
+   on live provider availability.
+4. Exercise backup/restore, key-ring recovery, accessibility, and rate-limit behavior
+   against a staging copy of legacy data.

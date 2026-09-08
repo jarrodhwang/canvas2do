@@ -10,8 +10,9 @@ COPY frontend/ ./
 RUN npm run build
 
 FROM nginx:1.27-alpine AS final
+LABEL org.opencontainers.image.title="Canvas To Do" \
+      org.opencontainers.image.description="Canvas To Do academy calendar frontend"
 COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
-RUN mkdir -p /var/www/incos-static/images \
-  && chmod -R a+rX /usr/share/nginx/html /var/www/incos-static
+RUN chmod -R a+rX /usr/share/nginx/html
 EXPOSE 6173

@@ -1,17 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Languages, LogOut, Maximize2, Minimize2, Moon, Pencil, Plus, Sun } from 'lucide-react';
-import { workspaceApi, type AuthSession } from '../api/workspaceApi';
+import { GraduationCap, Languages, LogOut, Maximize2, Minimize2, Moon, Pencil, Plus, Sun } from 'lucide-react';
+
+import type { AuthSession } from '../api/canvasToDoApi';
 import { useLanguage } from '../context/LanguageContext';
-import { useWorkspaceMode } from '../context/WorkspaceModeContext';
 import { languageOptions, type Language } from '../i18n';
-import { appPath } from '../lib/appPath';
 import { cn } from '../lib/utils';
 import type { AppTheme } from '../theme';
-import { CanvasConnectionDialog } from './CanvasConnectionDialog';
-import { ModeSwitch } from './ModeSwitch';
 import { Button } from './ui/button';
-import { Input } from './ui/input';
-import { Label } from './ui/label';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -26,15 +20,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from './ui/select';
-import { Switch } from './ui/switch';
-import { WorkspaceIcon } from './WorkspaceIcon';
 
 interface TopBarProps {
   academyLogoSrc?: string;
-  allowedModeIds?: string[];
   authSession?: AuthSession | null;
   isTopBarCollapsed?: boolean;
-  onBeforeModeChange?: (modeId: string) => boolean | void;
   onOpenAddItem: () => void;
   onOpenProfile?: () => void;
   onSignOut?: () => void;
@@ -43,22 +33,62 @@ interface TopBarProps {
   theme: AppTheme;
 }
 
-function getAccountInitials(label: string) {
-  const parts = label.trim().split(/\s+/).filter(Boolean);
+function getInitials(label: string) {
+  return label.trim().split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join('') || 'U';
+}
 
-  if (parts.length >= 2) {
-    return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
-  }
+function AccountMenu({
+  authSession,
+  onOpenProfile,
+  onSignOut,
+  compact = false,
+}: Pick<TopBarProps, 'authSession' | 'onOpenProfile' | 'onSignOut'> & { compact?: boolean }) {
+  const { dictionary } = useLanguage();
+  const displayName = authSession?.displayName?.trim() || authSession?.email?.trim() || dictionary.accountFallbackName;
+  const email = authSession?.email?.trim() || dictionary.notSet;
 
-  return label.trim().slice(0, 2).toUpperCase() || 'U';
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          aria-label={dictionary.accountMenu}
+          className={cn(
+            'flex max-w-[250px] items-center gap-2 rounded-lg border bg-muted/60 px-2 text-left outline-none transition hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50',
+            compact ? 'h-8' : 'h-11',
+          )}
+          type="button"
+        >
+          <span className={cn('grid shrink-0 place-items-center overflow-hidden rounded-full bg-primary text-xs font-black text-primary-foreground', compact ? 'size-6' : 'size-8')}>
+            {getInitials(displayName)}
+          </span>
+          <span className="min-w-0 max-[520px]:hidden">
+            <span className="block truncate text-xs font-black">{displayName}</span>
+            {!compact ? <span className="block truncate text-[10px] font-semibold text-muted-foreground">{email}</span> : null}
+          </span>
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-64">
+        <div className="min-w-0 px-2 py-2">
+          <div className="truncate text-sm font-black">{displayName}</div>
+          <div className="truncate text-xs font-semibold text-muted-foreground">{email}</div>
+          {authSession?.isAdmin ? <div className="mt-1 text-[10px] font-black uppercase text-primary">Administrator</div> : null}
+        </div>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem disabled={!onOpenProfile} onSelect={() => onOpenProfile?.()}>
+          <Pencil className="size-4" /> Edit profile & security
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled={!onSignOut} onSelect={() => onSignOut?.()} variant="destructive">
+          <LogOut className="size-4" /> {dictionary.signOut}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 }
 
 export function TopBar({
   academyLogoSrc,
-  allowedModeIds,
   authSession,
   isTopBarCollapsed = false,
-  onBeforeModeChange,
   onOpenAddItem,
   onOpenProfile,
   onSignOut,
@@ -66,423 +96,80 @@ export function TopBar({
   onThemeChange,
   theme,
 }: TopBarProps) {
-  const { activeMode, activeModeId, setActiveModeId, visibleModes } = useWorkspaceMode();
-  const { dictionary, language, setLanguage, translateModeName, translateModePurpose } = useLanguage();
-  const [isCanvasDialogOpen, setIsCanvasDialogOpen] = useState(false);
-  const [pendingCanvasModeId, setPendingCanvasModeId] = useState<string | null>(null);
-  const isDark = theme === 'dark';
-  const activeModeName = translateModeName(activeMode.id, activeMode.displayName);
-  const allowedModeIdSet = allowedModeIds ? new Set(allowedModeIds) : null;
-  const visibleAllowedModes = allowedModeIdSet
-    ? visibleModes.filter((mode) => allowedModeIdSet.has(mode.id))
-    : visibleModes;
-  const activeModePurpose = translateModePurpose(activeMode.id, activeMode.purpose);
-  const isAcademyMode = activeMode.id === 'academy';
-  const isWorkspaceMode = activeMode.id === 'project';
-  const isAdminConsoleMode = activeMode.id === 'admin-console';
-  const showAccountMenu = isAcademyMode || isWorkspaceMode;
-  const showBrandText = !isWorkspaceMode;
-  const workspaceTopBarTitle = 'Workspace';
-  const showThemeControl = !isAcademyMode && !isWorkspaceMode;
-  const accountDisplayName =
-    authSession?.displayName?.trim() ||
-    authSession?.email?.trim() ||
-    authSession?.loginId?.trim() ||
-    dictionary.accountFallbackName;
-  const accountId =
-    authSession?.loginId?.trim() ||
-    authSession?.email?.trim() ||
-    dictionary.notSet;
-  const accountInitials = getAccountInitials(accountDisplayName || accountId);
-  const fallbackBrandLogoSrc = appPath('/brand/INCOS%20New%20Logo_Crop.png');
-  const defaultAcademyLogoSrc = appPath('/brand/SFU_block_colour_rgb.png');
-  const brandLogoAlt = isAcademyMode ? 'SFU' : 'INCOS';
-  const isAcademyLogoHidden = isAcademyMode && academyLogoSrc === 'none';
-  const brandLogoSrc = isAcademyMode ? (academyLogoSrc || defaultAcademyLogoSrc) : fallbackBrandLogoSrc;
-  const brandTitle = isAcademyMode ? dictionary.academyManagerName : dictionary.workspaceName;
-  const canCollapseTopBar = (isAcademyMode || isWorkspaceMode || isAdminConsoleMode) && Boolean(onToggleTopBarCollapsed);
-  const showCollapsedTopBar = canCollapseTopBar && isTopBarCollapsed;
-  const searchPlaceholder =
-    language === 'ko'
-      ? `${activeModeName} ${dictionary.searchSuffix}`
-      : `${dictionary.searchPrefix} ${activeModeName.toLowerCase()} ${dictionary.searchSuffix}...`;
+  const { dictionary, language, setLanguage } = useLanguage();
+  const showCustomLogo = Boolean(academyLogoSrc && academyLogoSrc !== 'none');
 
-  const activateAcademyWhenCanvasConnected = useCallback(async () => {
-    if (onBeforeModeChange?.('academy') === false) {
-      return false;
-    }
-
-    setActiveModeId('academy');
-
-    try {
-      const canvasStatus = await workspaceApi.getCanvasIntegration();
-
-      if (canvasStatus.connected) {
-        setPendingCanvasModeId(null);
-        setIsCanvasDialogOpen(false);
-        return true;
-      }
-
-      setPendingCanvasModeId('academy');
-      setIsCanvasDialogOpen(true);
-      return false;
-    } catch {
-      setPendingCanvasModeId('academy');
-      setIsCanvasDialogOpen(true);
-      return false;
-    }
-  }, [onBeforeModeChange, setActiveModeId]);
-
-  const handleModeChange = async (modeId: string) => {
-    if (allowedModeIdSet && !allowedModeIdSet.has(modeId)) {
-      return;
-    }
-
-    if (modeId !== 'academy') {
-      if (onBeforeModeChange?.(modeId) === false) {
-        return;
-      }
-
-      setActiveModeId(modeId);
-      setPendingCanvasModeId(null);
-      setIsCanvasDialogOpen(false);
-      return;
-    }
-
-    await activateAcademyWhenCanvasConnected();
-  };
-
-  useEffect(() => {
-    const requestedModeId = new URLSearchParams(window.location.search).get('mode');
-
-    if (requestedModeId !== 'academy') {
-      return;
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      void activateAcademyWhenCanvasConnected();
-    }, 0);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [activateAcademyWhenCanvasConnected]);
+  if (isTopBarCollapsed) {
+    return (
+      <header className="sticky top-0 z-20 flex min-h-[42px] items-center gap-3 border-b bg-card/90 px-4 py-1 backdrop-blur-xl">
+        <div className="flex min-w-0 items-center gap-2">
+          {showCustomLogo ? <img alt="Canvas To Do" className="h-7 w-auto object-contain" src={academyLogoSrc} /> : <GraduationCap className="size-5 text-primary" />}
+          <span className="truncate text-sm font-black">Canvas To Do</span>
+        </div>
+        <button
+          aria-label={dictionary.academyTopBarExpand}
+          className="group mx-auto flex h-7 min-w-32 flex-1 items-center justify-center gap-2 text-muted-foreground hover:text-foreground"
+          onClick={onToggleTopBarCollapsed}
+          type="button"
+        >
+          <span className="h-1 flex-1 rounded-full bg-border" />
+          <Maximize2 className="size-3" />
+          <span className="h-1 flex-1 rounded-full bg-border" />
+        </button>
+        <AccountMenu authSession={authSession} compact onOpenProfile={onOpenProfile} onSignOut={onSignOut} />
+      </header>
+    );
+  }
 
   return (
-    <header
-      className={cn(
-        'sticky top-0 z-20 border-b bg-card/90 backdrop-blur-xl transition-[height,min-height] duration-300 xl:shrink-0 xl:overflow-hidden',
-        showCollapsedTopBar
-          ? 'min-h-[42px] xl:h-[42px] xl:min-h-[42px]'
-          : 'min-h-[74px] xl:h-[74px] xl:min-h-[74px]',
-      )}
-    >
-      {showCollapsedTopBar ? (
-        <div className="flex min-h-[42px] items-center gap-3 px-4 py-1 xl:px-5">
-          <div className="flex min-w-0 items-center gap-2">
-            {!isAcademyLogoHidden ? (
-              <img
-                alt={brandLogoAlt}
-                className="h-7 w-auto shrink-0 object-contain"
-                key={brandLogoSrc}
-                onError={(event) => {
-                  if (event.currentTarget.dataset.fallbackApplied !== 'true') {
-                    event.currentTarget.dataset.fallbackApplied = 'true';
-                    event.currentTarget.src = isAcademyMode ? defaultAcademyLogoSrc : fallbackBrandLogoSrc;
-                    return;
-                  }
-
-                  event.currentTarget.style.visibility = 'hidden';
-                }}
-                src={brandLogoSrc}
-              />
-            ) : null}
-            {showBrandText ? (
-              <span className="truncate text-sm font-black">{brandTitle}</span>
-            ) : isWorkspaceMode ? (
-              <span className="truncate text-sm font-black">{workspaceTopBarTitle}</span>
-            ) : null}
-          </div>
-          <button
-            aria-label={dictionary.academyTopBarExpand}
-            className="group flex h-7 min-w-0 flex-1 items-center justify-center gap-2 rounded-md text-muted-foreground outline-none transition hover:bg-muted/70 hover:text-foreground focus-visible:bg-muted/70 focus-visible:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
-            onClick={onToggleTopBarCollapsed}
-            title={dictionary.academyTopBarExpand}
-            type="button"
-          >
-            <span className="h-1 min-w-8 flex-1 rounded-full bg-border transition-colors group-hover:bg-muted-foreground/60" />
-            <span className="hidden shrink-0 items-center gap-1 text-[10px] font-black uppercase group-hover:flex group-focus-visible:flex">
-              <Maximize2 aria-hidden="true" className="size-3" strokeWidth={2.5} />
-              {dictionary.academyTopBarExpand}
-            </span>
-            <span className="h-1 min-w-8 flex-1 rounded-full bg-border transition-colors group-hover:bg-muted-foreground/60" />
-          </button>
-          {showAccountMenu ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  aria-label={dictionary.accountMenu}
-                  className="flex h-8 max-w-[180px] shrink-0 items-center gap-2 rounded-lg border bg-muted/60 px-2 text-left outline-none transition hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
-                  type="button"
-                >
-                  <span className="grid size-6 shrink-0 place-items-center overflow-hidden rounded-full bg-primary text-[10px] font-black text-primary-foreground">
-                    {authSession?.pictureUrl ? (
-                      <img
-                        alt=""
-                        className="size-full object-cover"
-                        referrerPolicy="no-referrer"
-                        src={authSession.pictureUrl}
-                      />
-                    ) : (
-                      accountInitials
-                    )}
-                  </span>
-                  <span className="min-w-0 truncate text-xs font-black max-[520px]:hidden">
-                    {accountDisplayName}
-                  </span>
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-64">
-                <div className="flex min-w-0 items-center gap-3 px-2 py-2">
-                  <span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-full bg-primary text-sm font-black text-primary-foreground">
-                    {authSession?.pictureUrl ? (
-                      <img
-                        alt=""
-                        className="size-full object-cover"
-                        referrerPolicy="no-referrer"
-                        src={authSession.pictureUrl}
-                      />
-                    ) : (
-                      accountInitials
-                    )}
-                  </span>
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-black">{accountDisplayName}</div>
-                    <div className="truncate text-xs font-semibold text-muted-foreground">{accountId}</div>
-                  </div>
-                </div>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem disabled={!onOpenProfile} onSelect={() => onOpenProfile?.()}>
-                  <Pencil className="size-4" />
-                  <span>{dictionary.editProfile}</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem disabled={!onSignOut} onSelect={() => onSignOut?.()} variant="destructive">
-                  <LogOut className="size-4" />
-                  <span>{dictionary.signOut}</span>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : null}
+    <header className="sticky top-0 z-20 relative flex min-h-[74px] items-center justify-between gap-3 border-b bg-card/90 px-4 py-2 backdrop-blur-xl xl:px-5">
+      <div className="flex min-w-0 items-center gap-3">
+        {showCustomLogo ? (
+          <img alt="Canvas To Do" className="h-11 max-w-[200px] shrink-0 object-contain" src={academyLogoSrc} />
+        ) : (
+          <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground">
+            <GraduationCap className="size-6" />
+          </span>
+        )}
+        <div className="min-w-0">
+          <h1 className="truncate text-base font-black leading-tight">Canvas To Do</h1>
+          <p className="truncate text-xs font-semibold text-muted-foreground max-[640px]:hidden">Your academic calendar</p>
         </div>
-      ) : (
-        <div className="relative flex min-h-[74px] flex-wrap items-center justify-between gap-4 px-4 py-2 lg:flex-nowrap xl:h-[74px] xl:px-5">
-          <div className="flex min-w-0 items-center gap-3 max-[520px]:w-full max-[520px]:gap-2 lg:min-w-[282px]">
-            {!isAcademyLogoHidden ? (
-              <img
-                alt={brandLogoAlt}
-                className={isAcademyMode
-                  ? 'h-[52px] w-auto shrink-0 object-contain max-[520px]:h-7'
-                  : 'h-[38px] w-auto max-w-[220px] shrink-0 object-contain max-[520px]:h-7 max-[520px]:max-w-[128px] sm:max-w-[280px]'}
-                key={brandLogoSrc}
-                onError={(event) => {
-                  if (event.currentTarget.dataset.fallbackApplied !== 'true') {
-                    event.currentTarget.dataset.fallbackApplied = 'true';
-                    event.currentTarget.src = isAcademyMode ? defaultAcademyLogoSrc : fallbackBrandLogoSrc;
-                    return;
-                  }
+      </div>
 
-                  event.currentTarget.style.visibility = 'hidden';
-                }}
-                src={brandLogoSrc}
-              />
-            ) : null}
-            <div className="min-w-0">
-              {showBrandText ? (
-                <>
-                  <h1 className="truncate text-base font-black leading-none max-[520px]:text-sm">{brandTitle}</h1>
-                  {!isAcademyMode ? (
-                    <p className="mt-1 hidden max-w-[280px] truncate text-xs text-muted-foreground sm:block">
-                      {activeModePurpose}
-                    </p>
-                  ) : null}
-                </>
-              ) : isWorkspaceMode ? (
-                <h1 className="truncate text-base font-black leading-none max-[520px]:text-sm">
-                  {workspaceTopBarTitle}
-                </h1>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="max-[520px]:order-3 max-[520px]:w-full">
-            <ModeSwitch
-              activeModeId={activeModeId}
-              modes={visibleAllowedModes}
-              onModeChange={(modeId) => {
-                void handleModeChange(modeId);
-              }}
-            />
-          </div>
-
-          <div className="flex min-w-0 items-center justify-end gap-2 max-[520px]:absolute max-[520px]:right-3 max-[520px]:top-2 max-[520px]:gap-1 lg:min-w-[260px]">
-            {showAccountMenu ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    aria-label={dictionary.accountMenu}
-                    className="flex h-12 max-w-[260px] items-center gap-2 rounded-lg border bg-muted/60 px-2 text-left outline-none transition hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 max-[520px]:h-9 max-[520px]:max-w-[150px]"
-                    type="button"
-                  >
-                    <span className="grid size-8 shrink-0 place-items-center overflow-hidden rounded-full bg-primary text-xs font-black text-primary-foreground max-[520px]:size-7">
-                      {authSession?.pictureUrl ? (
-                        <img
-                          alt=""
-                          className="size-full object-cover"
-                          referrerPolicy="no-referrer"
-                          src={authSession.pictureUrl}
-                        />
-                      ) : (
-                        accountInitials
-                      )}
-                    </span>
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-black leading-tight max-[520px]:text-xs">
-                        {accountDisplayName}
-                      </span>
-                      <span className="block truncate text-[11px] font-bold leading-tight text-muted-foreground max-[520px]:hidden">
-                        {accountId}
-                      </span>
-                    </span>
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-64">
-                  <div className="flex min-w-0 items-center gap-3 px-2 py-2">
-                    <span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-full bg-primary text-sm font-black text-primary-foreground">
-                      {authSession?.pictureUrl ? (
-                        <img
-                          alt=""
-                          className="size-full object-cover"
-                          referrerPolicy="no-referrer"
-                          src={authSession.pictureUrl}
-                        />
-                      ) : (
-                        accountInitials
-                      )}
-                    </span>
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-black">{accountDisplayName}</div>
-                      <div className="truncate text-xs font-semibold text-muted-foreground">{accountId}</div>
-                    </div>
-                  </div>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem disabled={!onOpenProfile} onSelect={() => onOpenProfile?.()}>
-                    <Pencil className="size-4" />
-                    <span>{dictionary.editProfile}</span>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem disabled={!onSignOut} onSelect={() => onSignOut?.()} variant="destructive">
-                    <LogOut className="size-4" />
-                    <span>{dictionary.signOut}</span>
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            ) : (
-              <>
-                <label className="hidden w-[240px] max-w-[24vw] items-center gap-2 rounded-lg border bg-muted/60 px-3 py-1.5 text-muted-foreground lg:flex">
-                  <WorkspaceIcon name="search" size={16} />
-                  <Input
-                    className="h-7 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
-                    placeholder={searchPlaceholder}
-                  />
-                </label>
-                <div className="w-[132px] shrink-0 max-[520px]:w-[78px]">
-                  <Select value={language} onValueChange={(value) => setLanguage(value as Language)}>
-                    <SelectTrigger
-                      aria-label={dictionary.language}
-                      className="h-10 w-full rounded-lg bg-muted/60 px-2 text-xs font-black max-[520px]:h-8 max-[520px]:rounded-md max-[520px]:px-1.5"
-                    >
-                      <Languages aria-hidden="true" className="mr-1 size-4 text-muted-foreground max-[520px]:mr-0 max-[520px]:size-3.5" />
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent align="end" className="min-w-[132px]" position="popper">
-                      {languageOptions.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>
-                          {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                {showThemeControl ? (
-                  <>
-                    <div className="hidden items-center gap-2 rounded-lg border bg-muted/60 px-3 py-2 md:flex">
-                      <Sun aria-hidden="true" className="text-muted-foreground" size={15} />
-                      <Switch
-                        aria-label={dictionary.darkMode}
-                        checked={isDark}
-                        onCheckedChange={(checked) => onThemeChange(checked ? 'dark' : 'light')}
-                      />
-                      <Moon aria-hidden="true" className={isDark ? 'text-primary' : 'text-muted-foreground'} size={15} />
-                      <Label className="sr-only">{dictionary.darkMode}</Label>
-                    </div>
-                    <Button
-                      aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-                      className="md:hidden max-[520px]:size-8 max-[520px]:rounded-md"
-                      onClick={() => onThemeChange(isDark ? 'light' : 'dark')}
-                      size="icon-lg"
-                      type="button"
-                      variant="outline"
-                    >
-                      {isDark ? <Moon aria-hidden="true" /> : <Sun aria-hidden="true" />}
-                    </Button>
-                  </>
-                ) : null}
-                <Button
-                  className="h-10 rounded-lg bg-primary px-4 font-black text-primary-foreground shadow-none hover:bg-primary/90 max-[520px]:hidden"
-                  onClick={onOpenAddItem}
-                  type="button"
-                >
-                  <Plus aria-hidden="true" size={18} />
-                  <span className="hidden sm:inline">{dictionary.add}</span>
-                </Button>
-              </>
-            )}
-          </div>
-          {canCollapseTopBar ? (
-            <button
-              aria-label={dictionary.academyTopBarCollapse}
-              className="group absolute bottom-0 left-1/2 flex h-2 w-[min(560px,58vw)] -translate-x-1/2 items-center justify-center rounded-t-md text-muted-foreground outline-none transition-all duration-200 hover:h-5 hover:bg-muted/70 hover:text-foreground focus-visible:h-5 focus-visible:bg-muted/70 focus-visible:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
-              onClick={onToggleTopBarCollapsed}
-              title={dictionary.academyTopBarCollapse}
-              type="button"
-            >
-              <span className="flex w-full items-center justify-center gap-2">
-                <span className="h-1 min-w-10 flex-1 rounded-full bg-border transition-colors group-hover:bg-muted-foreground/60" />
-                <span className="hidden shrink-0 items-center gap-1 text-[10px] font-black uppercase group-hover:inline-flex group-focus-visible:inline-flex">
-                  <Minimize2 aria-hidden="true" className="size-3" strokeWidth={2.5} />
-                  {dictionary.academyTopBarCollapse}
-                </span>
-                <span className="h-1 min-w-10 flex-1 rounded-full bg-border transition-colors group-hover:bg-muted-foreground/60" />
-              </span>
-            </button>
-          ) : null}
-        </div>
-      )}
-      <CanvasConnectionDialog
-        onConnected={() => {
-          if (pendingCanvasModeId === 'academy') {
-            setActiveModeId('academy');
-          }
-
-          setPendingCanvasModeId(null);
-          setIsCanvasDialogOpen(false);
-        }}
-        onOpenChange={(open) => {
-          setIsCanvasDialogOpen(open);
-
-          if (!open) {
-            setPendingCanvasModeId(null);
-          }
-        }}
-        open={isCanvasDialogOpen}
-      />
+      <div className="flex min-w-0 items-center justify-end gap-2">
+        <Select value={language} onValueChange={(value) => setLanguage(value as Language)}>
+          <SelectTrigger aria-label={dictionary.language} className="h-10 w-[78px] px-2 text-xs font-black max-[520px]:hidden">
+            <Languages className="mr-1 size-4" /><SelectValue />
+          </SelectTrigger>
+          <SelectContent align="end">
+            {languageOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.shortLabel}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Button
+          aria-label={theme === 'dark' ? 'Use light theme' : 'Use dark theme'}
+          onClick={() => onThemeChange(theme === 'dark' ? 'light' : 'dark')}
+          size="icon"
+          type="button"
+          variant="outline"
+        >
+          {theme === 'dark' ? <Moon className="size-4" /> : <Sun className="size-4" />}
+        </Button>
+        <Button className="font-black max-[520px]:hidden" onClick={onOpenAddItem} type="button">
+          <Plus className="size-4" /> {dictionary.add}
+        </Button>
+        <AccountMenu authSession={authSession} onOpenProfile={onOpenProfile} onSignOut={onSignOut} />
+      </div>
+      {onToggleTopBarCollapsed ? (
+        <button
+          aria-label={dictionary.academyTopBarCollapse}
+          className="group absolute bottom-0 left-1/2 flex h-2 w-[min(560px,58vw)] -translate-x-1/2 items-center justify-center text-muted-foreground hover:h-5 hover:bg-muted/70"
+          onClick={onToggleTopBarCollapsed}
+          type="button"
+        >
+          <span className="h-1 flex-1 rounded-full bg-border" /><Minimize2 className="mx-2 size-3" /><span className="h-1 flex-1 rounded-full bg-border" />
+        </button>
+      ) : null}
     </header>
   );
 }

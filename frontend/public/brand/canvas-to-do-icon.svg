@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
+  <title id="title">Canvas To Do</title>
+  <desc id="description">A gold calendar with completed tasks on a navy background.</desc>
+  <rect width="512" height="512" rx="112" fill="#08285c"/>
+  <path d="M136 104v56M376 104v56M104 184h304" fill="none" stroke="#f4b41a" stroke-linecap="round" stroke-width="32"/>
+  <rect x="104" y="128" width="304" height="280" rx="48" fill="none" stroke="#f4b41a" stroke-width="28"/>
+  <path d="m154 254 25 25 47-51M154 338l25 25 47-51" fill="none" stroke="#fffaf0" stroke-linecap="round" stroke-linejoin="round" stroke-width="24"/>
+  <path d="M260 254h96M260 338h96" fill="none" stroke="#fffaf0" stroke-linecap="round" stroke-width="24"/>
+</svg>

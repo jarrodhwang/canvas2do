@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/set-state-in-effect, react-hooks/refs, react-hooks/purity, react-hooks/exhaustive-deps -- This restored stateful course browser resets related resource state as navigation changes. */
 import {
   ArrowLeft,
   ArrowRight,
@@ -25,7 +26,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent, type TouchEvent } from 'react';
 
-import { workspaceApi } from '../api/workspaceApi';
+import { canvasToDoApi } from '../api/canvasToDoApi';
 import type {
   AcademyPreferences,
   CanvasCalendarItem,
@@ -42,7 +43,7 @@ import type {
   CanvasCourseUser,
   CanvasRubricCriterion,
   CanvasRubricSettings,
-} from '../api/workspaceApi';
+} from '../api/canvasToDoApi';
 import { useLanguage } from '../context/LanguageContext';
 import { badgeColorClasses, dotColorClasses } from '../lib/colorStyles';
 import {
@@ -109,6 +110,8 @@ import {
 type LoadStatus = 'idle' | 'loading' | 'loaded' | 'failed';
 
 interface CanvasLecturePreference {
+  accessClosed?: boolean;
+  accessRestrictedByDate?: boolean;
   archivedAsManualLectureId?: string;
   assessments?: ManualLecture['assessments'];
   chipColor?: ColorToken;
@@ -116,6 +119,7 @@ interface CanvasLecturePreference {
   credits?: string;
   currentGrade?: string;
   currentScore?: number;
+  convertedToManualAt?: string;
   deleted?: boolean;
   friendlyCourseCode?: string;
   friendlyName?: string;
@@ -131,6 +135,8 @@ interface CanvasLecturePreference {
   semester?: string;
   starred?: boolean;
   termName?: string;
+  termEndAt?: string;
+  termStartAt?: string;
   tutorialSection?: string;
   workflowState?: string;
 }
@@ -215,10 +221,10 @@ type IntegratedCourseResource =
       url: string;
     };
 
-const manualLecturesStorageKey = 'incos-academy-manual-lectures';
-const canvasLecturePreferencesStorageKey = 'incos-academy-canvas-lecture-preferences';
-const academyCalendarSettingsStorageKey = 'incos-academy-calendar-settings';
-const academyPreferencesUpdatedEvent = 'incos-academy-preferences-updated';
+const manualLecturesStorageKey = 'canvas-to-do-manual-lectures';
+const canvasLecturePreferencesStorageKey = 'canvas-to-do-canvas-lecture-preferences';
+const academyCalendarSettingsStorageKey = 'canvas-to-do-calendar-settings';
+const academyPreferencesUpdatedEvent = 'canvas-to-do-preferences-updated';
 const defaultAcademySemester = getDateBasedAcademySemester();
 const noTermSemester = 'Default Term';
 const defaultCourseChipColor: ColorToken = 'blue';
@@ -394,6 +400,8 @@ function getCanvasCourseSnapshot(
   );
 
   return {
+    accessClosed: course.accessClosed === true,
+    accessRestrictedByDate: course.accessRestrictedByDate === true,
     courseName: course.name,
     currentGrade: course.currentGrade,
     currentScore: course.currentScore,
@@ -407,6 +415,8 @@ function getCanvasCourseSnapshot(
         ? 'fallback'
         : preference?.semesterSource ?? (reportedSemesterIsUsable ? 'canvas' : 'fallback'),
     termName: semester,
+    termEndAt: course.termEndAt,
+    termStartAt: course.termStartAt,
     workflowState: course.workflowState,
   };
 }
@@ -576,7 +586,11 @@ function createCanvasRows(
       ? normalizeSemesterName(preference.semester ?? preference.termName)
       : reportedSemester;
 
-    if (preference.deleted) {
+    const restoreAccessibleConversion = Boolean(
+      preference.convertedToManualAt && course.accessClosed !== true,
+    );
+
+    if (course.accessClosed || (preference.deleted && !restoreAccessibleConversion)) {
       return [];
     }
 
@@ -592,7 +606,7 @@ function createCanvasRows(
       grade: formatCanvasGrade(course),
       notificationCount: notificationCounts[courseId] ?? 0,
       color: preference.chipColor ?? defaultCourseChipColor,
-      hidden: Boolean(preference.hidden),
+      hidden: restoreAccessibleConversion ? false : Boolean(preference.hidden),
       semester,
       source: 'canvas',
       starred: Boolean(preference.starred),
@@ -724,8 +738,27 @@ function createCanvasEditableLecture(
   };
 }
 
-function isGeneratedArchivedCanvasLecture(lecture: ManualLecture, preferences: CanvasLecturePreferences) {
-  return Object.values(preferences).some((preference) => preference.archivedAsManualLectureId === lecture.id);
+function isGeneratedArchivedCanvasLectureForAccessibleCourse(
+  lecture: ManualLecture,
+  preferences: CanvasLecturePreferences,
+  courses: CanvasCourse[],
+) {
+  const archivedCourseId = Object.entries(preferences).find(([, preference]) => (
+    preference.archivedAsManualLectureId === lecture.id
+  ))?.[0];
+
+  return Boolean(archivedCourseId && courses.some((course) => (
+    String(course.id ?? '') === archivedCourseId && course.accessClosed !== true
+  )));
+}
+
+function isGeneratedConvertedCanvasLectureForAccessibleCourse(
+  lecture: ManualLecture,
+  courses: CanvasCourse[],
+) {
+  return courses.some((course) => (
+    course.accessClosed !== true && lecture.id === `manual-canvas-${course.id}`
+  ));
 }
 
 function sortRows(firstRow: CourseOverviewRow, secondRow: CourseOverviewRow) {
@@ -1710,37 +1743,37 @@ function CourseDetailView({
     let request: Promise<void>;
 
     if (resource.kind === 'canvas-page') {
-      request = workspaceApi.getCanvasCoursePage(row.canvasCourseId, resource.pageUrl).then((page) => {
+      request = canvasToDoApi.getCanvasCoursePage(row.canvasCourseId, resource.pageUrl).then((page) => {
         if (integratedRequestRef.current === requestId) {
           setIntegratedCanvasPage(page);
         }
       });
     } else if (resource.kind === 'canvas-assignment') {
-      request = workspaceApi.getCanvasCourseAssignment(row.canvasCourseId, resource.assignmentId).then((assignment) => {
+      request = canvasToDoApi.getCanvasCourseAssignment(row.canvasCourseId, resource.assignmentId).then((assignment) => {
         if (integratedRequestRef.current === requestId) {
           setIntegratedAssignment(assignment);
         }
       });
     } else if (resource.kind === 'canvas-quiz') {
-      request = workspaceApi.getCanvasCourseQuiz(row.canvasCourseId, resource.quizId).then((quiz) => {
+      request = canvasToDoApi.getCanvasCourseQuiz(row.canvasCourseId, resource.quizId).then((quiz) => {
         if (integratedRequestRef.current === requestId) {
           setIntegratedQuiz(quiz);
         }
       });
     } else if (resource.kind === 'canvas-discussion') {
-      request = workspaceApi.getCanvasCourseDiscussion(row.canvasCourseId, resource.topicId).then((discussion) => {
+      request = canvasToDoApi.getCanvasCourseDiscussion(row.canvasCourseId, resource.topicId).then((discussion) => {
         if (integratedRequestRef.current === requestId) {
           setIntegratedDiscussion(discussion);
         }
       });
     } else if (resource.kind === 'canvas-file') {
-      request = workspaceApi.getCanvasCourseFile(row.canvasCourseId, resource.fileId).then((file) => {
+      request = canvasToDoApi.getCanvasCourseFile(row.canvasCourseId, resource.fileId).then((file) => {
         if (integratedRequestRef.current === requestId) {
           setIntegratedFile(file);
         }
       });
     } else if (resource.kind === 'canvas-module-item') {
-      request = workspaceApi.getCanvasCourseModuleItem(row.canvasCourseId, resource.moduleItemId).then((item) => {
+      request = canvasToDoApi.getCanvasCourseModuleItem(row.canvasCourseId, resource.moduleItemId).then((item) => {
         if (integratedRequestRef.current === requestId) {
           const resolvedResource = getIntegratedResourceFromModuleItem(item, {
             baseUrl: canvasBaseUrl,
@@ -1852,7 +1885,7 @@ function CourseDetailView({
     coursePeopleRequestKeyRef.current = requestKey;
     setCoursePeopleStatus('loading');
 
-    workspaceApi
+    canvasToDoApi
       .getCanvasCoursePeople(row.canvasCourseId)
       .then(({ people }) => {
         setCoursePeople(people);
@@ -1901,7 +1934,7 @@ function CourseDetailView({
 
     setLinkedRubricStatus('loading');
 
-    workspaceApi
+    canvasToDoApi
       .getCanvasCourseAssignment(row.canvasCourseId, assignmentId)
       .then((assignment) => {
         if (isCancelled) {
@@ -2556,13 +2589,13 @@ function CourseDetailView({
     setAssignmentSubmissionError('');
 
     try {
-      await workspaceApi.submitCanvasCourseAssignment(row.canvasCourseId, assignment.id, {
+      await canvasToDoApi.submitCanvasCourseAssignment(row.canvasCourseId, assignment.id, {
         body: assignmentSubmissionBody,
         comment: assignmentSubmissionComment,
         submissionType: assignmentSubmissionType,
         url: assignmentSubmissionUrl,
       });
-      const refreshedAssignment = await workspaceApi.getCanvasCourseAssignment(row.canvasCourseId, assignment.id);
+      const refreshedAssignment = await canvasToDoApi.getCanvasCourseAssignment(row.canvasCourseId, assignment.id);
 
       setIntegratedAssignment(refreshedAssignment);
       setAssignmentSubmissionBody('');
@@ -2591,10 +2624,10 @@ function CourseDetailView({
     setDiscussionSubmitError('');
 
     try {
-      await workspaceApi.submitCanvasCourseDiscussionEntry(row.canvasCourseId, discussion.id, {
+      await canvasToDoApi.submitCanvasCourseDiscussionEntry(row.canvasCourseId, discussion.id, {
         message: discussionMessage,
       });
-      const refreshedDiscussion = await workspaceApi.getCanvasCourseDiscussion(row.canvasCourseId, discussion.id);
+      const refreshedDiscussion = await canvasToDoApi.getCanvasCourseDiscussion(row.canvasCourseId, discussion.id);
 
       setIntegratedDiscussion(refreshedDiscussion);
       setDiscussionMessage('');
@@ -2621,7 +2654,7 @@ function CourseDetailView({
     setQuizSubmissionError('');
 
     try {
-      const quizSubmission = await workspaceApi.startCanvasCourseQuiz(row.canvasCourseId, quiz.id, {
+      const quizSubmission = await canvasToDoApi.startCanvasCourseQuiz(row.canvasCourseId, quiz.id, {
         accessCode: quizAccessCode,
       });
 
@@ -3373,7 +3406,7 @@ export function CourseOverviewView({
     };
 
     const reloadAcademyPreferences = () => {
-      workspaceApi
+      canvasToDoApi
         .getAcademyPreferences()
         .then(applyAcademyPreferences)
         .catch(() => undefined);
@@ -3453,7 +3486,7 @@ export function CourseOverviewView({
     setCourseLoadStatus('loading');
     setAcademyPreferencesLoadStatus('loading');
 
-    workspaceApi
+    canvasToDoApi
       .getAcademyPreferences()
       .then((preferences) => {
         if (isCancelled) {
@@ -3486,8 +3519,8 @@ export function CourseOverviewView({
         setAcademyPreferencesLoadStatus('failed');
       });
 
-    const canvasCoursesTask = workspaceApi
-      .getCanvasCourses(20)
+    const canvasCoursesTask = canvasToDoApi
+      .getCanvasCourses(100)
       .then(({ courses }) => {
         if (isCancelled) {
           return [];
@@ -3508,7 +3541,7 @@ export function CourseOverviewView({
       });
 
     canvasCoursesTask
-      .then(() => workspaceApi.getCanvasCalendarItems({
+      .then(() => canvasToDoApi.getCanvasCalendarItems({
         endDate: getFutureIsoDate(45),
         pageSize: 100,
         startDate: getTodayIsoDate(),
@@ -3549,7 +3582,7 @@ export function CourseOverviewView({
       }));
     }
 
-    void workspaceApi
+    void canvasToDoApi
       .saveAcademyPreferences({
         canvasLecturePreferences: nextCanvasLecturePreferences,
         calendarSettings: { selectedSemester: normalizeSemesterName(selectedSemester) },
@@ -3589,7 +3622,7 @@ export function CourseOverviewView({
       }));
     }
 
-    void workspaceApi
+    void canvasToDoApi
       .saveAcademyPreferences({
         canvasLecturePreferences: nextCanvasLecturePreferences,
         calendarSettings,
@@ -3638,7 +3671,12 @@ export function CourseOverviewView({
             ...createCanvasRows(canvasCourses, canvasLecturePreferences, notificationCounts),
             ...createStoredCanvasRows(canvasLecturePreferences, canvasCourses),
             ...createManualRows(manualLectures.filter((lecture) => (
-              !isGeneratedArchivedCanvasLecture(lecture, canvasLecturePreferences)
+              !isGeneratedArchivedCanvasLectureForAccessibleCourse(
+                lecture,
+                canvasLecturePreferences,
+                canvasCourses,
+              ) &&
+              !isGeneratedConvertedCanvasLectureForAccessibleCourse(lecture, canvasCourses)
             ))),
           ].sort(sortRows)
         : []
@@ -4196,7 +4234,7 @@ export function CourseOverviewView({
 
     storeSelectedAcademySemester(normalizedSemester);
 
-    void workspaceApi
+    void canvasToDoApi
       .saveAcademyPreferences({
         calendarSettings: { selectedSemester: normalizedSemester },
       })
@@ -4213,13 +4251,13 @@ export function CourseOverviewView({
           },
         }));
         setCourseLoadStatus('loading');
-        void workspaceApi
-          .getCanvasCourses(20)
+        void canvasToDoApi
+          .getCanvasCourses(100)
           .then(({ courses }) => {
             setCanvasCourses(courses);
             setCourseLoadStatus('loaded');
 
-            return workspaceApi.getCanvasCalendarItems({
+            return canvasToDoApi.getCanvasCalendarItems({
               endDate: getFutureIsoDate(45),
               pageSize: 100,
               startDate: getTodayIsoDate(),
@@ -4266,7 +4304,7 @@ export function CourseOverviewView({
       },
     }));
 
-    void workspaceApi.getAcademyPreferences()
+    void canvasToDoApi.getAcademyPreferences()
       .then((preferences) => {
         const storedManualLectures = getManualLecturesFromAcademyPreferences(preferences);
         const manualLecturesToSave = storedManualLectures.some((lecture) => lecture.id === lectureId)
@@ -4275,7 +4313,7 @@ export function CourseOverviewView({
           ))
           : nextManualLectures;
 
-        return workspaceApi.saveAcademyPreferences({
+        return canvasToDoApi.saveAcademyPreferences({
           canvasAssessmentPreferences: preferences.canvasAssessmentPreferences,
           canvasCourseworkPreferences: preferences.canvasCourseworkPreferences,
           canvasLecturePreferences: preferences.canvasLecturePreferences,
@@ -4346,7 +4384,7 @@ export function CourseOverviewView({
 
     canvasCourseContentRequestRef.current = requestId;
     setCanvasCourseContentStatus('loading');
-    workspaceApi
+    canvasToDoApi
       .getCanvasCourseContent(selectedCourseRow.canvasCourseId, requestedSection)
       .then((content) => {
         if (canvasCourseContentRequestRef.current !== requestId) {
@@ -4600,6 +4638,7 @@ export function CourseOverviewView({
       </CardContent>
     </Card>
     <ManualLectureDialog
+      key={selectedManualLecture?.id ?? 'manual-course-closed'}
       initialLecture={selectedManualLecture}
       onOpenChange={(isOpen) => {
         if (!isOpen) {
@@ -4623,6 +4662,7 @@ export function CourseOverviewView({
     />
     <ManualLectureDialog
       description={dictionary.canvasLectureEditDescription}
+      key={selectedCanvasLecture?.id ?? 'canvas-course-closed'}
       initialLecture={selectedCanvasLecture}
       onOpenChange={(isOpen) => {
         if (!isOpen) {

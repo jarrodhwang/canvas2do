@@ -19,15 +19,15 @@ import {
 } from 'lucide-react';
 import { useEffect, useEffectEvent, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type ReactElement, type TouchEvent } from 'react';
 
-import { workspaceApi, type AcademyPreferences, type CanvasCalendarItem, type CanvasCourse, type SaveAcademyPreferencesRequest } from '../api/workspaceApi';
+import { canvasToDoApi, type AcademyPreferences, type CanvasCalendarItem, type CanvasCourse, type SaveAcademyPreferencesRequest } from '../api/canvasToDoApi';
 import { useLanguage } from '../context/LanguageContext';
 import { useWorkspaceMode } from '../context/WorkspaceModeContext';
+import { shouldConvertCanvasCourseToManual } from '../lib/canvasCourseMigration';
 import type { ColorToken, DashboardCardConfig } from '../modes/types';
 import { cn } from '../lib/utils';
 import { dotColorClasses } from '../lib/colorStyles';
 import { DateTimeField } from './DateTimeField';
 import { EventPill } from './EventPill';
-import { GoogleProductIcon, type GoogleProduct } from './GoogleProductIcon';
 import {
   ManualLectureDialog,
   type ManualLecture,
@@ -139,6 +139,8 @@ type DashboardSnackbar = {
   tone: 'success' | 'error';
 };
 type CanvasLecturePreferences = Record<string, {
+  accessClosed?: boolean;
+  accessRestrictedByDate?: boolean;
   assessments?: ManualLectureAssessment[];
   archivedAsManualLectureId?: string;
   canvasAccessLostAt?: string | null;
@@ -163,12 +165,18 @@ type CanvasLecturePreferences = Record<string, {
   starred?: boolean;
   semester?: string;
   termName?: string;
+  termEndAt?: string;
+  termStartAt?: string;
   tutorialSection?: string;
   workflowState?: string;
 }>;
 
 function isManuallyManagedCanvasCourse(courseId: string | undefined, preferences: CanvasLecturePreferences) {
-  return Boolean(courseId && preferences[courseId]?.convertedToManualAt);
+  return Boolean(
+    courseId &&
+    preferences[courseId]?.convertedToManualAt &&
+    preferences[courseId]?.accessClosed === true,
+  );
 }
 
 interface ManualCourseworkItem {
@@ -246,16 +254,16 @@ type CanvasAssessmentPreferences = Record<string, {
   title?: string;
 }>;
 
-const manualLecturesStorageKey = 'incos-academy-manual-lectures';
-const canvasLecturePreferencesStorageKey = 'incos-academy-canvas-lecture-preferences';
-const manualCourseworkStorageKey = 'incos-academy-manual-coursework';
-const canvasCourseworkPreferencesStorageKey = 'incos-academy-canvas-coursework-preferences';
-const manualAssessmentsStorageKey = 'incos-academy-manual-assessments';
-const canvasAssessmentPreferencesStorageKey = 'incos-academy-canvas-assessment-preferences';
-const academyCalendarSettingsStorageKey = 'incos-academy-calendar-settings';
-const academyPreferencesUpdatedEvent = 'incos-academy-preferences-updated';
-const academyOpenCourseworkDialogEvent = 'incos-academy-open-coursework-dialog';
-const academyRefreshRequestedEvent = 'incos-academy-refresh-requested';
+const manualLecturesStorageKey = 'canvas-to-do-manual-lectures';
+const canvasLecturePreferencesStorageKey = 'canvas-to-do-canvas-lecture-preferences';
+const manualCourseworkStorageKey = 'canvas-to-do-manual-coursework';
+const canvasCourseworkPreferencesStorageKey = 'canvas-to-do-canvas-coursework-preferences';
+const manualAssessmentsStorageKey = 'canvas-to-do-manual-assessments';
+const canvasAssessmentPreferencesStorageKey = 'canvas-to-do-canvas-assessment-preferences';
+const academyCalendarSettingsStorageKey = 'canvas-to-do-calendar-settings';
+const academyPreferencesUpdatedEvent = 'canvas-to-do-preferences-updated';
+const academyOpenCourseworkDialogEvent = 'canvas-to-do-open-coursework-dialog';
+const academyRefreshRequestedEvent = 'canvas-to-do-refresh-requested';
 const defaultAcademyAutoRefreshIntervalMs = 10 * 60_000;
 const dashboardRefreshFreshThresholdMs = 30 * 60_000;
 const dashboardRefreshRecentThresholdMs = 45 * 60_000;
@@ -747,7 +755,15 @@ function createCanvasLectureRows(
   fallbackSemester = defaultAcademySemester,
 ): RenderableDashboardRow[] {
   return courses
-    .filter((course) => !preferences[course.id]?.hidden && !preferences[course.id]?.deleted)
+    .filter((course) => {
+      const preference = preferences[course.id] ?? {};
+      const restoreAccessibleConversion = Boolean(
+        preference.convertedToManualAt && course.accessClosed !== true,
+      );
+
+      return course.accessClosed !== true &&
+        (restoreAccessibleConversion || (!preference.hidden && !preference.deleted));
+    })
     .sort((firstCourse, secondCourse) => (
       Number(Boolean(preferences[secondCourse.id]?.starred)) -
       Number(Boolean(preferences[firstCourse.id]?.starred))
@@ -822,8 +838,48 @@ function createStoredCanvasLectureRows(
     });
 }
 
-function isGeneratedArchivedCanvasLecture(lecture: ManualLecture, preferences: CanvasLecturePreferences) {
-  return Object.values(preferences).some((preference) => preference.archivedAsManualLectureId === lecture.id);
+function isGeneratedArchivedCanvasLectureForAccessibleCourse(
+  lecture: ManualLecture,
+  preferences: CanvasLecturePreferences,
+  courses: CanvasCourse[] | null,
+) {
+  const archivedCourseId = Object.entries(preferences).find(([, preference]) => (
+    preference.archivedAsManualLectureId === lecture.id
+  ))?.[0];
+
+  return Boolean(archivedCourseId && courses?.some((course) => (
+    course.id === archivedCourseId && course.accessClosed !== true
+  )));
+}
+
+function isGeneratedConvertedCanvasLectureForAccessibleCourse(
+  lecture: ManualLecture,
+  courses: CanvasCourse[] | null,
+) {
+  return Boolean(courses?.some((course) => (
+    course.accessClosed !== true && lecture.id === `manual-canvas-${course.id}`
+  )));
+}
+
+function isConvertedCanvasCourseCurrentlyAccessible(
+  courseId: string | undefined,
+  preferences: CanvasLecturePreferences,
+  courses: CanvasCourse[] | null,
+) {
+  return Boolean(
+    courseId &&
+    preferences[courseId]?.convertedToManualAt &&
+    courses?.some((course) => course.id === courseId && course.accessClosed !== true),
+  );
+}
+
+function isRetainedFromAccessibleCanvasCourse(
+  item: Pick<ManualCourseworkItem | ManualAssessmentItem, 'retainedFromCanvasCourseId'>,
+  courses: CanvasCourse[] | null,
+) {
+  return Boolean(item.retainedFromCanvasCourseId && courses?.some((course) => (
+    course.id === item.retainedFromCanvasCourseId && course.accessClosed !== true
+  )));
 }
 
 function formatDateInputValue(value?: string) {
@@ -1071,7 +1127,13 @@ function createCanvasAssessmentRows(
         fallbackSemester,
       );
 
-      return !itemPreferences.hidden &&
+      const restoreAccessibleConversion = isConvertedCanvasCourseCurrentlyAccessible(
+        item.courseId,
+        lecturePreferences,
+        canvasCourses,
+      );
+
+      return (restoreAccessibleConversion || !itemPreferences.hidden) &&
         semesterMatches(semester, selectedSemester, fallbackSemester) &&
         shouldShowCourseworkItem(
           dueAt,
@@ -1199,7 +1261,13 @@ function createCanvasCourseworkRows(
         fallbackSemester,
       );
 
-      return !itemPreferences.hidden &&
+      const restoreAccessibleConversion = isConvertedCanvasCourseCurrentlyAccessible(
+        item.courseId,
+        lecturePreferences,
+        canvasCourses,
+      );
+
+      return (restoreAccessibleConversion || !itemPreferences.hidden) &&
         semesterMatches(semester, selectedSemester, fallbackSemester) &&
         shouldShowCourseworkItem(
           dueAt,
@@ -1787,9 +1855,9 @@ function persistAcademyPreferencePatch(patch: SaveAcademyPreferencesRequest) {
 }
 
 function saveAcademyPreferencesInOrder(request: SaveAcademyPreferencesRequest) {
-  const requestScope = workspaceApi.getAcademyPreferenceRequestScope();
+  const requestScope = canvasToDoApi.getAcademyPreferenceRequestScope();
   const saveTask = academyPreferencesSaveQueue.then(() => (
-    workspaceApi.saveAcademyPreferences(request, requestScope)
+    canvasToDoApi.saveAcademyPreferences(request, requestScope)
   ));
 
   academyPreferencesSaveQueue = saveTask.then(
@@ -1918,29 +1986,6 @@ function getCourseworkCourseOptions(
   ));
 }
 
-function BrandIcon({ source }: { source: DashboardRow['source'] }) {
-  if (source && ['gmail', 'chat', 'meet', 'docs', 'sheets', 'slides'].includes(source)) {
-    return <GoogleProductIcon product={source as GoogleProduct} size={16} />;
-  }
-
-  const fallback =
-    source === 'teams'
-      ? { color: '#6264A7', label: 'T' }
-      : source === 'zoom'
-        ? { color: '#0B5CFF', label: 'Z' }
-        : { color: '#4285F4', label: 'D' };
-
-  return (
-    <span
-      aria-hidden="true"
-      className="inline-grid size-4 place-items-center rounded-[4px] text-[9px] font-black leading-none text-white"
-      style={{ backgroundColor: fallback.color }}
-    >
-      {fallback.label}
-    </span>
-  );
-}
-
 function getCourseworkDueChipClass(state?: CourseworkDueState) {
   if (state === 'overdue') {
     return 'border-red-600 bg-red-600 text-white dark:border-red-500 dark:bg-red-500 dark:text-white';
@@ -1990,6 +2035,10 @@ function getDashboardRefreshAge(lastSuccessfulRefreshAt: number | null, now: num
   }
 
   return 'stale';
+}
+
+function getCurrentTimestamp() {
+  return Date.now();
 }
 
 interface DashboardRowsProps {
@@ -2052,7 +2101,8 @@ function DashboardRows({
   const courseworkLongPressTriggeredRef = useRef(false);
   const courseworkScrollContainerRef = useRef<HTMLDivElement | null>(null);
   const resetCourseworkScrollAfterMoveRef = useRef(false);
-  const suppressLectureOpenUntilRef = useRef(0);
+  const suppressLectureOpenRef = useRef(false);
+  const suppressLectureOpenTimeoutRef = useRef<number | null>(null);
   const [dropdownColorVariantPage, setDropdownColorVariantPage] = useState(0);
   const [contextColorVariantPage, setContextColorVariantPage] = useState(0);
   const rows = card.id === 'upcoming-coursework'
@@ -2110,9 +2160,18 @@ function DashboardRows({
     event.stopPropagation();
   };
   const suppressLectureOpenAfterColorSelect = () => {
-    suppressLectureOpenUntilRef.current = Date.now() + 700;
+    suppressLectureOpenRef.current = true;
+
+    if (suppressLectureOpenTimeoutRef.current) {
+      window.clearTimeout(suppressLectureOpenTimeoutRef.current);
+    }
+
+    suppressLectureOpenTimeoutRef.current = window.setTimeout(() => {
+      suppressLectureOpenRef.current = false;
+      suppressLectureOpenTimeoutRef.current = null;
+    }, 700);
   };
-  const isLectureOpenSuppressed = () => Date.now() < suppressLectureOpenUntilRef.current;
+  const isLectureOpenSuppressed = () => suppressLectureOpenRef.current;
   const runLectureAction = (action: () => void) => {
     suppressLectureOpenAfterColorSelect();
     action();
@@ -2173,6 +2232,7 @@ function DashboardRows({
       });
     }, 0);
   };
+  const scheduleCourseworkListToTopEvent = useEffectEvent(scheduleCourseworkListToTop);
   const handleCourseworkMenuCloseAutoFocus = (event: Event) => {
     if (!resetCourseworkScrollAfterMoveRef.current) {
       return;
@@ -2311,18 +2371,22 @@ function DashboardRows({
 
   useEffect(() => () => {
     clearCourseworkLongPress();
+
+    if (suppressLectureOpenTimeoutRef.current) {
+      window.clearTimeout(suppressLectureOpenTimeoutRef.current);
+    }
   }, []);
   useEffect(() => {
     if (card.id !== 'upcoming-coursework' || !resetCourseworkScrollAfterMoveRef.current) {
       return;
     }
 
-    scheduleCourseworkListToTop();
+    scheduleCourseworkListToTopEvent();
   }, [card.id, rowOrderKey]);
   const renderTouchMenuTrigger = () => (
     <DropdownMenuTrigger asChild>
       <Button
-        aria-label={dictionary.gmailMoreActions}
+        aria-label={dictionary.moreActions}
         className={touchMenuButtonClassName}
         data-dashboard-row-action
         onClick={stopTouchMenuPropagation}
@@ -2332,7 +2396,7 @@ function DashboardRows({
         onTouchEnd={stopTouchMenuPropagation}
         onTouchStart={stopTouchMenuPropagation}
         size="icon-sm"
-        title={dictionary.gmailMoreActions}
+        title={dictionary.moreActions}
         type="button"
         variant="outline"
       >
@@ -3026,64 +3090,6 @@ function DashboardRows({
       : renderedRows;
   }
 
-  if (card.layout === 'messages') {
-    return rows.map((row) => (
-      <div
-        className="grid min-w-0 grid-cols-[28px_minmax(0,1fr)_34px] items-center gap-2 border-t py-2 text-sm first:border-t-0"
-        key={`${card.id}-${row.label}-${row.value}`}
-      >
-        <span className="grid size-7 place-items-center rounded-lg bg-muted">
-          <BrandIcon source={row.source} />
-        </span>
-        <div className="min-w-0">
-          <strong className="block truncate leading-tight">{row.value}</strong>
-          <span className="block truncate text-xs font-bold text-muted-foreground">
-            {row.description}
-          </span>
-        </div>
-        <span className="justify-self-end text-xs font-black text-muted-foreground">{row.label}</span>
-      </div>
-    ));
-  }
-
-  if (card.layout === 'meetings') {
-    return rows.map((row) => {
-      const content = (
-        <>
-          <EventPill className="h-6 px-2 text-xs" color={card.color} compact label={row.label} />
-          <div className="min-w-0 flex-1">
-            <strong className="block truncate leading-tight">{row.value}</strong>
-            <span className="block truncate text-xs font-bold text-muted-foreground">
-              {row.description}
-            </span>
-          </div>
-          <BrandIcon source={row.source} />
-        </>
-      );
-
-      return row.href ? (
-        <a
-          className="flex min-w-0 items-center gap-3 border-t py-2 text-sm transition hover:bg-muted/45 first:border-t-0"
-          href={row.href}
-          key={`${card.id}-${row.label}-${row.value}`}
-          rel="noreferrer"
-          target="_blank"
-          title={row.description ? `${row.value} - ${row.description}` : row.value}
-        >
-          {content}
-        </a>
-      ) : (
-        <div
-          className="flex min-w-0 items-center gap-3 border-t py-2 text-sm first:border-t-0"
-          key={`${card.id}-${row.label}-${row.value}`}
-          title={row.value}
-        >
-          {content}
-        </div>
-      );
-    });
-  }
-
   return rows.map((row) => (
     <div
       className="flex items-center justify-between gap-3 border-t py-2 text-sm first:border-t-0"
@@ -3227,32 +3233,12 @@ function CourseworkDialog({
   const [draft, setDraft] = useState<ManualCourseworkItem>(() => (
     initialCoursework ?? createEmptyCoursework(selectedSemester)
   ));
-  const draftResetKeyRef = useRef<string | null>(null);
   const lockedCanvasFieldClassName = isCanvasCoursework ? 'opacity-70' : '';
   const selectedCourseValue = courseOptions.some((option) => option.value === draft.courseCode)
     ? draft.courseCode
     : draft.courseCode
       ? `current:${draft.courseCode}`
       : undefined;
-
-  useEffect(() => {
-    if (!open) {
-      draftResetKeyRef.current = null;
-      return;
-    }
-
-    const draftResetKey = initialCoursework?.id ?? 'new';
-
-    if (draftResetKeyRef.current === draftResetKey) {
-      return;
-    }
-
-    draftResetKeyRef.current = draftResetKey;
-
-    if (open) {
-      setDraft(initialCoursework ?? createEmptyCoursework(selectedSemester));
-    }
-  }, [initialCoursework?.id, open, selectedSemester]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -3486,32 +3472,12 @@ function AssessmentDialog({
   const [draft, setDraft] = useState<ManualAssessmentItem>(() => (
     initialAssessment ?? createEmptyAssessment(selectedSemester)
   ));
-  const draftResetKeyRef = useRef<string | null>(null);
   const selectedCourseValue = courseOptions.some((option) => option.value === draft.courseCode)
     ? draft.courseCode
     : draft.courseCode
       ? `current:${draft.courseCode}`
       : undefined;
   const lockedCanvasFieldClassName = isCanvasAssessment ? 'opacity-70' : '';
-
-  useEffect(() => {
-    if (!open) {
-      draftResetKeyRef.current = null;
-      return;
-    }
-
-    const draftResetKey = initialAssessment?.id ?? 'new';
-
-    if (draftResetKeyRef.current === draftResetKey) {
-      return;
-    }
-
-    draftResetKeyRef.current = draftResetKey;
-
-    if (open) {
-      setDraft(initialAssessment ?? createEmptyAssessment(selectedSemester));
-    }
-  }, [initialAssessment?.id, open, selectedSemester]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -3683,9 +3649,6 @@ interface DashboardCardsProps {
   onOpenAddItem?: () => void;
   onOpenCourse?: (courseRowId?: string | null, resourceUrl?: string | null) => void;
   onToggleCourseworkStudyItems?: () => void;
-  onPlanMeeting?: () => void;
-  onStartMeetingNow?: () => void;
-  onWriteInPersonMeetingReport?: () => void;
   selectedSemester?: string;
 }
 
@@ -3699,19 +3662,15 @@ export function DashboardCards({
   onOpenAddItem,
   onOpenCourse,
   onToggleCourseworkStudyItems,
-  onPlanMeeting,
-  onStartMeetingNow,
-  onWriteInPersonMeetingReport,
   selectedSemester,
 }: DashboardCardsProps) {
   const { activeMode } = useWorkspaceMode();
   const { dictionary, language, translateDashboardCard, translateModeName } = useLanguage();
-  const [isRefreshingMessages, setIsRefreshingMessages] = useState(false);
   const [dashboardSnackbar, setDashboardSnackbar] = useState<DashboardSnackbar | null>(null);
   const [canvasCourses, setCanvasCourses] = useState<CanvasCourse[] | null>(null);
-  const [canvasCourseLoadStatus, setCanvasCourseLoadStatus] = useState<CanvasCourseLoadStatus>('idle');
+  const [canvasCourseLoadStatus, setCanvasCourseLoadStatus] = useState<CanvasCourseLoadStatus>('loading');
   const [canvasCourseworkItems, setCanvasCourseworkItems] = useState<CanvasCalendarItem[]>([]);
-  const [canvasCourseworkLoadStatus, setCanvasCourseworkLoadStatus] = useState<CanvasCourseLoadStatus>('idle');
+  const [canvasCourseworkLoadStatus, setCanvasCourseworkLoadStatus] = useState<CanvasCourseLoadStatus>('loading');
   const [isAcademyDashboardRefreshInProgress, setIsAcademyDashboardRefreshInProgress] = useState(false);
   const [lastSuccessfulDashboardRefreshAt, setLastSuccessfulDashboardRefreshAt] = useState<number | null>(null);
   const [dashboardRefreshClock, setDashboardRefreshClock] = useState(() => Date.now());
@@ -3729,7 +3688,7 @@ export function DashboardCards({
   const [canvasLecturePreferences, setCanvasLecturePreferences] = useState<CanvasLecturePreferences>({});
   const [hasLoadedAcademyPreferences, setHasLoadedAcademyPreferences] = useState(false);
   const [academyPreferencesLoadStatus, setAcademyPreferencesLoadStatus] =
-    useState<AcademyPreferenceLoadStatus>('idle');
+    useState<AcademyPreferenceLoadStatus>('loading');
   const [manualCoursework, setManualCoursework] = useState<ManualCourseworkItem[]>([]);
   const [canvasCourseworkPreferences, setCanvasCourseworkPreferences] = useState<CanvasCourseworkPreferences>({});
   const [manualAssessments, setManualAssessments] = useState<ManualAssessmentItem[]>([]);
@@ -3775,10 +3734,6 @@ export function DashboardCards({
   }, [isAcademyDashboardRefreshing]);
 
   useEffect(() => {
-    if (activeMode.id !== 'academy') {
-      return undefined;
-    }
-
     const refreshClockInterval = window.setInterval(() => {
       setDashboardRefreshClock(Date.now());
     }, 60_000);
@@ -4097,36 +4052,10 @@ export function DashboardCards({
     }
   };
 
-  useEffect(() => {
-    if (selectedSemesterFromProps) {
-      if (selectedCourseSemester !== selectedSemesterFromProps) {
-        setSelectedCourseSemester(selectedSemesterFromProps);
-      }
-      return;
-    }
-
-    if (courseSemesterOptions.length === 0) {
-      return;
-    }
-
-    const normalizedSelectedSemester = selectedCourseSemester
-      ? normalizeSemesterName(selectedCourseSemester, fallbackCourseSemester)
-      : undefined;
-    const nextSemester = normalizedSelectedSemester && courseSemesterOptions.includes(normalizedSelectedSemester)
-      ? normalizedSelectedSemester
-      : courseSemesterOptions[0];
-
-    if (nextSemester && nextSemester !== selectedCourseSemester) {
-      setSelectedCourseSemester(nextSemester);
-      storeSelectedAcademySemester(nextSemester);
-    }
-  }, [courseSemesterOptions, fallbackCourseSemester, selectedCourseSemester, selectedSemesterFromProps]);
-
   const dashboardCards: RenderableDashboardCard[] = activeMode.dashboardCards.map((card) => {
     const translatedCard = translateDashboardCard(activeMode.id, card);
     const maxRows = translatedCard.maxRows ?? 5;
-    const isWaitingForAcademyPreferences =
-      activeMode.id === 'academy' && !hasLoadedAcademyPreferences;
+    const isWaitingForAcademyPreferences = !hasLoadedAcademyPreferences;
 
     if (isWaitingForAcademyPreferences) {
       if (translatedCard.id === 'semester-lectures') {
@@ -4159,7 +4088,6 @@ export function DashboardCards({
     }
 
     if (
-      activeMode.id === 'academy' &&
       translatedCard.id === 'semester-lectures' &&
       (canvasCourseLoadStatus === 'idle' || canvasCourseLoadStatus === 'loading')
     ) {
@@ -4169,10 +4097,15 @@ export function DashboardCards({
       };
     }
 
-    if (activeMode.id === 'academy' && translatedCard.id === 'semester-lectures') {
+    if (translatedCard.id === 'semester-lectures') {
       const visibleManualLectures = getVisibleManualLectures(manualLectures).filter((lecture) => (
         semesterMatches(lecture.semester, activeCourseSemester, fallbackCourseSemester) &&
-        !isGeneratedArchivedCanvasLecture(lecture, canvasLecturePreferences)
+        !isGeneratedArchivedCanvasLectureForAccessibleCourse(
+          lecture,
+          canvasLecturePreferences,
+          canvasCourses,
+        ) &&
+        !isGeneratedConvertedCanvasLectureForAccessibleCourse(lecture, canvasCourses)
       ));
       const starredManualRows = createManualLectureRows(
         visibleManualLectures.filter((lecture) => lecture.starred),
@@ -4236,7 +4169,7 @@ export function DashboardCards({
       };
     }
 
-    if (activeMode.id === 'academy' && translatedCard.id === 'upcoming-coursework') {
+    if (translatedCard.id === 'upcoming-coursework') {
       if (canvasCourseworkLoadStatus === 'idle' || canvasCourseworkLoadStatus === 'loading') {
         return {
           ...translatedCard,
@@ -4247,7 +4180,7 @@ export function DashboardCards({
       const currentCanvasCourseworkItemIds = new Set(canvasCourseworkItems.filter(isCourseworkCanvasItem).map((item) => item.id));
       const currentCanvasAssessmentItemIds = new Set(canvasCourseworkItems.filter(isAssessmentCanvasItem).map((item) => item.id));
       const manualRows = createManualCourseworkRows(
-        manualCoursework,
+        manualCoursework.filter((item) => !isRetainedFromAccessibleCanvasCourse(item, canvasCourses)),
         manualLectures,
         canvasLecturePreferences,
         dateLocale,
@@ -4277,7 +4210,7 @@ export function DashboardCards({
         courseworkHideSettings,
       );
       const manualAssessmentRows = createManualAssessmentRows(
-        manualAssessments,
+        manualAssessments.filter((item) => !isRetainedFromAccessibleCanvasCourse(item, canvasCourses)),
         manualLectures,
         canvasLecturePreferences,
         dateLocale,
@@ -4331,10 +4264,10 @@ export function DashboardCards({
       };
     }
 
-    if (activeMode.id === 'academy' && translatedCard.id === 'upcoming-assessments') {
+    if (translatedCard.id === 'upcoming-assessments') {
       const currentCanvasAssessmentItemIds = new Set(canvasCourseworkItems.filter(isAssessmentCanvasItem).map((item) => item.id));
       const manualRows = createManualAssessmentRows(
-        manualAssessments,
+        manualAssessments.filter((item) => !isRetainedFromAccessibleCanvasCourse(item, canvasCourses)),
         manualLectures,
         canvasLecturePreferences,
         dateLocale,
@@ -4409,11 +4342,6 @@ export function DashboardCards({
   );
 
   useEffect(() => {
-    if (activeMode.id !== 'academy') {
-      setHasLoadedAcademyPreferences(false);
-      return undefined;
-    }
-
     const handleAcademyPreferencesUpdated = (event: Event) => {
       if (!(event instanceof CustomEvent) || !event.detail) {
         return;
@@ -4465,14 +4393,9 @@ export function DashboardCards({
   useEffect(() => {
     let isCancelled = false;
 
-    if (activeMode.id !== 'academy') {
-      return undefined;
-    }
-
     const preferenceReadSequence = academyPreferencesSaveSequence;
 
-    setAcademyPreferencesLoadStatus('loading');
-    workspaceApi
+    canvasToDoApi
       .getAcademyPreferences()
       .then((preferences) => {
         if (isCancelled || preferenceReadSequence !== academyPreferencesSaveSequence) {
@@ -4503,12 +4426,6 @@ export function DashboardCards({
   }, [activeMode.id]);
 
   useEffect(() => {
-    if (activeMode.id !== 'academy') {
-      setHasLoadedAcademyPreferences(false);
-      setAcademyPreferencesLoadStatus('idle');
-      return undefined;
-    }
-
     let isSyncing = false;
     const refreshAcademyData = () => {
       if (isSyncing || isAcademyDashboardRefreshingRef.current || document.visibilityState === 'hidden') {
@@ -4516,7 +4433,9 @@ export function DashboardCards({
       }
 
       isSyncing = true;
-      void refreshAcademyDashboardDataEvent({ forceCanvasRefresh: true })
+      // Timer refreshes should honor the short server cache. Manual and resume
+      // refreshes can still bypass it when the user explicitly needs fresh data.
+      void refreshAcademyDashboardDataEvent({ forceCanvasRefresh: false })
         .catch(() => undefined)
         .finally(() => {
           isSyncing = false;
@@ -4535,16 +4454,8 @@ export function DashboardCards({
   useEffect(() => {
     let isCancelled = false;
 
-    if (activeMode.id !== 'academy') {
-      setCanvasCourses(null);
-      setCanvasCourseLoadStatus('idle');
-      setCanvasTermName(undefined);
-      return undefined;
-    }
-
-    setCanvasCourseLoadStatus('loading');
-    workspaceApi
-      .getCanvasCourses(20)
+    canvasToDoApi
+      .getCanvasCourses(100)
       .then(({ courses, termName }) => {
         if (isCancelled) {
           return;
@@ -4572,15 +4483,8 @@ export function DashboardCards({
   useEffect(() => {
     let isCancelled = false;
 
-    if (activeMode.id !== 'academy') {
-      setCanvasCourseworkItems([]);
-      setCanvasCourseworkLoadStatus('idle');
-      return undefined;
-    }
-
-    setCanvasCourseworkLoadStatus('loading');
     const requestSequence = ++canvasCourseworkRequestSequenceRef.current;
-    workspaceApi
+    canvasToDoApi
       .getCanvasCalendarItems({
         endDate: getFutureDateString(120),
         pageSize: 100,
@@ -4756,7 +4660,7 @@ export function DashboardCards({
   };
 
   useEffect(() => {
-    if (activeMode.id !== 'academy' || !hasLoadedAcademyPreferences || !canvasCourses || canvasCourses.length === 0) {
+    if (!hasLoadedAcademyPreferences || !canvasCourses || canvasCourses.length === 0) {
       return;
     }
 
@@ -4792,6 +4696,8 @@ export function DashboardCards({
           fallbackCourseSemester,
         );
         const { changed: preferenceChanged, nextPreference } = mergeDefinedSnapshot(preference, {
+          accessClosed: course.accessClosed === true,
+          accessRestrictedByDate: course.accessRestrictedByDate === true,
           courseName: course.name,
           currentGrade: course.currentGrade,
           currentScore: course.currentScore,
@@ -4804,7 +4710,9 @@ export function DashboardCards({
               ? 'fallback'
               : preference.semesterSource ?? (reportedSemesterIsUsable ? 'canvas' : 'fallback'),
           semester,
+          termEndAt: course.termEndAt,
           termName: semester,
+          termStartAt: course.termStartAt,
           workflowState: course.workflowState,
         });
 
@@ -4819,7 +4727,7 @@ export function DashboardCards({
   }, [activeMode.id, canvasCourses, fallbackCourseSemester, hasLoadedAcademyPreferences]);
 
   useEffect(() => {
-    if (activeMode.id !== 'academy' || canvasCourseLoadStatus !== 'loaded' || !reportedCanvasSemester) {
+    if (canvasCourseLoadStatus !== 'loaded' || !reportedCanvasSemester) {
       return;
     }
 
@@ -4840,7 +4748,6 @@ export function DashboardCards({
       return;
     }
 
-    setSelectedCourseSemester(reportedCanvasSemester);
     storeCanvasTermSelection(reportedCanvasSemester);
     persistAcademyPreferences(
       manualLecturesRef.current,
@@ -4867,7 +4774,6 @@ export function DashboardCards({
 
   useEffect(() => {
     if (
-      activeMode.id !== 'academy' ||
       canvasCourseLoadStatus !== 'loaded' ||
       !canvasCourses ||
       canvasCourses.length === 0
@@ -4875,17 +4781,8 @@ export function DashboardCards({
       return;
     }
 
-    const liveCourseIds = new Set(canvasCourses.map((course) => course.id));
-    const liveSemesters = new Set(
-      canvasCourses
-        .map((course) => normalizeCanvasSemesterName(course.termName))
-        .filter((semester) => semester !== noTermSemester),
-    );
-
-    if (liveSemesters.size === 0) {
-      return;
-    }
-
+    const courseById = new Map(canvasCourses.map((course) => [course.id, course]));
+    const now = Date.now();
     const currentPreferences = canvasLecturePreferencesRef.current;
     const currentManualLectures = manualLecturesRef.current;
     const archivedLectures: ManualLecture[] = [];
@@ -4893,14 +4790,13 @@ export function DashboardCards({
     let changed = false;
 
     Object.entries(currentPreferences).forEach(([courseId, preference]) => {
-      if (liveCourseIds.has(courseId) || preference.archivedAsManualLectureId || preference.convertedToManualAt) {
+      if (preference.archivedAsManualLectureId || preference.convertedToManualAt) {
         return;
       }
 
-      const preferenceSemester = normalizeCanvasSemesterName(preference.semester ?? preference.termName) ??
-        normalizeSemesterName(preference.semester ?? preference.termName, fallbackCourseSemester);
+      const course = courseById.get(courseId);
 
-      if (liveSemesters.has(preferenceSemester)) {
+      if (!course || !shouldConvertCanvasCourseToManual(course, now)) {
         return;
       }
 
@@ -4953,10 +4849,16 @@ export function DashboardCards({
       manualAssessmentsRef.current,
       canvasAssessmentPreferencesRef.current,
     );
-  }, [activeMode.id, canvasCourseLoadStatus, canvasCourses, fallbackCourseSemester]);
+  }, [
+    activeMode.id,
+    canvasCourseLoadStatus,
+    canvasCourses,
+    canvasLecturePreferences,
+    fallbackCourseSemester,
+  ]);
 
   useEffect(() => {
-    if (activeMode.id !== 'academy' || canvasCourseworkItems.length === 0) {
+    if (canvasCourseworkItems.length === 0) {
       return;
     }
 
@@ -6005,7 +5907,7 @@ export function DashboardCards({
   };
 
   const handleSyncCanvasCoursework = async () => {
-    if (activeMode.id !== 'academy' || isSyncingCanvasCoursework) {
+    if (isSyncingCanvasCoursework) {
       return;
     }
 
@@ -6081,40 +5983,26 @@ export function DashboardCards({
         const liveItem = liveItemsById.get(itemId);
         const assignmentReference = getCanvasAssignmentReference(itemId, preference, liveItem);
 
-        if (assignmentReference) {
+        if (assignmentReference && liveItem) {
           metadataByItemId.set(itemId, assignmentReference);
 
-          try {
-            const assignment = await workspaceApi.getCanvasCourseAssignment(
-              assignmentReference.courseId,
-              assignmentReference.assignmentId,
-            );
-
-            statusByItemId.set(itemId, {
-              isSubmitted: assignment.isSubmitted,
-              submittedAt: assignment.submittedAt,
-            });
-            protectCanvasSubmissionStatus(
-              protectedCanvasSubmissionStatusesRef.current,
-              itemId,
-              {
-                ...preference,
-                assignmentId: assignmentReference.assignmentId,
-                courseId: assignmentReference.courseId,
-              },
-              liveItem,
-              {
-                isSubmitted: assignment.isSubmitted,
-                submittedAt: assignment.submittedAt,
-              },
-            );
-            return;
-          } catch {
-            if (preference.completed) {
-              unresolvedCheckedItems += 1;
-            }
-            return;
-          }
+          const status = {
+            isSubmitted: liveItem.isSubmitted,
+            submittedAt: liveItem.submittedAt,
+          };
+          statusByItemId.set(itemId, status);
+          protectCanvasSubmissionStatus(
+            protectedCanvasSubmissionStatusesRef.current,
+            itemId,
+            {
+              ...preference,
+              assignmentId: assignmentReference.assignmentId,
+              courseId: assignmentReference.courseId,
+            },
+            liveItem,
+            status,
+          );
+          return;
         }
 
         if (preference.completed) {
@@ -6209,19 +6097,6 @@ export function DashboardCards({
     }
   };
 
-  const handleRefreshMessages = () => {
-    setIsRefreshingMessages(true);
-
-    if (refreshTimeoutRef.current) {
-      window.clearTimeout(refreshTimeoutRef.current);
-    }
-
-    refreshTimeoutRef.current = window.setTimeout(() => {
-      setIsRefreshingMessages(false);
-      refreshTimeoutRef.current = null;
-    }, 700);
-  };
-
   const showDashboardSnackbar = (snackbar: DashboardSnackbar) => {
     if (dashboardSnackbarTimeoutRef.current) {
       window.clearTimeout(dashboardSnackbarTimeoutRef.current);
@@ -6235,10 +6110,6 @@ export function DashboardCards({
   };
 
   const handleRefreshAcademyDashboard = async () => {
-    if (activeMode.id !== 'academy') {
-      return;
-    }
-
     if (academyRefreshLongPressTriggeredRef.current) {
       academyRefreshLongPressTriggeredRef.current = false;
       return;
@@ -6248,10 +6119,6 @@ export function DashboardCards({
   };
 
   async function refreshAcademyDashboardData(options: { forceCanvasRefresh?: boolean } = {}) {
-    if (activeMode.id !== 'academy') {
-      return null;
-    }
-
     setIsAcademyDashboardRefreshInProgress(true);
     setCanvasCourseLoadStatus('loading');
     setCanvasCourseworkLoadStatus('loading');
@@ -6264,7 +6131,9 @@ export function DashboardCards({
 
     window.dispatchEvent(new CustomEvent<AcademyRefreshRequestedDetail>(academyRefreshRequestedEvent, {
       detail: {
-        forceRefresh: Boolean(options.forceCanvasRefresh),
+        // This view performs the forced 150-day Canvas refresh itself. Let the
+        // calendar shell reuse its cache instead of forcing a second large read.
+        forceRefresh: false,
         registerTask: (task) => {
           externalRefreshTasks.push(task);
         },
@@ -6272,8 +6141,8 @@ export function DashboardCards({
     }));
 
     const preferenceReadSequence = academyPreferencesSaveSequence;
-    const preferencesTask = workspaceApi.getAcademyPreferences();
-    const coursesTask = workspaceApi.getCanvasCourses(20);
+    const preferencesTask = canvasToDoApi.getAcademyPreferences();
+    const coursesTask = canvasToDoApi.getCanvasCourses(100);
     const externalResultsTask = Promise.allSettled(externalRefreshTasks);
 
     const [preferencesResult, coursesResult] = await Promise.allSettled([
@@ -6281,7 +6150,7 @@ export function DashboardCards({
       coursesTask,
     ]);
     const [courseworkResult, externalResults] = await Promise.all([
-      workspaceApi.getCanvasCalendarItems({
+      canvasToDoApi.getCanvasCalendarItems({
         endDate: getFutureDateString(120),
         forceRefresh: Boolean(options.forceCanvasRefresh),
         pageSize: 100,
@@ -6347,7 +6216,7 @@ export function DashboardCards({
       courseworkResult.status === 'fulfilled' &&
       externalResults.every((result) => result.status === 'fulfilled')
     ) {
-      const refreshedAt = Date.now();
+      const refreshedAt = getCurrentTimestamp();
       setLastSuccessfulDashboardRefreshAt(refreshedAt);
       setDashboardRefreshClock(refreshedAt);
       showDashboardSnackbar({ message: dictionary.academyDashboardRefreshSuccess, tone: 'success' });
@@ -6367,7 +6236,7 @@ export function DashboardCards({
   }
 
   const startAcademyRefreshLongPress = () => {
-    if (activeMode.id !== 'academy' || isAcademyDashboardRefreshing) {
+    if (isAcademyDashboardRefreshing) {
       return;
     }
 
@@ -6503,68 +6372,6 @@ export function DashboardCards({
       );
     }
 
-    if (card.id === 'messages') {
-      return (
-        <Button
-          aria-label={dictionary.dashboardRefreshMessages}
-          className="size-7 border-border bg-background/70 text-muted-foreground hover:text-foreground"
-          onClick={handleRefreshMessages}
-          size="icon-sm"
-          title={dictionary.dashboardRefreshMessages}
-          type="button"
-          variant="outline"
-        >
-          <RefreshCw className={cn('size-3.5', isRefreshingMessages && 'animate-spin')} />
-        </Button>
-      );
-    }
-
-    if (card.id === 'meetings') {
-      return (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              aria-label={dictionary.dashboardAddMeeting}
-              className="h-7 gap-1 rounded-md border-border bg-background/70 px-2 text-muted-foreground hover:bg-muted hover:text-foreground"
-              size="sm"
-              title={dictionary.dashboardAddMeeting}
-              type="button"
-              variant="outline"
-            >
-              <GoogleProductIcon decorative product="meet" size={15} />
-              <ChevronDown className="size-3.5" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-52">
-            <DropdownMenuItem
-              onSelect={() => {
-                onStartMeetingNow?.();
-              }}
-            >
-              <GoogleProductIcon decorative product="meet" size={16} />
-              <span>{dictionary.dashboardStartMeetingNow}</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={() => {
-                onPlanMeeting?.();
-              }}
-            >
-              <CalendarPlus className="size-4" />
-              <span>{dictionary.dashboardPlanMeeting}</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={() => {
-                onWriteInPersonMeetingReport?.();
-              }}
-            >
-              <GoogleProductIcon decorative product="docs" size={16} />
-              <span>{dictionary.dashboardWriteMeetingReport}</span>
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      );
-    }
-
     return null;
   };
 
@@ -6593,7 +6400,7 @@ export function DashboardCards({
       });
     };
 
-    if (activeMode.id === 'academy' && card.id === 'semester-lectures') {
+    if (card.id === 'semester-lectures') {
       return (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -6660,8 +6467,7 @@ export function DashboardCards({
 	              className={cn(
 	                'rounded-xl bg-card shadow-none',
 		                (isCompactCourseCard || isCompactCourseworkCard) && 'h-54 overflow-hidden',
-	                activeMode.id === 'academy' &&
-	                  card.id === 'upcoming-coursework' &&
+	                card.id === 'upcoming-coursework' &&
 	                  !compactAcademySummary &&
 	                  (effectiveWideSummaryCards === undefined
 	                    ? 'xl:col-span-2'
@@ -6741,10 +6547,8 @@ export function DashboardCards({
           );
         })}
       </section>
-      {activeMode.id === 'academy' ? (
-        <>
-          {dashboardSnackbar ? (
-            <div
+      {dashboardSnackbar ? (
+        <div
               aria-live="polite"
               className={cn(
                 'fixed bottom-20 right-5 z-50 flex max-w-[min(360px,calc(100vw-2.5rem))] items-center gap-2 rounded-lg border px-3 py-2 text-sm font-black shadow-lg max-[520px]:bottom-36',
@@ -6761,29 +6565,28 @@ export function DashboardCards({
               )}
               <span className="min-w-0 truncate">{dashboardSnackbar.message}</span>
             </div>
-          ) : null}
-          <Button
-            aria-label={`${dictionary.academyDashboardRefresh} · ${dashboardRefreshAgeLabel}`}
-            className={cn(
-              'fixed bottom-5 right-5 z-40 size-12 rounded-full shadow-lg backdrop-blur max-lg:bottom-24 max-[520px]:bottom-20',
-              dashboardRefreshAgeClasses[dashboardRefreshAge],
-            )}
-            disabled={isAcademyDashboardRefreshing}
-            onClick={handleRefreshAcademyDashboard}
-            onPointerCancel={cancelAcademyRefreshLongPress}
-            onPointerDown={startAcademyRefreshLongPress}
-            onPointerLeave={cancelAcademyRefreshLongPress}
-            onPointerUp={cancelAcademyRefreshLongPress}
-            size="icon"
-            title={`${dictionary.academyDashboardRefresh} · ${dashboardRefreshAgeLabel} · Hold to reload page`}
-            type="button"
-            variant="outline"
-          >
-            <RefreshCw className={cn('size-5', isAcademyDashboardRefreshing && 'animate-spin')} />
-          </Button>
-        </>
       ) : null}
+      <Button
+        aria-label={`${dictionary.academyDashboardRefresh} · ${dashboardRefreshAgeLabel}`}
+        className={cn(
+          'fixed bottom-5 right-5 z-40 size-12 rounded-full shadow-lg backdrop-blur max-lg:bottom-24 max-[520px]:bottom-20',
+          dashboardRefreshAgeClasses[dashboardRefreshAge],
+        )}
+        disabled={isAcademyDashboardRefreshing}
+        onClick={handleRefreshAcademyDashboard}
+        onPointerCancel={cancelAcademyRefreshLongPress}
+        onPointerDown={startAcademyRefreshLongPress}
+        onPointerLeave={cancelAcademyRefreshLongPress}
+        onPointerUp={cancelAcademyRefreshLongPress}
+        size="icon"
+        title={`${dictionary.academyDashboardRefresh} · ${dashboardRefreshAgeLabel} · Hold to reload page`}
+        type="button"
+        variant="outline"
+      >
+        <RefreshCw className={cn('size-5', isAcademyDashboardRefreshing && 'animate-spin')} />
+      </Button>
       <ManualLectureDialog
+        key={isManualLectureDialogOpen ? 'add-lecture-open' : 'add-lecture-closed'}
         onAddLecture={handleAddManualLecture}
         onOpenChange={setIsManualLectureDialogOpen}
         open={isManualLectureDialogOpen}
@@ -6793,6 +6596,11 @@ export function DashboardCards({
       <CourseworkDialog
         courseOptions={courseworkCourseOptions}
         initialCoursework={initialManualCourseworkDraft}
+        key={
+          isCourseworkDialogOpen
+            ? `add-coursework-open:${initialManualCourseworkDraft?.id ?? 'new'}`
+            : 'add-coursework-closed'
+        }
         onOpenChange={(isOpen) => {
           setIsCourseworkDialogOpen(isOpen);
           if (!isOpen) {
@@ -6806,6 +6614,7 @@ export function DashboardCards({
       <CourseworkDialog
         courseOptions={courseworkCourseOptions}
         initialCoursework={selectedManualCoursework}
+        key={selectedManualCoursework?.id ?? 'manual-coursework-closed'}
         onOpenChange={(isOpen) => {
           if (!isOpen) {
             setSelectedManualCourseworkId(null);
@@ -6821,6 +6630,7 @@ export function DashboardCards({
         courseOptions={courseworkCourseOptions}
         initialCoursework={selectedCanvasCourseworkEditable}
         isCanvasCoursework={Boolean(selectedCanvasCoursework)}
+        key={selectedCanvasCourseworkEditable?.id ?? 'canvas-coursework-closed'}
         onOpenChange={(isOpen) => {
           if (!isOpen) {
             setSelectedCanvasCourseworkId(null);
@@ -6834,6 +6644,7 @@ export function DashboardCards({
       />
       <AssessmentDialog
         courseOptions={courseworkCourseOptions}
+        key={isAssessmentDialogOpen ? 'add-assessment-open' : 'add-assessment-closed'}
         onOpenChange={setIsAssessmentDialogOpen}
         onSave={handleAddManualAssessment}
         open={isAssessmentDialogOpen}
@@ -6842,6 +6653,7 @@ export function DashboardCards({
       <AssessmentDialog
         courseOptions={courseworkCourseOptions}
         initialAssessment={selectedManualAssessment}
+        key={selectedManualAssessment?.id ?? 'manual-assessment-closed'}
         onOpenChange={(isOpen) => {
           if (!isOpen) {
             setSelectedManualAssessmentId(null);
@@ -6857,6 +6669,7 @@ export function DashboardCards({
         courseOptions={courseworkCourseOptions}
         initialAssessment={selectedCanvasAssessmentEditable}
         isCanvasAssessment={Boolean(selectedCanvasAssessment)}
+        key={selectedCanvasAssessmentEditable?.id ?? 'canvas-assessment-closed'}
         onOpenChange={(isOpen) => {
           if (!isOpen) {
             setSelectedCanvasAssessmentId(null);
@@ -6870,6 +6683,7 @@ export function DashboardCards({
       />
       <ManualLectureDialog
         initialLecture={selectedManualLecture}
+        key={selectedManualLecture?.id ?? 'manual-lecture-closed'}
         onOpenChange={(isOpen) => {
           if (!isOpen) {
             setSelectedManualLectureId(null);
@@ -6885,6 +6699,7 @@ export function DashboardCards({
       <ManualLectureDialog
         description={dictionary.canvasLectureEditDescription}
         initialLecture={selectedCanvasLecture}
+        key={selectedCanvasLecture?.id ?? 'canvas-lecture-closed'}
         onOpenChange={(isOpen) => {
           if (!isOpen) {
             setSelectedCanvasCourseId(null);

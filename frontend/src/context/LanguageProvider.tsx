@@ -13,7 +13,7 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
 
   const setLanguage = (nextLanguage: Language) => {
     setLanguageState(nextLanguage);
-    window.localStorage.setItem('incos-workspace-language', nextLanguage);
+    window.localStorage.setItem('canvas-to-do-language', nextLanguage);
     document.documentElement.lang = nextLanguage;
   };
 
@@ -26,16 +26,10 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
       dictionary,
       translateModeName: (modeId, fallback) =>
         translateRecordValue(language, 'modeNames', modeId, fallback),
-      translateModePurpose: (modeId, fallback) =>
-        translateRecordValue(language, 'modePurposes', modeId, fallback),
       translateSectionLabel: (sectionId, fallback) =>
         translateRecordValue(language, 'sectionLabels', sectionId, fallback),
       translateItemLabel: (itemId, fallback) =>
         translateRecordValue(language, 'itemLabels', itemId, fallback),
-      translateFieldLabel: (fieldId, fallback) =>
-        translateRecordValue(language, 'fieldLabels', fieldId, fallback),
-      translateBoardColumn: (columnId, fallback) =>
-        translateRecordValue(language, 'boardColumns', columnId, fallback),
       translateDashboardCard: (modeId, card) =>
         translateDashboardCardValue(language, modeId, card),
     };

@@ -14,3 +14,8 @@ frontend/node_modules/
 frontend/dist/
 backend/**/bin/
 backend/**/obj/
+backend/**/*.root-owned-backup/
+
+# Local operational exports can contain account data and encrypted integration tokens.
+.codex-backups/
+backups/

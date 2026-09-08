@@ -1,0 +1,6 @@
+@CanvasToDoApi_HostAddress = http://localhost:6272
+
+GET {{CanvasToDoApi_HostAddress}}/api/health
+Accept: application/json
+
+###

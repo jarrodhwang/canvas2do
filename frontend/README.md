@@ -1,73 +1,44 @@
-# React + TypeScript + Vite
+# Canvas To Do frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React, TypeScript, and Vite client for the Canvas To Do multi-user academy
+calendar. The client renders account, calendar, coursework, and Canvas connection
+states; authentication, authorization, OAuth exchanges, and provider tokens remain
+in the ASP.NET Core API.
 
-Currently, two official plugins are available:
+## Development
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm ci
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Vite serves the app at `http://localhost:6173/` by default. Copy `.env.example` to a
+local ignored environment file when overrides are needed. The production container
+defaults to `/canvas-to-do/`; local Vite development defaults to `/`.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm run build
+npm run lint
 ```
+
+The product has one Academy mode: Calendar and Settings for standard users, plus
+User Administration when the authenticated session carries administrator access.
+There is no Workspace/Admin mode switch.
+
+PWA metadata and browser branding live in `index.html`,
+`public/manifest.webmanifest`, and `public/brand/`. The code-native Canvas To Do icon
+is shared by browser and install metadata so the retired organization brand is not
+shown.
+
+## Quality notes
+
+- Keep API response handling typed and present actionable retry/reconnect states.
+- Keep confirmation/reset tokens in the URL only until the SPA exchanges them, then
+  remove them with `history.replaceState`. All mutating API calls must use the shared
+  client so `X-Canvas-To-Do-Request` is present.
+- Do not place provider client secrets or Canvas tokens in Vite variables; every
+  `VITE_*` value is public at build time.
+- Preserve keyboard/focus and screen-reader behavior when changing dialogs or
+  calendar interactions.
+- Test slow/offline networks, expired Identity sessions, revoked Canvas access,
+  narrow screens, and the `/canvas-to-do/` production path before release.

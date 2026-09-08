@@ -67,16 +67,9 @@ export function AgendaView({
   const { dictionary, language } = useLanguage();
   const holidayBadgeLabel = language === 'ko' ? '공휴일' : 'Holiday';
   const nowMinutes = getNowMinutes();
-  let hasRenderedCurrentTime = false;
-  const renderCurrentTimeIfNeeded = (itemTime: string) => {
-    if (!showCurrentTime || hasRenderedCurrentTime || getTimeMinutes(itemTime) < nowMinutes) {
-      return null;
-    }
-
-    hasRenderedCurrentTime = true;
-
-    return <CurrentTimeLine />;
-  };
+  const currentTimeInsertIndex = showCurrentTime
+    ? items.findIndex((item) => getTimeMinutes(item.time) >= nowMinutes)
+    : -1;
   const renderTouchMenu = (item: AgendaItem) => {
     if (!item.canOpenDetails || !onOpenItemDetails) {
       return null;
@@ -86,12 +79,12 @@ export function AgendaView({
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
-            aria-label={dictionary.gmailMoreActions}
+            aria-label={dictionary.moreActions}
             className="size-8 shrink-0 rounded-md border-border bg-background/80 text-muted-foreground hover:bg-muted hover:text-foreground"
             onClick={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
             size="icon-sm"
-            title={dictionary.gmailMoreActions}
+            title={dictionary.moreActions}
             type="button"
             variant="outline"
           >
@@ -150,9 +143,9 @@ export function AgendaView({
           {emptyLabel}
         </div>
       ) : null}
-      {items.map((item) => (
+      {items.map((item, index) => (
         <div key={item.id}>
-          {renderCurrentTimeIfNeeded(item.time)}
+          {index === currentTimeInsertIndex ? <CurrentTimeLine /> : null}
           <div
             className={cn(
               'relative mb-2 grid h-auto w-full cursor-pointer grid-cols-[86px_minmax(0,1fr)_auto_auto] items-center gap-3 rounded-lg border bg-muted/35 p-3 text-left shadow-none transition hover:bg-muted max-sm:grid-cols-[70px_minmax(0,1fr)]',
@@ -195,7 +188,7 @@ export function AgendaView({
           </div>
         </div>
       ))}
-      {showCurrentTime && !hasRenderedCurrentTime ? <CurrentTimeLine /> : null}
+      {showCurrentTime && currentTimeInsertIndex < 0 ? <CurrentTimeLine /> : null}
     </Card>
   );
 }

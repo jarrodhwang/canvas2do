@@ -2,14 +2,14 @@ import type { CalendarDay } from '../data/mockWorkspaceData';
 import { forwardRef, useCallback, useEffect, useRef, useState } from 'react';
 import { useLanguage } from '../context/LanguageContext';
 import { getHolidayForDateByNation, type AcademyNation } from '../i18n';
-import { badgeColorClasses, dotColorClasses, timelineTextClasses } from '@/lib/colorStyles';
+import { badgeColorClasses, dotColorClasses } from '@/lib/colorStyles';
 import { cn } from '@/lib/utils';
+import { CalendarProgressIndicator } from './CalendarProgressIndicator';
 import {
-  CalendarProgressIndicator,
   defaultCalendarProgressThresholds,
   type CalendarProgressDisplay,
   type CalendarProgressThresholds,
-} from './CalendarProgressIndicator';
+} from './calendarProgress';
 
 interface DayCellProps {
   day: CalendarDay;
@@ -59,12 +59,12 @@ function getTodayIsoDate() {
   return `${year}-${month}-${day}`;
 }
 
-function getDesktopVisibleEventCount(height: number, isExpanded: boolean, hasTimeline: boolean) {
+function getDesktopVisibleEventCount(height: number, isExpanded: boolean) {
   if (height <= 0) {
     return isExpanded ? 5 : 4;
   }
 
-  const availableHeight = height - 36 - (hasTimeline ? 18 : 0);
+  const availableHeight = height - 36;
   const calculatedCount = Math.floor(availableHeight / 20);
   const maximumCount = isExpanded ? 8 : 6;
 
@@ -136,7 +136,7 @@ export const DayCell = forwardRef<HTMLButtonElement, DayCellProps>(function DayC
   const hiddenMobileEventCount = Math.max(day.events.length - mobileEvents.length, 0);
   const desktopVisibleEventCount = isCompact
     ? Math.max(1, Math.min(4, Math.floor((cellHeight - 24) / 16)))
-    : getDesktopVisibleEventCount(cellHeight, isExpanded, Boolean(day.timelineBar));
+    : getDesktopVisibleEventCount(cellHeight, isExpanded);
   const desktopEvents = day.events.slice(0, desktopVisibleEventCount);
   const hiddenDesktopEventCount = Math.max(day.events.length - desktopEvents.length, 0);
   const mobileClusterPositions = [
@@ -301,14 +301,6 @@ export const DayCell = forwardRef<HTMLButtonElement, DayCellProps>(function DayC
           <span className="absolute bottom-0.5 right-0.5 rounded-md border bg-card/95 px-1.5 py-0.5 text-[9px] font-black text-muted-foreground shadow-sm">
             +{hiddenDesktopEventCount} ...
           </span>
-        ) : null}
-        {day.timelineBar ? (
-          <div className={cn('relative -mx-1 mt-0.5 flex h-4 shrink-0 items-center', timelineTextClasses[day.timelineBar.color])}>
-            <span className="absolute left-0 top-1/2 h-0.5 w-full -translate-y-1/2 bg-current opacity-25" />
-            <span className="relative ml-1.5 max-w-[calc(100%-0.75rem)] truncate rounded-md border border-current bg-card px-1 py-0.5 text-[9px] font-black">
-              {day.timelineBar.label}
-            </span>
-          </div>
         ) : null}
       </div>
     </button>

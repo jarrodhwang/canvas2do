@@ -1,11 +1,5 @@
 import { cn } from '../lib/utils';
-
-export type CalendarProgressDisplay = 'linear' | 'circular';
-
-export interface CalendarProgressThresholds {
-  greenAt: number;
-  yellowAt: number;
-}
+import type { CalendarProgressDisplay, CalendarProgressThresholds } from './calendarProgress';
 
 interface CalendarProgressIndicatorProps {
   className?: string;
@@ -17,11 +11,6 @@ interface CalendarProgressIndicatorProps {
   value: number;
   valueLabel?: string;
 }
-
-export const defaultCalendarProgressThresholds: CalendarProgressThresholds = {
-  greenAt: 70,
-  yellowAt: 40,
-};
 
 function clampPercent(value: number) {
   if (!Number.isFinite(value)) {

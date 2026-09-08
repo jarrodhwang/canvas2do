@@ -7,11 +7,8 @@ export interface LanguageContextValue {
   setLanguage: (language: Language) => void;
   dictionary: ReturnType<typeof getDictionary>;
   translateModeName: (modeId: string, fallback: string) => string;
-  translateModePurpose: (modeId: string, fallback: string) => string;
   translateSectionLabel: (sectionId: string, fallback: string) => string;
   translateItemLabel: (itemId: string, fallback: string) => string;
-  translateFieldLabel: (fieldId: string, fallback: string) => string;
-  translateBoardColumn: (columnId: string, fallback: string) => string;
   translateDashboardCard: (modeId: string, card: DashboardCardConfig) => DashboardCardConfig;
 }
 

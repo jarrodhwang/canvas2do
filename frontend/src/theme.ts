@@ -7,7 +7,7 @@ export function getInitialTheme(): AppTheme {
     return defaultTheme;
   }
 
-  const storedTheme = window.localStorage.getItem('incos-workspace-theme');
+  const storedTheme = window.localStorage.getItem('canvas-to-do-theme');
 
   if (storedTheme === 'light' || storedTheme === 'dark') {
     return storedTheme;
@@ -22,6 +22,6 @@ export function applyTheme(theme: AppTheme, options: { persist?: boolean } = {})
   document.documentElement.classList.toggle('dark', theme === 'dark');
   document.documentElement.style.colorScheme = theme;
   if (shouldPersist) {
-    window.localStorage.setItem('incos-workspace-theme', theme);
+    window.localStorage.setItem('canvas-to-do-theme', theme);
   }
 }

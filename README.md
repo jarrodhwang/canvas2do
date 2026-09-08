@@ -1,97 +1,153 @@
-# Incos Workspace
+# Canvas To Do
 
-Flexible workspace management app scaffolded from the personal manager prototype.
+Canvas To Do is a public, multi-user academy calendar for combining Canvas LMS
+courses, grades, activity notifications, course rosters, assignments, quizzes,
+events, and personal study plans. The canonical repository and deployment slug is
+`canvas-to-do`.
 
-## Shape
+## Project shape
 
-- `frontend/`: React TypeScript + Vite UI built with shadcn/ui and Tailwind CSS.
-- `backend/Incos.Workspace.Api/`: ASP.NET Core Web API on .NET 10.
-- `docker-compose.yml`: production-like PostgreSQL, Release API, and built frontend/Nginx containers.
-- `docker-compose.dev.yml`: hot-reload Docker stack for local development.
+- `frontend/`: React, TypeScript, Vite, Tailwind CSS, and shadcn/ui.
+- `backend/CanvasToDo.Api/`: ASP.NET Core API on .NET 10.
+- `docker-compose.yml`: production-like PostgreSQL, API, and Nginx stack.
+- `docker-compose.dev.yml`: local hot-reload stack.
 
-The frontend treats Academy and Project as sample modes, not permanent app logic. Modes are defined in `frontend/src/modes/defaultModes.ts` and can be enabled, hidden, renamed, or expanded without rewriting the component tree.
+The browser talks only to the API. Authentication, authorization, SMTP delivery,
+Canvas token storage, OAuth exchanges, and provider calls stay server-side.
 
-## Frontend Mode System
+## Accounts and administration
 
-- `ModeRegistry` owns available workspace modes and applies optional visibility overrides.
-- `WorkspaceModeProvider` exposes the active mode and mock data.
-- Each `WorkspaceModeConfig` defines sidebar items, dashboard cards, filters, calendar item types, board columns, detail fields, add-item fields, timeline behavior, and integration options.
-- Reusable shadcn/ui primitives live in `frontend/src/components/ui/`; app-level workspace components compose those primitives instead of maintaining a separate custom component library.
-- The frontend was initialized against the shadcn/ui Vite preset with `npx shadcn@latest init --preset b5fybI --template vite`, then themed around a dark charcoal surface system with Incos yellow as the primary color.
-- Brand image slots live in `frontend/public/brand/`: `INCOS New Logo_Crop.png` for the in-app top bar and `Incos New Logo_Square.png` for the browser tab. These should be exact copies of the transparent PNG files, with no generated fallback or image modification.
-- If the logo shows as a broken placeholder, copy the PNGs into that folder with the exact filenames above. On WSL this is usually:
-  `cp "/mnt/c/Users/jarrod/Downloads/Temp/INCOS New Logo_Crop.png" frontend/public/brand/`
-  `cp "/mnt/c/Users/jarrod/Downloads/Temp/Incos New Logo_Square.png" frontend/public/brand/`
-- The UI currently supports English and Korean via `frontend/src/i18n.ts`; the selected language controls labels, month/weekdays, and May 2026 holiday date coloring.
+ASP.NET Core Identity provides:
 
-Environment overrides:
+- public email/password registration and sign-in;
+- email confirmation, resend, forgot-password, and password-reset flows;
+- optional Google and Facebook identity sign-in;
+- optional authenticator-app two-step verification and recovery codes;
+- lockout, secure cookie sessions, and immediate session revocation; and
+- `User` and `Admin` roles.
 
-```bash
-VITE_ENABLED_WORKSPACE_MODES=academy,project
-VITE_HIDDEN_WORKSPACE_MODES=academy
-VITE_MODE_NAME_ACADEMY=Training
-VITE_MODE_NAME_PROJECT=Delivery
+Password registration creates no login session until the email address is
+confirmed. Google/Facebook request identity scopes only; no Gmail, Drive, Calendar,
+Chat, organization-directory, or hosted-domain access is requested. Provider tokens
+are not retained as integration credentials. If a provider does not return a
+trustworthy verified-email claim, Canvas To Do sends its own confirmation message.
+
+Administrators can search users, change display name/role/status, and revoke active
+sessions. Standard users can access only their own Academy calendar, course and
+grade summaries, Canvas inbox and course rosters, Canvas connection, preferences,
+and account security. Canvas writes are limited to explicit user actions for
+supported text/URL assignment submissions, discussion replies, and starting quiz
+attempts; the app performs no background Canvas writes. Public registration never
+grants the administrator role.
+
+To provision the first administrator, set `AUTH_ADMIN_BOOTSTRAP_EMAIL` and a strong
+`AUTH_ADMIN_BOOTSTRAP_PASSWORD`. Remove the password from deployment configuration
+after the account exists. The bootstrapper will not silently promote a public,
+unverified account that already uses the configured email.
+
+Startup serializes compatibility-table initialization, Identity migrations, and
+administrator bootstrap across API replicas with a PostgreSQL session advisory lock.
+Lock acquisition times out after 120 seconds, so a waiting replica fails startup
+instead of running initialization concurrently.
+
+## Account email
+
+Public password registration and recovery require SMTP. Configure:
+
+```text
+PUBLIC_FRONTEND_BASE_URL=https://your-host.example/canvas-to-do
+EMAIL_FROM_ADDRESS=no-reply@your-host.example
+SMTP_HOST=smtp.your-provider.example
+SMTP_PORT=587
+SMTP_USERNAME=...
+SMTP_PASSWORD=...
+SMTP_ENABLE_SSL=true
 ```
 
-## Backend Direction
+The frontend base URL must be HTTPS outside Development and may include the
+`/canvas-to-do` path. If email is unavailable, the API remains healthy so existing
+and verified social accounts can sign in, while email-dependent actions return an
+actionable `503` response.
 
-The API is designed around shared generic tables first:
+For local testing only, explicitly set
+`EMAIL_DEVELOPMENT_EXPOSE_TOKENS=true`. Development then returns a one-time action
+link to the requesting browser instead of requiring SMTP. This setting is ignored
+outside the Development environment and must never be enabled on a shared system.
+Email action credentials are placed in URL fragments so reverse proxies and HTTP
+access logs do not receive them; the SPA removes the fragment before making the API
+request.
 
-- `workspace_modes`
-- `mode_settings`
-- `calendar_items`
-- `checklist_items`
-- `links`
-- `notes`
-- `tags`
-- `people`
+External login callback paths are:
 
-Specialized tables are included for Academy, Project, Support CRM, TopTrack, Google, and future PDM workflows where they add useful structure.
+```text
+https://your-host.example/canvas-to-do/api/auth/google/oauth-callback
+https://your-host.example/canvas-to-do/api/auth/facebook/oauth-callback
+```
 
-The frontend should call the ASP.NET API only. Google Workspace, Canvas LMS, TopTrack, and TopSolid PDM integrations belong behind the API for OAuth, token storage, background sync, and security.
+Provider consoles must match the exact public scheme, host, path base, and callback
+path. Set `ALLOWED_HOSTS` to the public hostname; the production default accepts only
+`localhost` until this is configured.
 
-## Authentication
+## SFU Canvas connection
 
-The app shows a login landing page before the workspace. The only sign-in action is `Continue with Google`, which links to `/api/auth/google/login`; the React frontend does not call Google directly.
+The default and allowed Canvas origin is:
 
-The ASP.NET Core API owns Google OAuth and signs users in with an HTTP-only cookie. Configure Google OAuth with environment variables:
+```text
+https://sfu.instructure.com
+```
+
+Canvas To Do never asks for or stores an SFU password. The preferred flow redirects
+an already signed-in Canvas To Do user to Canvas, receives an authorization code,
+and exchanges it server-side. This requires an SFU Canvas root administrator to
+issue and configure a developer key:
+
+```text
+CANVAS_OAUTH_ENABLED=true
+CANVAS_OAUTH_CLIENT_ID=...
+CANVAS_OAUTH_CLIENT_SECRET=...
+CANVAS_OAUTH_CALLBACK_URL=https://your-host.example/canvas-to-do/api/canvas/oauth/callback
+```
+
+SFU CAS is a registered institutional service, not a generic credential flow for an
+unapproved third-party application. Until institutional Canvas OAuth approval is
+available, an operator can deliberately enable
+`CANVAS_MANUAL_TOKEN_ENABLED=true`. A user can then paste a Canvas personal access
+token in Settings. The API validates it against the configured origin, encrypts it
+with ASP.NET Core Data Protection, and never returns the raw token to the browser.
+Disable this fallback when OAuth is available.
+
+Keep `CANVAS_ALLOWED_INSTANCE_URLS` restricted to trusted HTTPS Canvas origins.
+Paths, query strings, embedded credentials, redirects to another origin, oversized
+responses, and excessive pagination are rejected or bounded by the API.
+
+## Legacy Academy data import
+
+Users of the retired Academy-ID sign-in can open Settings and enter that old ID and
+password once to import eligible server-side data. The authenticated endpoint is
+limited to five attempts per user every 15 minutes, and expensive legacy password
+checks have a small process-wide concurrency gate. It accepts only the exact bounded
+legacy PBKDF2 format, requires the old account to be active, and never stores or logs
+the submitted ID or password.
+
+After verification, one old account is transactionally bound to one new Identity
+GUID through `auth_user_tokens`. Only exact `canvas.token` and
+`academy.preferences` rows are copied to `user:{guid}`. A destination value is never
+overwritten, the source rows stay intact for rollback/support, and legacy contact
+email, profile, and role fields are not imported. Old browser-only Academy data is
+deliberately untouched because it cannot be safely attributed to a public account.
+
+## Run locally
+
+Create a local environment file and fill only the services you intend to use:
 
 ```bash
 cp .env.example .env
-GOOGLE_CLIENT_ID=your-google-oauth-client-id
-GOOGLE_CLIENT_SECRET=your-google-oauth-client-secret
-GOOGLE_WORKSPACE_DOMAIN=your-company-domain.com
-CANVAS_INSTANCE_URL=https://your-school.instructure.com
-CANVAS_ACCESS_TOKEN=your-canvas-api-access-token
 ```
 
-Academy mode requires Canvas LMS access. Canvas uses a server-side API access token, not a browser OAuth flow.
-
-For local Docker/Nginx dev, add this authorized redirect URI in Google Cloud Console:
-
-```text
-http://localhost:6173/signin-google
-```
-
-If you run the API directly without Nginx/Vite proxy, also add:
-
-```text
-http://localhost:6272/signin-google
-```
-
-`GOOGLE_WORKSPACE_DOMAIN` is optional but recommended. When set, the API rejects Google accounts outside that Workspace domain.
-
-The Google login also requests the initial integration scopes used by the Calendar and Drive connection UI:
-
-```text
-https://www.googleapis.com/auth/calendar.events.readonly
-https://www.googleapis.com/auth/calendar.calendarlist.readonly
-https://www.googleapis.com/auth/drive.readonly
-```
-
-Enable the Google Calendar API and Google Drive API in the same Google Cloud project before building real sync jobs behind these endpoints. The React app only calls the ASP.NET API; ASP.NET owns OAuth and Google API calls.
-
-## Run Locally
+The checked-in template deliberately leaves credentials and public hostnames blank.
+The development Compose file supplies localhost-safe fallbacks; production Compose
+refuses to start until `POSTGRES_PASSWORD` is populated and still requires the
+public hostname, email, and provider values appropriate to that deployment.
 
 Frontend only:
 
@@ -104,63 +160,117 @@ npm run dev
 Backend only:
 
 ```bash
-dotnet run --project backend/Incos.Workspace.Api/Incos.Workspace.Api.csproj
+dotnet run --project backend/CanvasToDo.Api/CanvasToDo.Api.csproj
 ```
 
-Production-like full stack with Docker:
+Hot-reload stack:
+
+```bash
+docker compose -f docker-compose.dev.yml up -d --build
+```
+
+Open `http://localhost:6173/`. To test confirmation/reset without SMTP, explicitly
+set `EMAIL_DEVELOPMENT_EXPOSE_TOKENS=true` in the ignored `.env` first.
+
+Production-like stack:
 
 ```bash
 docker compose up -d --build
 ```
 
-Then open `http://localhost:6173/workspace/`.
+Expose `https://your-host.example/canvas-to-do/` through a TLS reverse proxy. The
+frontend `6173`, API `6272`, and PostgreSQL `6060` ports are bound to loopback by
+Compose. The outer TLS proxy must replace (not append to) `X-Forwarded-For` with the
+single connecting client address. Do not publish any of these ports directly.
 
-Production Docker files:
+For the optimized AWS Lightsail deployment at the domain root, use the separate
+[`deploy/compose.lightsail.yml`](deploy/compose.lightsail.yml) stack and follow
+[`DEPLOYMENT.md`](DEPLOYMENT.md). It adds bounded resources, immutable frontend
+caching, private PostgreSQL networking, a one-shot migration gate, stable volume
+names, and verified database/key-ring backup and restore scripts.
 
-- `frontend/Dockerfile`: builds the React app and serves the static files with Nginx.
-- `backend/Incos.Workspace.Api/Dockerfile`: publishes the API in Release mode and runs `Incos.Workspace.Api.dll`.
-
-Docker ports:
-
-- Frontend/Nginx: `6173:6173`
-- ASP.NET Core API: `6272:6272`
-- PostgreSQL: `6060:5432` with user `incos` and password `incos123`
-
-Containers use `restart: unless-stopped`, so they keep running after SSH disconnects and restart after a PC reboot unless manually stopped.
-
-The frontend Nginx container serves static images from `/static/images/` using the `incos-static-images` Docker volume and reverse-proxies `/api/` to the ASP.NET Core container.
-
-Hot-reload Docker dev mode:
+Useful checks:
 
 ```bash
-docker compose -f docker-compose.dev.yml up -d
+dotnet build CanvasToDo.slnx
+dotnet list backend/CanvasToDo.Api/CanvasToDo.Api.csproj package --vulnerable --include-transitive
+POSTGRES_PASSWORD=validation-only docker compose --env-file .env.example config --quiet
+docker compose --env-file .env.example -f docker-compose.dev.yml config --quiet
+APP_DOMAIN=example.com POSTGRES_PASSWORD=validation-only docker compose --env-file deploy/.env.example -f deploy/compose.lightsail.yml config --quiet
+bash -n scripts/deploy/*.sh
+cd frontend && npm ci && npm run build && npm run lint && npm run test:migration
 ```
 
-Dev mode runs:
+## Browser and API security
 
-- API: `dotnet watch run --no-launch-profile --urls http://0.0.0.0:6272`
-- Frontend: `npm run dev -- --host 0.0.0.0 --port 6173`
-- Dev reverse proxy: Nginx listens on `http://localhost:6173` and proxies to Vite/API containers.
-- Static images: mounted to `frontend/public/static/images` and served at `/static/images/...`
-- Vite API proxy: Docker dev sets `VITE_API_PROXY_TARGET=http://api:6272`; local dev defaults to `http://localhost:6272`.
+- Auth cookies are HTTP-only, `SameSite=Lax`, and secure outside Development.
+- Every state-changing SPA request carries `X-Canvas-To-Do-Request: 1`. Cross-origin
+  JavaScript must pass the strict credentialed CORS allowlist before it can send that
+  header, which protects cookie-backed mutations from CSRF.
+- OAuth correlation/state values are protected and short-lived. Return paths are
+  local-only.
+- Nginx adds a restrictive Content Security Policy, clickjacking protection,
+  referrer controls, and MIME-sniffing protection.
+- Login, recovery, 2FA, administrator mutations, Canvas reads, and Canvas writes are
+  separately rate-limited; forced calendar refreshes use the tightest Canvas limit.
+- Root `.env` files and local operational backups are excluded from Docker build
+  contexts and Git.
+- The persistent Data Protection key-ring volume must be protected with restrictive
+  host permissions and encrypted storage. Higher-assurance production deployments
+  should additionally wrap keys with a certificate or managed KMS; the repository
+  cannot choose that deployment-specific trust anchor safely.
 
-Development Docker files:
+## Rename compatibility contracts
 
-- `frontend/Dockerfile.dev`: installs frontend dependencies and runs the Vite dev server.
-- `backend/Incos.Workspace.Api/Dockerfile.dev`: restores NuGet packages and runs `dotnet watch run`.
+Visible application, assembly, namespace, container, and path names are now Canvas
+To Do. A few internal identifiers intentionally retain their previous values so an
+upgrade does not lose the database or make existing encrypted Canvas tokens
+unreadable:
 
-Useful dev commands:
+- PostgreSQL database/user: `incos_workspace` / `incos`;
+- development-only PostgreSQL fallback password `incos123`, so an existing local
+  volume remains reachable (production has no password fallback);
+- PostgreSQL and Data Protection Compose volume keys beginning with `incos-`;
+- Data Protection application discriminator `Incos.Workspace`;
+- Canvas token protector purpose `incos.workspace.canvas-token.v1`;
+- the old `ConnectionStrings:IncosWorkspace` key as a temporary read-only fallback;
+  new configuration uses `ConnectionStrings:CanvasToDo`; and
+- the legacy Academy owner header as a temporary stale-session compatibility check;
+  credential-verified server rows can migrate to GUID ownership, while old browser
+  Academy data remains untouched because it cannot be safely attributed to a public
+  account.
 
-```bash
-docker compose -f docker-compose.dev.yml logs -f
-docker compose -f docker-compose.dev.yml restart api
-docker compose -f docker-compose.dev.yml restart frontend
-docker compose -f docker-compose.dev.yml down
-```
+Before changing an existing Compose project name, inspect `docker volume ls`, back
+up PostgreSQL and the Data Protection key ring together, and never run
+`docker compose down -v`. Continue once with the original project name (for example,
+`docker compose -p incos-workspace ...`) or explicitly map the existing volumes.
+Changing the Data Protection discriminator, purpose, or key ring without a token
+re-protection migration invalidates stored Canvas connections.
 
-When package/project files change:
+Two former local exports under `.codex-backups/` are now ignored and removed from
+version control, but prior Git commits can still contain them. Before making the
+repository public, rotate any affected credentials and use a reviewed Git history
+rewrite to remove those blobs from every ref.
 
-- `package.json` or `package-lock.json`: restart the frontend container so `npm install` runs again.
-- `.csproj` or NuGet packages: restart the API container so `dotnet restore` runs again.
-- Dockerfile or compose changes: run `docker compose -f docker-compose.dev.yml up -d --build --force-recreate`.
-- Rude .NET hot-reload edits are configured with `DOTNET_WATCH_RESTART_ON_RUDE_EDIT=1`, so Docker should restart the app without asking for terminal confirmation.
+## Practical quality priorities
+
+- Functional suitability: verify local/social auth, confirmation/reset, 2FA, admin
+  authorization, Canvas OAuth/manual token, and calendar results together.
+- Reliability: retain encrypted-token/key compatibility, use migrations and backups,
+  and provide last-known calendar data before deadlines depend on Canvas uptime.
+- Performance: Canvas requests share deadline/page/byte/item budgets and use short
+  caches under a 64 MiB process budget. Outbound admission and wait time are bounded,
+  and incomplete best-effort responses are labeled and not cached. The current main
+  client chunk remains above Vite's 500 kB warning threshold, so further UI
+  code-splitting is still warranted.
+- Maintainability: account, Canvas, calendar, and administration boundaries are
+  separate, with retired Workspace/Google/Microsoft implementations removed.
+- Compatibility and portability: callback/base URLs, SMTP, allowed hosts, proxy trust,
+  and Canvas origins are explicit deployment settings.
+- Security and freedom from risk: use HTTPS, least-scope OAuth, secret stores,
+  lockout/rate limits, CSRF defenses, encrypted tokens, audit logs, and regular
+  dependency audits. Owner-bound re-protection of legacy v1 Canvas token envelopes
+  is a future coordinated crypto migration; until then, database write access is a
+  privileged security boundary.
+- Usability and context coverage: test keyboard/screen-reader use, narrow screens,
+  slow networks, expired sessions, provider outages, and revoked Canvas consent.

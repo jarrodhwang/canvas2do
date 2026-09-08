@@ -42,7 +42,7 @@ interface BoardViewProps {
   showCurrentTime?: boolean;
 }
 
-const academyPreferencesUpdatedEvent = 'incos-academy-preferences-updated';
+const academyPreferencesUpdatedEvent = 'canvas-to-do-preferences-updated';
 
 function isComplete(item: BoardItem) {
   if (typeof item.isCompleted === 'boolean') {
@@ -141,7 +141,7 @@ export function BoardView({
   onToggleItemDone,
   showCurrentTime = false,
 }: BoardViewProps) {
-  const { dictionary, language, translateBoardColumn } = useLanguage();
+  const { dictionary, language } = useLanguage();
   const holidayBadgeLabel = language === 'ko' ? '공휴일' : 'Holiday';
   const [, setPreferenceVersion] = useState(0);
   const tapTimeoutRef = useRef<{ itemId: string; timeoutId: number } | null>(null);
@@ -209,7 +209,7 @@ export function BoardView({
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
-            aria-label={dictionary.gmailMoreActions}
+            aria-label={dictionary.moreActions}
             className={cn(
               'shrink-0 rounded-md border-border bg-background/80 text-muted-foreground hover:bg-muted hover:text-foreground',
               compact ? 'size-6' : 'size-8',
@@ -217,7 +217,7 @@ export function BoardView({
             onClick={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
             size="icon-sm"
-            title={dictionary.gmailMoreActions}
+            title={dictionary.moreActions}
             type="button"
             variant="outline"
           >
@@ -292,7 +292,7 @@ export function BoardView({
           const columnItems = items
             .filter((item) => item.columnId === column.id)
             .sort((firstItem, secondItem) => getItemMinutes(firstItem) - getItemMinutes(secondItem));
-          const columnLabel = translateBoardColumn(column.id, column.label);
+          const columnLabel = column.label;
           const columnChipColor = column.color;
           let hasRenderedCurrentTime = false;
           const renderCurrentTimeIfNeeded = (item: BoardItem) => {

@@ -1,14 +1,14 @@
 services:
   postgres:
     image: postgres:18
-    container_name: incos-workspace-postgres
+    container_name: canvas-to-do-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: incos_workspace
       POSTGRES_USER: incos
-      POSTGRES_PASSWORD: incos123
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     ports:
-      - "6060:5432"
+      - "127.0.0.1:6060:5432"
     volumes:
       - incos-postgres-data:/var/lib/postgresql
     healthcheck:
@@ -20,8 +20,8 @@ services:
   api:
     build:
       context: .
-      dockerfile: backend/Incos.Workspace.Api/Dockerfile
-    container_name: incos-workspace-api
+      dockerfile: backend/CanvasToDo.Api/Dockerfile
+    container_name: canvas-to-do-api
     restart: unless-stopped
     depends_on:
       postgres:
@@ -29,43 +29,60 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_URLS: http://+:6272
-      ConnectionStrings__IncosWorkspace: Host=postgres;Port=5432;Database=incos_workspace;Username=incos;Password=incos123
+      AllowedHosts: ${ALLOWED_HOSTS:-localhost}
+      # Legacy key/database identifiers preserve existing deployments during the rename.
+      ConnectionStrings__CanvasToDo: Host=postgres;Port=5432;Database=incos_workspace;Username=incos;Password=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       Database__EnsureCreated: "true"
+      Database__MigrateAuth: "true"
+      ReverseProxy__TrustForwardedHeaders: "true"
+      Authentication__Admin__BootstrapEmail: ${AUTH_ADMIN_BOOTSTRAP_EMAIL:-}
+      Authentication__Admin__BootstrapPassword: ${AUTH_ADMIN_BOOTSTRAP_PASSWORD:-}
+      Authentication__Admin__BootstrapDisplayName: ${AUTH_ADMIN_BOOTSTRAP_DISPLAY_NAME:-Administrator}
+      Authentication__SessionHours: ${AUTH_SESSION_HOURS:-336}
       Authentication__Google__ClientId: ${GOOGLE_CLIENT_ID:-}
       Authentication__Google__ClientSecret: ${GOOGLE_CLIENT_SECRET:-}
-      Authentication__Google__HostedDomain: ${GOOGLE_WORKSPACE_DOMAIN:-incos.co.kr}
-      Authentication__Google__WorkspaceDataDomain: ${GOOGLE_WORKSPACE_DOMAIN:-incos.co.kr}
-      Authentication__Google__RestrictToHostedDomain: "true"
-      Authentication__Google__CallbackPath: /signin-google
-      Authentication__Canvas__InstanceUrl: ${CANVAS_INSTANCE_URL:-}
-      Authentication__Canvas__AccessToken: ${CANVAS_ACCESS_TOKEN:-}
-      DataProtection__KeysPath: /var/lib/incos-workspace/data-protection-keys
-      Authentication__Microsoft__ClientId: ${MICROSOFT_CLIENT_ID:-}
-      Authentication__Microsoft__ClientSecret: ${MICROSOFT_CLIENT_SECRET:-}
-      Authentication__Microsoft__TenantId: ${MICROSOFT_TENANT_ID:-common}
+      Authentication__Google__CallbackPath: /api/auth/google/oauth-callback
+      Authentication__Facebook__ClientId: ${FACEBOOK_CLIENT_ID:-}
+      Authentication__Facebook__ClientSecret: ${FACEBOOK_CLIENT_SECRET:-}
+      Authentication__Facebook__CallbackPath: /api/auth/facebook/oauth-callback
+      Email__PublicFrontendBaseUrl: ${PUBLIC_FRONTEND_BASE_URL:-}
+      Email__FromAddress: ${EMAIL_FROM_ADDRESS:-}
+      Email__FromName: ${EMAIL_FROM_NAME:-Canvas To Do}
+      Email__Smtp__Host: ${SMTP_HOST:-}
+      Email__Smtp__Port: ${SMTP_PORT:-587}
+      Email__Smtp__Username: ${SMTP_USERNAME:-}
+      Email__Smtp__Password: ${SMTP_PASSWORD:-}
+      Email__Smtp__EnableSsl: ${SMTP_ENABLE_SSL:-true}
+      Email__Smtp__TimeoutSeconds: ${SMTP_TIMEOUT_SECONDS:-15}
+      Email__Development__ExposeTokens: "false"
+      Authentication__Canvas__AllowedInstanceUrls: ${CANVAS_ALLOWED_INSTANCE_URLS:-https://sfu.instructure.com}
+      Authentication__Canvas__OAuth__Enabled: ${CANVAS_OAUTH_ENABLED:-false}
+      Authentication__Canvas__OAuth__ClientId: ${CANVAS_OAUTH_CLIENT_ID:-}
+      Authentication__Canvas__OAuth__ClientSecret: ${CANVAS_OAUTH_CLIENT_SECRET:-}
+      Authentication__Canvas__OAuth__CallbackUrl: ${CANVAS_OAUTH_CALLBACK_URL:-}
+      Authentication__Canvas__ManualTokenEnabled: ${CANVAS_MANUAL_TOKEN_ENABLED:-false}
+      # Keep this key path and volume: existing sessions and Canvas tokens depend on it.
+      DataProtection__KeysPath: /var/lib/canvas-to-do/data-protection-keys
     ports:
-      - "6272:6272"
+      - "127.0.0.1:6272:6272"
     volumes:
-      - incos-data-protection-keys:/var/lib/incos-workspace/data-protection-keys
-      - incos-static-images:/var/www/incos-static/images
+      - incos-data-protection-keys:/var/lib/canvas-to-do/data-protection-keys
 
   frontend:
     build:
       context: .
       dockerfile: frontend/Dockerfile
       args:
-        VITE_BASE_PATH: ${VITE_BASE_PATH:-/workspace/}
-        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/workspace/api}
-    container_name: incos-workspace-frontend
+        VITE_BASE_PATH: ${VITE_BASE_PATH:-/canvas-to-do/}
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/canvas-to-do/api}
+    container_name: canvas-to-do-frontend
     restart: unless-stopped
     depends_on:
       - api
     ports:
-      - "6173:6173"
-    volumes:
-      - incos-static-images:/var/www/incos-static/images:ro
+      - "127.0.0.1:6173:6173"
 
 volumes:
+  # Legacy volume keys are intentional. See README.md before changing the Compose project name.
   incos-postgres-data:
   incos-data-protection-keys:
-  incos-static-images:

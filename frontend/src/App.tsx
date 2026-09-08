@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent } from 'react';
 import {
   Activity,
   BarChart3,
@@ -22,7 +22,6 @@ import {
   Palette,
   Pencil,
   Plus,
-  RefreshCw,
   RotateCcw,
   Star,
   Sun,
@@ -30,28 +29,27 @@ import {
   Type as TypeIcon,
   UserRound,
 } from 'lucide-react';
-import { workspaceApi } from './api/workspaceApi';
-import type { AcademyPreferences, AuthSession, CanvasCalendarItem, CanvasTokenStatus, GoogleDriveFile, WorkspacePreferences } from './api/workspaceApi';
-import { AddItemModal } from './components/AddItemModal';
+import { ApiError, authenticationRequiredEvent, canvasToDoApi } from './api/canvasToDoApi';
+import type { AcademyPreferences, AuthSession, CanvasCalendarItem, CanvasTokenStatus } from './api/canvasToDoApi';
+import { AccountSecurityPanel } from './components/AccountSecurityPanel';
 import { CalendarShell } from './components/CalendarShell';
 import { DateTimeField } from './components/DateTimeField';
+import { LegacyAcademyImportPanel } from './components/LegacyAcademyImportPanel';
 import type {
   ManualLectureClassType,
   ManualLectureSchedule,
   ManualLectureScheduleEntry,
   ManualLectureWeekday,
 } from './components/ManualLectureDialog';
-import { DetailPanel } from './components/DetailPanel';
-import { DriveDetailPanel } from './components/DriveDetailPanel';
 import { LoginPage } from './components/LoginPage';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
+import { CalendarProgressIndicator } from './components/CalendarProgressIndicator';
 import {
-  CalendarProgressIndicator,
   defaultCalendarProgressThresholds,
   type CalendarProgressDisplay,
   type CalendarProgressThresholds,
-} from './components/CalendarProgressIndicator';
+} from './components/calendarProgress';
 import { Button } from './components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card';
 import {
@@ -86,12 +84,11 @@ import {
 import { WorkspaceIcon } from './components/WorkspaceIcon';
 import { useLanguage } from './context/LanguageContext';
 import { useWorkspaceMode } from './context/WorkspaceModeContext';
-import type { AgendaItem, BoardItem, CalendarDay, CalendarEvent, TimelineItem, WorkspaceModeMockData } from './data/mockWorkspaceData';
+import type { AgendaItem, BoardItem, CalendarDay, CalendarEvent, WorkspaceModeMockData } from './data/mockWorkspaceData';
 import {
   canAccessSidebarItem,
   createAccessSet,
   filterModeForAccess,
-  getAccessibleModes,
   getFirstAccessibleSidebarItem,
 } from './lib/accessControl';
 import { badgeColorClasses, dotColorClasses } from './lib/colorStyles';
@@ -99,7 +96,7 @@ import { defaultGradeProgressColorThresholds } from './lib/gradeProgress';
 import { appPath } from './lib/appPath';
 import { cn } from './lib/utils';
 import type { BoardColumnConfig, ColorToken, WorkspaceView } from './modes/types';
-import { applyTheme, getInitialTheme, type AppTheme } from './theme';
+import { applyTheme, type AppTheme } from './theme';
 import {
   academyNationOptions,
   getHolidayForDateByNation,
@@ -108,29 +105,12 @@ import {
   type Language,
 } from './i18n';
 
-const AcademyGradesView = lazy(() => import('./components/AcademyGradesView').then((module) => ({ default: module.AcademyGradesView })));
-const AdminGroupsView = lazy(() => import('./components/AdminGroupsView').then((module) => ({ default: module.AdminGroupsView })));
 const AdminUsersView = lazy(() => import('./components/AdminUsersView').then((module) => ({ default: module.AdminUsersView })));
+const AcademyGradesView = lazy(() => import('./components/AcademyGradesView').then((module) => ({ default: module.AcademyGradesView })));
 const CanvasInboxView = lazy(() => import('./components/CanvasInboxView').then((module) => ({ default: module.CanvasInboxView })));
 const CanvasPeopleView = lazy(() => import('./components/CanvasPeopleView').then((module) => ({ default: module.CanvasPeopleView })));
 const CourseOverviewView = lazy(() => import('./components/CourseOverviewView').then((module) => ({ default: module.CourseOverviewView })));
 const DashboardCards = lazy(() => import('./components/DashboardCards').then((module) => ({ default: module.DashboardCards })));
-const DriveFilesView = lazy(() => import('./components/DriveFilesView').then((module) => ({ default: module.DriveFilesView })));
-const GoogleCommunicationView = lazy(() => import('./components/GoogleCommunicationView').then((module) => ({ default: module.GoogleCommunicationView })));
-const OutlookEmailView = lazy(() => import('./components/OutlookEmailView').then((module) => ({ default: module.OutlookEmailView })));
-const WorkspaceManagementView = lazy(() => import('./components/WorkspaceManagementView').then((module) => ({ default: module.WorkspaceManagementView })));
-const workspaceManagementSidebarItems = new Set([
-  'dashboard',
-  'project',
-  'calendar',
-  'board',
-  'timeline',
-  'issues',
-  'bugs',
-  'features',
-  'customers',
-  'categories',
-]);
 
 interface WorkspaceNavigation {
   modeId: string;
@@ -139,12 +119,8 @@ interface WorkspaceNavigation {
 }
 
 interface WorkspaceHistoryState {
-  source: 'incos-workspace';
+  source: 'canvas-to-do';
   navigation: WorkspaceNavigation;
-}
-
-interface DriveBrowserHistoryState {
-  source: 'incos-drive-browser';
 }
 
 type CanvasCalendarLoadStatus = 'idle' | 'loading' | 'loaded' | 'failed';
@@ -154,14 +130,11 @@ type CalendarTodoStyle = 'comfortable' | 'compact';
 // Canvas calendar aggregation can involve several paginated upstream requests, so
 // a shorter UI timeout incorrectly reported an unavailable calendar while the
 // request was still in progress.
-const canvasCalendarLoadingTimeoutMs = 30_000;
-const academyProfileImageMaxBytes = 256 * 1024;
-const previewBannerPositionStorageKey = 'incos-preview-banner-position';
-const previewBannerDragHoldMs = 90;
-const previewBannerDragCancelDistance = 14;
+const canvasCalendarLoadingTimeoutMs = 50_000;
 
 interface CanvasCalendarPage {
   errorMessage?: string;
+  isComplete?: boolean;
   items: CanvasCalendarItem[];
   requestedAt?: number;
   status: CanvasCalendarLoadStatus;
@@ -199,7 +172,6 @@ interface AcademyCalendarSettings {
   progressGreenAt: number;
   progressYellowAt: number;
   selectedSemester?: string;
-  sessionDurationDays: number;
   themeMode: AppTheme;
   themeTimerEnabled: boolean;
   themeTimerEnd: string;
@@ -228,31 +200,6 @@ type AcademyFontFamily =
   | 'sf-pro'
   | 'system';
 
-interface WorkspaceSettings {
-  accentColor: ColorToken;
-  autoRefreshIntervalMs: number;
-  fontFamily: AcademyFontFamily;
-  fontSizePercent: number;
-  holidayNations: AcademyNation[];
-  language: Language;
-  progressDisplay: CalendarProgressDisplay;
-  progressGreenAt: number;
-  progressYellowAt: number;
-  refocusRefreshThrottleMs: number;
-  sessionDurationDays: number;
-  themeMode: AppTheme;
-  themeTimerEnabled: boolean;
-  themeTimerEnd: string;
-  themeTimerMode: AppTheme;
-  themeTimerStart: string;
-  timeZone: string;
-  topBarDefaultCollapsed: boolean;
-}
-
-interface AdminConsoleSettings {
-  topBarDefaultCollapsed: boolean;
-}
-
 function isWorkspaceHistoryState(value: unknown): value is WorkspaceHistoryState {
   if (!value || typeof value !== 'object') {
     return false;
@@ -260,17 +207,11 @@ function isWorkspaceHistoryState(value: unknown): value is WorkspaceHistoryState
 
   const state = value as Partial<WorkspaceHistoryState>;
 
-  return state.source === 'incos-workspace'
+  return state.source === 'canvas-to-do'
     && Boolean(state.navigation)
     && typeof state.navigation?.modeId === 'string'
     && typeof state.navigation?.sidebarItemId === 'string'
     && typeof state.navigation?.view === 'string';
-}
-
-function isDriveBrowserHistoryState(value: unknown): value is DriveBrowserHistoryState {
-  return Boolean(value)
-    && typeof value === 'object'
-    && (value as Partial<DriveBrowserHistoryState>).source === 'incos-drive-browser';
 }
 
 function getInitialAuthRedirectMessage() {
@@ -281,6 +222,32 @@ function getInitialAuthRedirectMessage() {
   const authError = new URLSearchParams(window.location.search).get('authError');
 
   return authError?.trim() || null;
+}
+
+interface CanvasRedirectFeedback {
+  message: string;
+  returnToSettings: boolean;
+  tone: 'error' | 'success';
+}
+
+function getInitialCanvasRedirectFeedback(): CanvasRedirectFeedback | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const error = params.get('canvasError')?.trim();
+  const connected = params.get('canvasConnected') === 'true';
+
+  if (!error && !connected) {
+    return null;
+  }
+
+  return {
+    message: error || 'Your SFU Canvas account is connected.',
+    returnToSettings: params.get('canvasReturn') === 'settings',
+    tone: error ? 'error' : 'success',
+  };
 }
 
 const monthIndexes: Record<string, number> = {
@@ -505,19 +472,17 @@ interface SelectedDayCourseGroup {
   label: string;
 }
 
-const manualLecturesStorageKey = 'incos-academy-manual-lectures';
-const canvasLecturePreferencesStorageKey = 'incos-academy-canvas-lecture-preferences';
-const manualCourseworkStorageKey = 'incos-academy-manual-coursework';
-const canvasCourseworkPreferencesStorageKey = 'incos-academy-canvas-coursework-preferences';
-const manualAssessmentsStorageKey = 'incos-academy-manual-assessments';
-const canvasAssessmentPreferencesStorageKey = 'incos-academy-canvas-assessment-preferences';
-const academyCalendarSettingsStorageKey = 'incos-academy-calendar-settings';
-const academyCalendarHiddenCoursesStorageKey = 'incos-academy-calendar-hidden-courses';
-const workspaceSettingsStorageKey = 'incos-workspace-settings';
-const adminConsoleSettingsStorageKey = 'incos-admin-console-settings';
-const academyPreferencesUpdatedEvent = 'incos-academy-preferences-updated';
-const academyOpenCourseworkDialogEvent = 'incos-academy-open-coursework-dialog';
-const academyRefreshRequestedEvent = 'incos-academy-refresh-requested';
+const manualLecturesStorageKey = 'canvas-to-do-manual-lectures';
+const canvasLecturePreferencesStorageKey = 'canvas-to-do-canvas-lecture-preferences';
+const manualCourseworkStorageKey = 'canvas-to-do-manual-coursework';
+const canvasCourseworkPreferencesStorageKey = 'canvas-to-do-canvas-coursework-preferences';
+const manualAssessmentsStorageKey = 'canvas-to-do-manual-assessments';
+const canvasAssessmentPreferencesStorageKey = 'canvas-to-do-canvas-assessment-preferences';
+const academyCalendarSettingsStorageKey = 'canvas-to-do-calendar-settings';
+const academyCalendarHiddenCoursesStorageKey = 'canvas-to-do-calendar-hidden-courses';
+const academyPreferencesUpdatedEvent = 'canvas-to-do-preferences-updated';
+const academyOpenCourseworkDialogEvent = 'canvas-to-do-open-coursework-dialog';
+const academyRefreshRequestedEvent = 'canvas-to-do-refresh-requested';
 type AcademyOpenCourseworkDialogDetail = {
   courseCode?: string;
   dueAt?: string;
@@ -528,16 +493,13 @@ type AcademyRefreshRequestedDetail = {
   forceRefresh?: boolean;
   registerTask?: (task: Promise<unknown>) => void;
 };
-const minimumAcademyAutoRefreshIntervalMs = 5_000;
+const minimumAcademyAutoRefreshIntervalMs = 60_000;
 const maximumAcademyAutoRefreshIntervalMs = 30 * 60_000;
 const defaultAcademyAutoRefreshIntervalMs = 10 * 60_000;
 const minimumAcademyRefocusRefreshThrottleMs = 30_000;
 const maximumAcademyRefocusRefreshThrottleMs = 60 * 60_000;
 const defaultAcademyRefocusRefreshThrottleMs = 5 * 60_000;
 const academyAutoRefreshIntervalOptions = [
-  5_000,
-  15_000,
-  30_000,
   60_000,
   5 * 60_000,
   10 * 60_000,
@@ -581,10 +543,7 @@ const academyFontFamilyCss = Object.fromEntries(
 const academyFontSizeOptions = [85, 95, 100, 110, 120];
 const defaultAcademySemester = getDateBasedAcademySemester();
 const defaultCanvasTermSemester = 'Default Term';
-const defaultAcademyTabIconSrc = appPath('/brand/academy-tab-icon.png');
-const defaultWorkspaceTabIconSrc = appPath('/brand/incos-workspace-tab-icon.png');
-const defaultWorkspaceTouchIconSrc = appPath('/brand/incos-workspace-touch-icon.png');
-const topTrackExternalUrl = 'https://toptrack.topsolid.com/';
+const defaultAcademyTabIconSrc = appPath('/brand/canvas-to-do-icon.svg');
 const academyAccentColors: ColorToken[] = [
   'gold',
   'butter',
@@ -716,49 +675,11 @@ const defaultAcademyCalendarSettings: AcademyCalendarSettings = {
   progressDisplay: 'linear',
   progressGreenAt: defaultCalendarProgressThresholds.greenAt,
   progressYellowAt: defaultCalendarProgressThresholds.yellowAt,
-  sessionDurationDays: 14,
   themeMode: 'dark',
   themeTimerEnabled: false,
   themeTimerEnd: '18:00',
   themeTimerMode: 'light',
   themeTimerStart: '08:00',
-  topBarDefaultCollapsed: false,
-};
-const workspaceTimeZoneOptions: Array<{
-  label: string;
-  nation: AcademyNation | null;
-  value: string;
-}> = [
-  { value: 'Asia/Seoul', label: 'Korea / Seoul', nation: 'kr' },
-  { value: 'America/Vancouver', label: 'Canada / Vancouver', nation: 'ca' },
-  { value: 'America/New_York', label: 'US / New York', nation: 'us' },
-  { value: 'Europe/Paris', label: 'France / Paris', nation: 'fr' },
-  { value: 'Europe/London', label: 'UK / London', nation: 'uk' },
-  { value: 'Australia/Sydney', label: 'Australia / Sydney', nation: 'au' },
-  { value: 'UTC', label: 'UTC', nation: null },
-];
-const workspaceTimeZoneValues = workspaceTimeZoneOptions.map((option) => option.value);
-const defaultWorkspaceSettings: WorkspaceSettings = {
-  accentColor: 'gold',
-  autoRefreshIntervalMs: defaultAcademyAutoRefreshIntervalMs,
-  fontFamily: 'gmarket-sans',
-  fontSizePercent: 100,
-  holidayNations: ['kr'],
-  language: 'ko',
-  progressDisplay: 'linear',
-  progressGreenAt: defaultCalendarProgressThresholds.greenAt,
-  progressYellowAt: defaultCalendarProgressThresholds.yellowAt,
-  refocusRefreshThrottleMs: defaultAcademyRefocusRefreshThrottleMs,
-  sessionDurationDays: 14,
-  themeMode: 'dark',
-  themeTimerEnabled: false,
-  themeTimerEnd: '18:00',
-  themeTimerMode: 'light',
-  themeTimerStart: '08:00',
-  timeZone: 'Asia/Seoul',
-  topBarDefaultCollapsed: false,
-};
-const defaultAdminConsoleSettings: AdminConsoleSettings = {
   topBarDefaultCollapsed: false,
 };
 const calendarAutoExpandMaxWidth = 1279;
@@ -1283,9 +1204,6 @@ function normalizeAcademyCalendarSettings(
   const fontSizePercent = Number.isFinite(settings.fontSizePercent)
     ? Math.min(Math.max(Math.round(Number(settings.fontSizePercent)), 80), 130)
     : fallback.fontSizePercent;
-  const sessionDurationDays = Number.isFinite(settings.sessionDurationDays)
-    ? Math.min(Math.max(Math.round(Number(settings.sessionDurationDays)), 1), 14)
-    : fallback.sessionDurationDays;
   const autoRefreshIntervalMs = Number.isFinite(settings.autoRefreshIntervalMs)
     ? Math.min(
         Math.max(Math.round(Number(settings.autoRefreshIntervalMs)), minimumAcademyAutoRefreshIntervalMs),
@@ -1324,7 +1242,6 @@ function normalizeAcademyCalendarSettings(
     selectedSemester: normalizeSemesterName(
       typeof settings.selectedSemester === 'string' ? settings.selectedSemester : fallback.selectedSemester,
     ),
-    sessionDurationDays,
     themeMode,
     themeTimerEnabled,
     themeTimerEnd,
@@ -1379,19 +1296,6 @@ function getAcademyEffectiveTheme(settings: AcademyCalendarSettings, date = new 
   return isTimerWindow ? settings.themeTimerMode : getOppositeThemeMode(settings.themeTimerMode);
 }
 
-function getWorkspaceEffectiveTheme(settings: WorkspaceSettings, date = new Date()): AppTheme {
-  if (!settings.themeTimerEnabled) {
-    return settings.themeMode;
-  }
-
-  const startMinute = getThemeTimerMinutes(settings.themeTimerStart);
-  const endMinute = getThemeTimerMinutes(settings.themeTimerEnd);
-  const currentMinute = (date.getHours() * 60) + date.getMinutes();
-  const isTimerWindow = isMinuteInThemeWindow(currentMinute, startMinute, endMinute);
-
-  return isTimerWindow ? settings.themeTimerMode : getOppositeThemeMode(settings.themeTimerMode);
-}
-
 function getStoredAcademyCalendarSettings() {
   return normalizeAcademyCalendarSettings(
     readStoredJson<unknown>(academyCalendarSettingsStorageKey, defaultAcademyCalendarSettings),
@@ -1400,123 +1304,6 @@ function getStoredAcademyCalendarSettings() {
 
 function areAcademyCalendarSettingsEqual(first: AcademyCalendarSettings, second: AcademyCalendarSettings) {
   return JSON.stringify(first) === JSON.stringify(second);
-}
-
-function normalizeWorkspaceSettings(
-  value: unknown,
-  fallback: WorkspaceSettings = defaultWorkspaceSettings,
-): WorkspaceSettings {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return fallback;
-  }
-
-  const settings = value as Partial<WorkspaceSettings>;
-  const accentColor = typeof settings.accentColor === 'string' &&
-    academyAccentColorOptions.includes(settings.accentColor as ColorToken)
-    ? settings.accentColor as ColorToken
-    : fallback.accentColor;
-  const autoRefreshIntervalMs = Number.isFinite(settings.autoRefreshIntervalMs)
-    ? Math.min(
-        Math.max(Math.round(Number(settings.autoRefreshIntervalMs)), minimumAcademyAutoRefreshIntervalMs),
-        maximumAcademyAutoRefreshIntervalMs,
-      )
-    : fallback.autoRefreshIntervalMs;
-  const fontFamily = typeof settings.fontFamily === 'string' &&
-    academyFontFamilyValues.includes(settings.fontFamily as AcademyFontFamily)
-    ? settings.fontFamily as AcademyFontFamily
-    : fallback.fontFamily;
-  const fontSizePercent = Number.isFinite(settings.fontSizePercent)
-    ? Math.min(Math.max(Math.round(Number(settings.fontSizePercent)), 80), 130)
-    : fallback.fontSizePercent;
-  const holidayNations = Array.isArray(settings.holidayNations)
-    ? Array.from(new Set(settings.holidayNations.filter(
-        (nation): nation is AcademyNation => academyNationValues.includes(nation as AcademyNation),
-      )))
-    : fallback.holidayNations;
-  const progressDisplay = settings.progressDisplay === 'circular' || settings.progressDisplay === 'linear'
-    ? settings.progressDisplay
-    : fallback.progressDisplay;
-  const progressGreenAt = Number.isFinite(settings.progressGreenAt)
-    ? Math.min(Math.max(Number(settings.progressGreenAt), 0), 100)
-    : fallback.progressGreenAt;
-  const progressYellowAt = Number.isFinite(settings.progressYellowAt)
-    ? Math.min(Math.max(Number(settings.progressYellowAt), 0), progressGreenAt)
-    : Math.min(fallback.progressYellowAt, progressGreenAt);
-  const refocusRefreshThrottleMs = Number.isFinite(settings.refocusRefreshThrottleMs)
-    ? Math.min(
-        Math.max(Math.round(Number(settings.refocusRefreshThrottleMs)), minimumAcademyRefocusRefreshThrottleMs),
-        maximumAcademyRefocusRefreshThrottleMs,
-      )
-    : fallback.refocusRefreshThrottleMs;
-  const themeTimerEnabled = typeof settings.themeTimerEnabled === 'boolean'
-    ? settings.themeTimerEnabled
-    : fallback.themeTimerEnabled;
-  const themeTimerMode: AppTheme = settings.themeTimerMode === 'light' || settings.themeTimerMode === 'dark'
-    ? settings.themeTimerMode
-    : fallback.themeTimerMode;
-  const themeTimerStart = normalizeThemeTimerTime(settings.themeTimerStart, fallback.themeTimerStart);
-  const themeTimerEnd = normalizeThemeTimerTime(settings.themeTimerEnd, fallback.themeTimerEnd);
-
-  return {
-    accentColor,
-    autoRefreshIntervalMs,
-    fontFamily,
-    fontSizePercent,
-    holidayNations: holidayNations.length > 0 ? holidayNations : fallback.holidayNations,
-    language: settings.language === 'en' || settings.language === 'ko'
-      ? settings.language
-      : fallback.language,
-    progressDisplay,
-    progressGreenAt,
-    progressYellowAt,
-    refocusRefreshThrottleMs,
-    sessionDurationDays: Number.isFinite(settings.sessionDurationDays)
-      ? Math.min(Math.max(Math.round(Number(settings.sessionDurationDays)), 1), 14)
-      : fallback.sessionDurationDays,
-    themeMode: settings.themeMode === 'light' || settings.themeMode === 'dark'
-      ? settings.themeMode
-      : fallback.themeMode,
-    themeTimerEnabled,
-    themeTimerEnd,
-    themeTimerMode,
-    themeTimerStart,
-    timeZone: typeof settings.timeZone === 'string' && workspaceTimeZoneValues.includes(settings.timeZone)
-      ? settings.timeZone
-      : fallback.timeZone,
-    topBarDefaultCollapsed: typeof settings.topBarDefaultCollapsed === 'boolean'
-      ? settings.topBarDefaultCollapsed
-      : fallback.topBarDefaultCollapsed,
-  };
-}
-
-function getStoredWorkspaceSettings() {
-  return normalizeWorkspaceSettings(
-    readStoredJson<unknown>(workspaceSettingsStorageKey, defaultWorkspaceSettings),
-  );
-}
-
-function areWorkspaceSettingsEqual(first: WorkspaceSettings, second: WorkspaceSettings) {
-  return JSON.stringify(first) === JSON.stringify(second);
-}
-
-function formatWorkspaceDateTime(date: Date, timeZone: string, language: Language) {
-  return new Intl.DateTimeFormat(language === 'ko' ? 'ko-KR' : 'en-CA', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-    timeZone,
-  }).format(date);
-}
-
-function getIsoDateInTimeZone(date: Date, timeZone: string) {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    day: '2-digit',
-    month: '2-digit',
-    timeZone,
-    year: 'numeric',
-  }).formatToParts(date);
-  const partValue = (type: string) => parts.find((part) => part.type === type)?.value ?? '';
-
-  return `${partValue('year')}-${partValue('month')}-${partValue('day')}`;
 }
 
 function waitFor(milliseconds: number) {
@@ -1534,8 +1321,8 @@ function formatAcademyAutoRefreshInterval(milliseconds: number) {
 }
 
 function isSessionExpiredError(error: unknown) {
-  return error instanceof Error &&
-    /session expired|sign in again/i.test(error.message);
+  return (error instanceof ApiError && error.status === 401) ||
+    (error instanceof Error && /session expired|sign in again/i.test(error.message));
 }
 
 function getAuthSessionIdentityKey(session: AuthSession) {
@@ -1544,28 +1331,9 @@ function getAuthSessionIdentityKey(session: AuthSession) {
   }
 
   return [
-    session.isPreview ? 'preview' : 'user',
-    session.provider ?? '',
-    session.academyPreferenceOwnerKey ?? session.loginId ?? session.email ?? '',
+    'user',
+    session.academyPreferenceOwnerKey ?? session.email ?? '',
   ].join(':');
-}
-
-function normalizeAdminConsoleSettings(value: unknown): AdminConsoleSettings {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return defaultAdminConsoleSettings;
-  }
-
-  const settings = value as Partial<AdminConsoleSettings>;
-
-  return {
-    topBarDefaultCollapsed: Boolean(settings.topBarDefaultCollapsed),
-  };
-}
-
-function getStoredAdminConsoleSettings() {
-  return normalizeAdminConsoleSettings(
-    readStoredJson<unknown>(adminConsoleSettingsStorageKey, defaultAdminConsoleSettings),
-  );
 }
 
 function getStoredHiddenCalendarCourseIds() {
@@ -1584,14 +1352,6 @@ function getStoredHiddenCalendarCourseIds() {
 
 function storeAcademyCalendarSettings(settings: AcademyCalendarSettings) {
   storeJson(academyCalendarSettingsStorageKey, settings);
-}
-
-function storeWorkspaceSettings(settings: WorkspaceSettings) {
-  storeJson(workspaceSettingsStorageKey, settings);
-}
-
-function storeAdminConsoleSettings(settings: AdminConsoleSettings) {
-  storeJson(adminConsoleSettingsStorageKey, settings);
 }
 
 function storeHiddenCalendarCourseIds(courseIds: string[]) {
@@ -1660,38 +1420,6 @@ function applyAcademyAccentColor(color: ColorToken) {
   root.style.setProperty('--sidebar-primary', variables.primary);
   root.style.setProperty('--primary-foreground', variables.primaryForeground);
   root.style.setProperty('--sidebar-primary-foreground', variables.primaryForeground);
-}
-
-function clearAcademyAccentColor() {
-  const root = document.documentElement;
-
-  [
-    '--app-bg',
-    '--background',
-    '--foreground',
-    '--card',
-    '--card-foreground',
-    '--popover',
-    '--popover-foreground',
-    '--secondary',
-    '--secondary-foreground',
-    '--muted',
-    '--muted-foreground',
-    '--accent',
-    '--accent-foreground',
-    '--border',
-    '--input',
-    '--sidebar',
-    '--sidebar-foreground',
-    '--sidebar-accent',
-    '--sidebar-accent-foreground',
-    '--sidebar-border',
-    '--primary',
-    '--ring',
-    '--sidebar-primary',
-    '--primary-foreground',
-    '--sidebar-primary-foreground',
-  ].forEach((propertyName) => root.style.removeProperty(propertyName));
 }
 
 function storeJson(key: string, value: unknown) {
@@ -2247,53 +1975,6 @@ function getCalendarBoardItems(
     });
 }
 
-function getCalendarTimelineItems(
-  items: CalendarSourceItem[],
-  monthDate: Date,
-  fallbackLabel: string,
-): TimelineItem[] {
-  const monthRange = getCalendarMonthRange(monthDate);
-  const monthStartTime = monthRange.startDate.getTime();
-  const monthEndTime = new Date(Date.UTC(monthRange.year, monthRange.monthIndex + 1, 1)).getTime();
-  const monthDuration = Math.max(monthEndTime - monthStartTime, 1);
-
-  return items
-    .filter((item) => item.source !== 'class-session')
-    .filter((item) => {
-      const itemDate = new Date(getCalendarSourceItemDate(item) ?? '');
-
-      return !Number.isNaN(itemDate.getTime()) &&
-        itemDate.getTime() >= monthStartTime &&
-        itemDate.getTime() < monthEndTime;
-    })
-    .sort((firstItem, secondItem) => (
-      new Date(getCalendarSourceItemDate(firstItem) ?? '').getTime() -
-      new Date(getCalendarSourceItemDate(secondItem) ?? '').getTime()
-    ))
-    .map((item) => {
-      const itemDate = new Date(getCalendarSourceItemDate(item) ?? '');
-      const courseDisplay = getCalendarCourseFilterOption(item, fallbackLabel);
-      const offsetPercent = Number.isNaN(itemDate.getTime())
-        ? 0
-        : Math.min(Math.max(((itemDate.getTime() - monthStartTime) / monthDuration) * 100, 0), 98);
-
-      return {
-        id: item.id,
-        name: courseDisplay.label,
-        offsetPercent,
-        widthPercent: 7,
-        label: item.title,
-        color: courseDisplay.color,
-        canOpenDetails: true,
-        isCanvasSource: item.source === 'canvas',
-        isArchivedCanvasItem: Boolean(item.isArchivedCanvasItem),
-        isCompleted: Boolean(item.isCompleted),
-        isLocked: Boolean(item.isLocked),
-        isStarred: Boolean(item.isStarred),
-      };
-    });
-}
-
 type DayTodoProgress = {
   completedCount: number;
   label: string;
@@ -2475,10 +2156,6 @@ function getTodayIsoDate() {
   const day = `${today.getDate()}`.padStart(2, '0');
 
   return `${year}-${month}-${day}`;
-}
-
-function getTodayIsoDateForTimeZone(timeZone: string) {
-  return getIsoDateInTimeZone(new Date(), timeZone);
 }
 
 function addDaysToIsoDate(value: string, amount: number) {
@@ -3133,7 +2810,6 @@ function createAcademyCalendarData(
     ),
     days: createAcademyCalendarDays(monthDate, sourceItems, loadStatus, activeCourseOptionIds),
     monthLabel: formatCalendarMonthLabel(monthDate),
-    timeline: getCalendarTimelineItems(sourceItems, monthDate, fallbackCourseLabel),
   };
 }
 
@@ -3146,56 +2822,6 @@ function getHolidayItemsForDateByNations(nations: AcademyNation[], dateIso: stri
       ? [{ holiday, nationOption }]
       : [];
   });
-}
-
-function createEmptyWorkspaceCalendarDays(
-  monthDate: Date,
-  settings: WorkspaceSettings,
-): CalendarDay[] {
-  const monthRange = getCalendarMonthRange(monthDate);
-  const gridStartDate = getCalendarGridStartDate(monthDate);
-  const todayIso = getTodayIsoDateForTimeZone(settings.timeZone);
-
-  return Array.from({ length: 42 }, (_, index) => {
-    const date = new Date(Date.UTC(
-      gridStartDate.getUTCFullYear(),
-      gridStartDate.getUTCMonth(),
-      gridStartDate.getUTCDate() + index,
-    ));
-    const dateIso = getIsoDateFromUtcDate(date);
-    const holidayItems = getHolidayItemsForDateByNations(settings.holidayNations, dateIso);
-    const outsideMonth = date.getUTCMonth() !== monthRange.monthIndex;
-
-    return {
-      id: `workspace-${dateIso}`,
-      dateIso,
-      dateNumber: date.getUTCDate(),
-      isSunday: date.getUTCDay() === 0,
-      isToday: dateIso === todayIso,
-      outsideMonth,
-      status: holidayItems.length > 0
-        ? holidayItems.map(({ holiday, nationOption }) => `${nationOption.shortLabel} · ${holiday.label}`).join(' / ')
-        : '',
-      progress: 0,
-      progressLabel: '0%',
-      events: [],
-    };
-  });
-}
-
-function createEmptyWorkspaceCalendarData(
-  data: WorkspaceModeMockData,
-  monthDate: Date,
-  settings: WorkspaceSettings,
-): WorkspaceModeMockData {
-  return {
-    ...data,
-    agenda: [],
-    boardItems: [],
-    days: createEmptyWorkspaceCalendarDays(monthDate, settings),
-    monthLabel: formatCalendarMonthLabel(monthDate),
-    timeline: [],
-  };
 }
 
 function formatCalendarTodoType(value: string) {
@@ -3256,6 +2882,21 @@ function formatSettingsDateTime(value?: string, locale = 'en-CA') {
     month: 'short',
     year: 'numeric',
   });
+}
+
+let fallbackClientIdSequence = 0;
+
+function getCurrentTimeMilliseconds() {
+  return Date.now();
+}
+
+function createClientRuntimeId() {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+
+  fallbackClientIdSequence += 1;
+  return `${new Date().getTime()}-${fallbackClientIdSequence}`;
 }
 
 function toggleCalendarSourceItemDone(item: CalendarSourceItem) {
@@ -3338,10 +2979,6 @@ function CalendarTodoDetailsDialog({
   const { dictionary } = useLanguage();
   const [draft, setDraft] = useState<CalendarTodoDetailsDraft>(() => createCalendarTodoDetailsDraft(item));
   const isCanvasManaged = isLiveCanvasCalendarItem(item);
-
-  useEffect(() => {
-    setDraft(createCalendarTodoDetailsDraft(item));
-  }, [item?.id]);
 
   return (
     <Dialog open={Boolean(item)} onOpenChange={onOpenChange}>
@@ -3491,12 +3128,9 @@ function AcademySettingsView({
   const [profileMessage, setProfileMessage] = useState('');
   const [profileDraft, setProfileDraft] = useState(() => ({
     confirmPassword: '',
-    contactEmail: authSession?.email ?? '',
+    currentPassword: '',
     displayName: authSession?.displayName ?? '',
-    loginId: authSession?.loginId ?? '',
-    password: '',
-    profileImageDataUrl: authSession?.pictureUrl ?? '',
-    removeProfileImage: false,
+    newPassword: '',
   }));
   const [canvasTokenStatus, setCanvasTokenStatus] = useState<CanvasTokenStatus | null>(null);
   const [isCanvasTokenLoading, setIsCanvasTokenLoading] = useState(true);
@@ -3521,7 +3155,7 @@ function AcademySettingsView({
   const academyLogoPreviewSrc = isAcademyLogoHidden
     ? ''
     : settings.academyLogoSrc || defaultAcademyLogoSrc;
-  const canEditAcademyProfile = authSession?.provider === 'academy';
+  const hasPassword = authSession?.hasPassword !== false;
   const updateProfileDraft = (field: keyof typeof profileDraft, value: string | boolean) => {
     setProfileDraft((currentDraft) => ({
       ...currentDraft,
@@ -3575,7 +3209,9 @@ function AcademySettingsView({
       return;
     }
 
-    if (file.size > 1_500_000) {
+    // Base64 expands by roughly one third; keep the complete preferences request
+    // comfortably below the API's 1 MiB JSON body limit.
+    if (file.size > 384 * 1024) {
       setLogoUploadError(dictionary.academyTopBarLogoTooLarge);
       return;
     }
@@ -3594,56 +3230,18 @@ function AcademySettingsView({
     reader.onerror = () => setLogoUploadError(dictionary.academyTopBarLogoInvalid);
     reader.readAsDataURL(file);
   };
-  const handleProfileImageUpload = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-
-    event.target.value = '';
-    setProfileError('');
-    setProfileMessage('');
-
-    if (!file) {
-      return;
-    }
-
-    if (!file.type.startsWith('image/') || file.size > academyProfileImageMaxBytes) {
-      setProfileError(dictionary.academyProfileImageInvalid);
-      return;
-    }
-
-    const reader = new FileReader();
-
-    reader.onload = () => {
-      if (typeof reader.result !== 'string') {
-        setProfileError(dictionary.academyProfileImageInvalid);
-        return;
-      }
-
-      setProfileDraft((currentDraft) => ({
-        ...currentDraft,
-        profileImageDataUrl: reader.result as string,
-        removeProfileImage: false,
-      }));
-    };
-    reader.onerror = () => setProfileError(dictionary.academyProfileImageInvalid);
-    reader.readAsDataURL(file);
-  };
   const handleProfileSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setProfileError('');
     setProfileMessage('');
 
-    if (!canEditAcademyProfile) {
-      setProfileError(dictionary.academyProfileGoogleReadOnly);
-      return;
-    }
-
-    if (profileDraft.password || profileDraft.confirmPassword) {
-      if (profileDraft.password !== profileDraft.confirmPassword) {
+    if (hasPassword && (profileDraft.newPassword || profileDraft.confirmPassword || profileDraft.currentPassword)) {
+      if (profileDraft.newPassword !== profileDraft.confirmPassword) {
         setProfileError(dictionary.academyProfilePasswordMismatch);
         return;
       }
 
-      if (profileDraft.password.length < 8) {
+      if (profileDraft.newPassword.length < 10 || !profileDraft.currentPassword) {
         setProfileError(dictionary.academyProfilePasswordInvalid);
         return;
       }
@@ -3651,23 +3249,19 @@ function AcademySettingsView({
 
     setIsProfileSaving(true);
 
-    workspaceApi
+    canvasToDoApi
       .updateAcademyProfile({
         displayName: profileDraft.displayName,
-        loginId: profileDraft.loginId,
-        contactEmail: profileDraft.contactEmail,
-        password: profileDraft.password || undefined,
-        profileImageDataUrl: !profileDraft.removeProfileImage && profileDraft.profileImageDataUrl
-          ? profileDraft.profileImageDataUrl
-          : undefined,
-        removeProfileImage: profileDraft.removeProfileImage,
+        currentPassword: profileDraft.currentPassword || undefined,
+        newPassword: profileDraft.newPassword || undefined,
       })
       .then(async () => {
         await onProfileSaved();
         setProfileDraft((currentDraft) => ({
           ...currentDraft,
           confirmPassword: '',
-          password: '',
+          currentPassword: '',
+          newPassword: '',
         }));
         setProfileMessage(dictionary.academyProfileSaved);
       })
@@ -3720,11 +3314,11 @@ function AcademySettingsView({
   const accentVariantColors =
     academyAccentColorVariantPages[accentVariantPage] ?? academyAccentColorVariantPages[0];
   const isVariantAccentSelected = !academyAccentColors.includes(settings.accentColor);
-  const loadCanvasTokenStatus = () => {
+  const loadCanvasTokenStatus = useCallback(() => {
     setIsCanvasTokenLoading(true);
     setCanvasTokenError('');
 
-    workspaceApi
+    canvasToDoApi
       .getCanvasTokenStatus()
       .then((status) => {
         setCanvasTokenStatus(status);
@@ -3740,6 +3334,13 @@ function AcademySettingsView({
         setCanvasTokenError(error instanceof Error ? error.message : dictionary.canvasTokenStatusUnavailable);
       })
       .finally(() => setIsCanvasTokenLoading(false));
+  }, [dictionary.canvasTokenStatusUnavailable]);
+  const refreshAfterLegacyAcademyImport = async () => {
+    loadCanvasTokenStatus();
+    const preferences = await canvasToDoApi.getAcademyPreferences();
+
+    applyAcademyPreferencesResponse(preferences);
+    dispatchAcademyPreferencesUpdated();
   };
   const updateCanvasTokenDraft = (field: keyof typeof canvasTokenDraft, value: string) => {
     setCanvasTokenDraft((currentDraft) => ({
@@ -3757,6 +3358,7 @@ function AcademySettingsView({
   const canvasTokenSourceLabels: Record<string, string> = {
     environment: dictionary.canvasTokenSourceEnvironment,
     none: dictionary.canvasTokenSourceNone,
+    oauth: dictionary.canvasTokenSourceOauth,
     user: dictionary.canvasTokenSourceUser,
   };
   const handleCanvasTokenSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -3765,7 +3367,7 @@ function AcademySettingsView({
     setCanvasTokenError('');
     setCanvasTokenMessage('');
 
-    workspaceApi
+    canvasToDoApi
       .updateCanvasToken({
         accessToken: canvasTokenDraft.accessToken,
         expiresAt: optionalIsoFromDateInput(canvasTokenDraft.expiresAt),
@@ -3793,7 +3395,7 @@ function AcademySettingsView({
     setCanvasTokenError('');
     setCanvasTokenMessage('');
 
-    workspaceApi
+    canvasToDoApi
       .deleteCanvasToken()
       .then((status) => {
         setCanvasTokenStatus(status);
@@ -3813,19 +3415,10 @@ function AcademySettingsView({
   };
 
   useEffect(() => {
-    loadCanvasTokenStatus();
-  }, []);
+    const timeoutId = window.setTimeout(loadCanvasTokenStatus, 0);
 
-  useEffect(() => {
-    setProfileDraft((currentDraft) => ({
-      ...currentDraft,
-      contactEmail: authSession?.email ?? '',
-      displayName: authSession?.displayName ?? '',
-      loginId: authSession?.loginId ?? '',
-      profileImageDataUrl: authSession?.pictureUrl ?? '',
-      removeProfileImage: false,
-    }));
-  }, [authSession?.displayName, authSession?.email, authSession?.loginId, authSession?.pictureUrl]);
+    return () => window.clearTimeout(timeoutId);
+  }, [loadCanvasTokenStatus]);
 
   useEffect(() => {
     if (focusSection !== 'profile') {
@@ -3911,106 +3504,68 @@ function AcademySettingsView({
               <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
             </summary>
             <form className="mt-3 grid gap-4 rounded-lg border bg-card p-3" onSubmit={handleProfileSubmit}>
-              {!canEditAcademyProfile ? (
-                <div className="rounded-md border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs font-bold text-amber-700 dark:text-amber-200">
-                  {dictionary.academyProfileGoogleReadOnly}
-                </div>
-              ) : null}
-              <div className="grid gap-4 lg:grid-cols-[auto_minmax(0,1fr)]">
-                <div className="grid content-start justify-items-center gap-2">
-                  <div className="grid size-20 place-items-center overflow-hidden rounded-full border bg-muted text-lg font-black text-muted-foreground">
-                    {profileDraft.profileImageDataUrl && !profileDraft.removeProfileImage ? (
-                      <img alt="" className="size-full object-cover" src={profileDraft.profileImageDataUrl} />
-                    ) : (
-                      <UserRound className="size-8" />
-                    )}
-                  </div>
-                  <label className={cn(
-                    'inline-flex h-8 cursor-pointer items-center justify-center rounded-md border bg-background px-2.5 text-xs font-black transition hover:bg-muted',
-                    !canEditAcademyProfile && 'pointer-events-none opacity-50',
-                  )}>
-                    <ImageIcon className="mr-1.5 size-3.5" />
-                    {dictionary.academyProfileImageChange}
-                    <input
-                      accept="image/*"
-                      className="sr-only"
-                      disabled={!canEditAcademyProfile || isProfileSaving}
-                      onChange={handleProfileImageUpload}
-                      type="file"
-                    />
-                  </label>
-                  <Button
-                    className="h-8 rounded-md px-2.5 text-xs font-black"
-                    disabled={!canEditAcademyProfile || isProfileSaving || (!profileDraft.profileImageDataUrl && profileDraft.removeProfileImage)}
-                    onClick={() => setProfileDraft((currentDraft) => ({
-                      ...currentDraft,
-                      profileImageDataUrl: '',
-                      removeProfileImage: true,
-                    }))}
-                    type="button"
-                    variant="outline"
-                  >
-                    {dictionary.academyProfileImageRemove}
-                  </Button>
-                </div>
+              <div className="grid gap-4">
                 <div className="grid gap-3">
                   <div className="grid gap-3 md:grid-cols-2">
                     <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
                       <span>{dictionary.academyName}</span>
                       <Input
                         autoComplete="name"
-                        disabled={!canEditAcademyProfile || isProfileSaving}
+                        disabled={isProfileSaving}
                         onChange={(event) => updateProfileDraft('displayName', event.target.value)}
                         required
                         value={profileDraft.displayName}
                       />
                     </label>
                     <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
-                      <span>{dictionary.academyLoginId}</span>
-                      <Input
-                        autoCapitalize="none"
-                        autoComplete="username"
-                        disabled={!canEditAcademyProfile || isProfileSaving}
-                        onChange={(event) => updateProfileDraft('loginId', event.target.value)}
-                        required
-                        value={profileDraft.loginId}
-                      />
-                    </label>
-                    <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground md:col-span-2">
-                      <span>{dictionary.academyContactEmail}</span>
+                      <span>{dictionary.accountEmail}</span>
                       <Input
                         autoCapitalize="none"
                         autoComplete="email"
-                        disabled={!canEditAcademyProfile || isProfileSaving}
-                        onChange={(event) => updateProfileDraft('contactEmail', event.target.value)}
-                        placeholder={dictionary.academyContactEmailPlaceholder}
+                        disabled
                         type="email"
-                        value={profileDraft.contactEmail}
+                        value={authSession?.email ?? ''}
                       />
                     </label>
+                    {hasPassword ? (
+                      <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground md:col-span-2">
+                        <span>Current password (only needed when changing password)</span>
+                        <Input
+                          autoComplete="current-password"
+                          disabled={isProfileSaving}
+                          onChange={(event) => updateProfileDraft('currentPassword', event.target.value)}
+                          type="password"
+                          value={profileDraft.currentPassword}
+                        />
+                      </label>
+                    ) : (
+                      <div className="rounded-md border border-primary/25 bg-primary/5 px-3 py-2 text-xs font-semibold text-muted-foreground md:col-span-2">
+                        {dictionary.academyProfileExternalPasswordNote}
+                      </div>
+                    )}
                   </div>
-                  <div className="grid gap-3 md:grid-cols-2">
+                  {hasPassword ? <div className="grid gap-3 md:grid-cols-2">
                     <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
                       <span>{dictionary.academyProfileNewPassword}</span>
                       <Input
                         autoComplete="new-password"
-                        disabled={!canEditAcademyProfile || isProfileSaving}
-                        onChange={(event) => updateProfileDraft('password', event.target.value)}
+                        disabled={isProfileSaving}
+                        onChange={(event) => updateProfileDraft('newPassword', event.target.value)}
                         type="password"
-                        value={profileDraft.password}
+                        value={profileDraft.newPassword}
                       />
                     </label>
                     <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
                       <span>{dictionary.academyConfirmPassword}</span>
                       <Input
                         autoComplete="new-password"
-                        disabled={!canEditAcademyProfile || isProfileSaving}
+                        disabled={isProfileSaving}
                         onChange={(event) => updateProfileDraft('confirmPassword', event.target.value)}
                         type="password"
                         value={profileDraft.confirmPassword}
                       />
                     </label>
-                  </div>
+                  </div> : null}
                   <div className="grid gap-2 rounded-md border bg-muted/25 px-3 py-2 text-xs font-semibold text-muted-foreground">
                     <div className="flex min-w-0 justify-between gap-3">
                       <span>{dictionary.accountMenu}</span>
@@ -4045,7 +3600,7 @@ function AcademySettingsView({
                 </Button>
                 <Button
                   className="rounded-md"
-                  disabled={!canEditAcademyProfile || isProfileSaving}
+                  disabled={isProfileSaving}
                   type="submit"
                 >
                   {isProfileSaving ? dictionary.academyProfileSaving : dictionary.academyProfileSave}
@@ -4053,6 +3608,8 @@ function AcademySettingsView({
               </div>
             </form>
           </details>
+          <AccountSecurityPanel onChanged={onProfileSaved} />
+          <LegacyAcademyImportPanel onImported={refreshAfterLegacyAcademyImport} />
           <details className="group rounded-lg border bg-muted/20 p-3">
             <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-black text-foreground">
               <span className="flex min-w-0 items-center gap-2">
@@ -4064,6 +3621,28 @@ function AcademySettingsView({
               <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
             </summary>
             <div className="mt-3 grid gap-3">
+              {canvasTokenStatus?.oauthConfigured && canvasTokenStatus.connectUrl ? (
+                <div className="flex flex-col gap-3 rounded-lg border border-primary/25 bg-primary/5 p-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <h4 className="text-sm font-black text-foreground">{dictionary.canvasOauthTitle}</h4>
+                    <p className="mt-1 text-xs font-semibold leading-5 text-muted-foreground">
+                      {dictionary.canvasOauthDescription}
+                    </p>
+                  </div>
+                  <Button
+                    className="shrink-0 rounded-md"
+                    onClick={() => {
+                      const connectUrl = new URL(canvasTokenStatus.connectUrl ?? '', window.location.origin);
+                      connectUrl.searchParams.set('returnUrl', `${appPath('/')}?canvasReturn=settings`);
+                      window.location.assign(connectUrl.toString());
+                    }}
+                    type="button"
+                  >
+                    <ExternalLink className="size-4" />
+                    {dictionary.canvasOauthConnect}
+                  </Button>
+                </div>
+              ) : null}
               <div className="flex justify-end">
                 <Button
                   className="h-8 rounded-md px-2.5 text-xs font-black"
@@ -4113,11 +3692,15 @@ function AcademySettingsView({
               </div>
             </div>
 
+            {canvasTokenStatus?.manualTokenEnabled !== false ? (
             <form className="grid gap-3 rounded-lg border bg-card p-3" onSubmit={handleCanvasTokenSubmit}>
               <div>
                 <h4 className="text-xs font-black uppercase text-muted-foreground">
-                  {dictionary.canvasTokenChangeTitle}
+                  {dictionary.canvasManualTokenTitle}
                 </h4>
+                <p className="mt-1 text-xs font-semibold normal-case leading-5 text-muted-foreground">
+                  {dictionary.canvasManualTokenDescription}
+                </p>
               </div>
               <div className="grid gap-3 lg:grid-cols-[minmax(220px,1fr)_minmax(260px,1.2fr)]">
                 <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
@@ -4126,7 +3709,7 @@ function AcademySettingsView({
                     autoComplete="off"
                     inputMode="url"
                     onChange={(event) => updateCanvasTokenDraft('instanceUrl', event.target.value)}
-                    placeholder="https://canvas.sfu.ca"
+                    placeholder="https://sfu.instructure.com"
                     required
                     value={canvasTokenDraft.instanceUrl}
                   />
@@ -4190,6 +3773,11 @@ function AcademySettingsView({
                 </Button>
               </div>
             </form>
+            ) : (
+              <div className="rounded-lg border bg-muted/25 p-3 text-xs font-semibold text-muted-foreground">
+                {dictionary.canvasManualTokenDisabled}
+              </div>
+            )}
             </div>
           </details>
           <details className="group rounded-lg border bg-muted/20 p-3">
@@ -4535,41 +4123,6 @@ function AcademySettingsView({
               <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
             </summary>
             <div className="mt-3 grid gap-3">
-              <div className="grid gap-3 rounded-lg border bg-card p-3 sm:grid-cols-[minmax(0,1fr)_96px]">
-                <label className="grid gap-2 text-xs font-black uppercase text-muted-foreground">
-                  <span>{dictionary.academySessionDuration}</span>
-                  <input
-                    aria-label={dictionary.academySessionDuration}
-                    className="h-2 w-full cursor-pointer accent-primary"
-                    max={14}
-                    min={1}
-                    onChange={(event) => updateSettings({ sessionDurationDays: Number(event.target.value) })}
-                    step={1}
-                    type="range"
-                    value={settings.sessionDurationDays}
-                  />
-                </label>
-                <div className="grid place-items-center rounded-lg border bg-muted/30 px-3 py-2 text-lg font-black text-foreground">
-                  {settings.sessionDurationDays}d
-                </div>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {[1, 3, 7, 14].map((days) => (
-                  <Button
-                    className={cn(
-                      'h-8 rounded-md px-2.5 text-xs font-black',
-                      settings.sessionDurationDays === days &&
-                        'border-primary bg-primary text-primary-foreground hover:bg-primary/90',
-                    )}
-                    key={days}
-                    onClick={() => updateSettings({ sessionDurationDays: days })}
-                    type="button"
-                    variant="outline"
-                  >
-                    {days}d
-                  </Button>
-                ))}
-              </div>
               <div className="grid gap-2 rounded-lg border bg-card p-3">
                 <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
                   <span>{dictionary.academyAutoRefreshInterval}</span>
@@ -4615,9 +4168,6 @@ function AcademySettingsView({
                 <div className="text-xs font-bold text-muted-foreground">
                   {dictionary.academyRefocusRefreshThrottleHint}
                 </div>
-              </div>
-              <div className="rounded-lg border bg-muted/25 px-3 py-2 text-xs font-bold text-muted-foreground">
-                {dictionary.academySessionDurationHint}
               </div>
             </div>
           </details>
@@ -5045,68 +4595,6 @@ function AcademySettingsView({
   );
 }
 
-function AdminGeneralSettingsView({
-  onSettingsChange,
-  settings,
-}: {
-  onSettingsChange: (settings: AdminConsoleSettings) => void;
-  settings: AdminConsoleSettings;
-}) {
-  const { dictionary } = useLanguage();
-
-  const updateSettings = (patch: Partial<AdminConsoleSettings>) => {
-    onSettingsChange({
-      ...settings,
-      ...patch,
-    });
-  };
-
-  return (
-    <div className="grid min-h-0 gap-4 lg:h-full lg:overflow-y-auto lg:pr-1">
-      <Card className="rounded-xl bg-card shadow-none">
-        <CardHeader>
-          <CardTitle className="text-xl font-black">{dictionary.adminGeneralSettingsTitle}</CardTitle>
-          <p className="text-sm font-semibold text-muted-foreground">
-            {dictionary.adminGeneralSettingsSubtitle}
-          </p>
-        </CardHeader>
-        <CardContent className="grid gap-5">
-          <section className="grid gap-3 rounded-lg border bg-muted/20 p-3">
-            <div>
-              <h3 className="text-sm font-black text-foreground">
-                {dictionary.academyTopBarSettingsTitle}
-              </h3>
-              <p className="mt-1 text-xs font-semibold text-muted-foreground">
-                {dictionary.adminTopBarSettingsHint}
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {([false, true] as const).map((collapsed) => (
-                <Button
-                  className={cn(
-                    'h-9 rounded-lg px-3 text-xs font-black',
-                    settings.topBarDefaultCollapsed === collapsed
-                      ? 'bg-primary text-primary-foreground hover:bg-primary/90'
-                      : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
-                  )}
-                  key={String(collapsed)}
-                  onClick={() => updateSettings({ topBarDefaultCollapsed: collapsed })}
-                  type="button"
-                  variant="outline"
-                >
-                  {collapsed
-                    ? dictionary.academyTopBarCollapsed
-                    : dictionary.academyTopBarExpanded}
-                </Button>
-              ))}
-            </div>
-          </section>
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
 function getAcademyNationOptionByValue(nation: AcademyNation | null | undefined) {
   return academyNationOptions.find((option) => option.value === nation);
 }
@@ -5151,1097 +4639,6 @@ function NationFlagIcon({
   );
 }
 
-function WorkspaceSettingsView({
-  hasUnsavedChanges,
-  onRevertSettings,
-  onSaveSettings,
-  onSettingsChange,
-  settings,
-  settingsSaveError,
-  settingsSaveStatus,
-}: {
-  hasUnsavedChanges: boolean;
-  onRevertSettings: () => void;
-  onSaveSettings: (settings: WorkspaceSettings) => void | Promise<void>;
-  onSettingsChange: (settings: WorkspaceSettings) => void;
-  settings: WorkspaceSettings;
-  settingsSaveError?: string;
-  settingsSaveStatus?: 'idle' | 'saving' | 'saved' | 'failed';
-}) {
-  const { dictionary, setLanguage } = useLanguage();
-  const [showAccentVariants, setShowAccentVariants] = useState(false);
-  const [accentVariantPage, setAccentVariantPage] = useState(0);
-  const selectedFontFamilyOption = academyFontFamilyOptions.find((option) => option.value === settings.fontFamily) ??
-    academyFontFamilyOptions[0];
-  const selectedTimeZoneOption = workspaceTimeZoneOptions.find((option) => option.value === settings.timeZone) ??
-    workspaceTimeZoneOptions[0];
-  const previewDate = new Date();
-  const previewIsoDate = getIsoDateInTimeZone(previewDate, settings.timeZone);
-  const activeHolidayItems = settings.holidayNations.flatMap((nation) => {
-    const holiday = getHolidayForDateByNation(nation, previewIsoDate);
-    const nationOption = getAcademyNationOptionByValue(nation);
-
-    return holiday && nationOption
-      ? [{ holiday, nationOption }]
-      : [];
-  });
-  const updateSettings = (patch: Partial<WorkspaceSettings>) => {
-    onSettingsChange(normalizeWorkspaceSettings({
-      ...settings,
-      ...patch,
-    }));
-  };
-  const handleLanguageChange = (value: string) => {
-    const nextLanguage = value === 'en' ? 'en' : 'ko';
-
-    setLanguage(nextLanguage);
-    updateSettings({ language: nextLanguage });
-  };
-  const toggleHolidayNation = (nation: AcademyNation) => {
-    const nextNations = settings.holidayNations.includes(nation)
-      ? settings.holidayNations.filter((currentNation) => currentNation !== nation)
-      : [...settings.holidayNations, nation];
-
-    updateSettings({ holidayNations: nextNations });
-  };
-  const updateProgressThreshold = (
-    key: 'progressGreenAt' | 'progressYellowAt',
-    value: string,
-  ) => {
-    const parsedValue = Number.parseInt(value, 10);
-
-    updateSettings({
-      [key]: Number.isFinite(parsedValue) ? parsedValue : settings[key],
-    });
-  };
-  const accentVariantColors =
-    academyAccentColorVariantPages[accentVariantPage] ?? academyAccentColorVariantPages[0];
-  const isVariantAccentSelected = !academyAccentColors.includes(settings.accentColor);
-
-  return (
-    <div className="h-full min-h-0 overflow-hidden pb-3 pr-1">
-      <Card className="flex h-full min-h-0 flex-col rounded-xl bg-card shadow-none">
-        <CardHeader className="shrink-0">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="min-w-0">
-              <CardTitle className="text-xl font-black">{dictionary.workspaceSettingsTitle}</CardTitle>
-              <p className="mt-1 text-sm font-semibold text-muted-foreground">
-                {dictionary.workspaceSettingsSubtitle}
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              {hasUnsavedChanges ? (
-                <span className="rounded-md border border-amber-500/35 bg-amber-500/10 px-2 py-1 text-[10px] font-black uppercase text-amber-700 dark:text-amber-200">
-                  {dictionary.academySettingsUnsaved}
-                </span>
-              ) : settingsSaveStatus && settingsSaveStatus !== 'idle' ? (
-                <span className={cn(
-                  'rounded-md border px-2 py-1 text-[10px] font-black uppercase',
-                  settingsSaveStatus === 'failed'
-                    ? 'border-red-500/35 bg-red-500/10 text-red-700 dark:text-red-200'
-                    : settingsSaveStatus === 'saving'
-                      ? 'border-amber-500/35 bg-amber-500/10 text-amber-700 dark:text-amber-200'
-                      : 'border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200',
-                )}>
-                  {settingsSaveStatus === 'saving'
-                    ? dictionary.academySettingsSaving
-                    : settingsSaveStatus === 'failed'
-                      ? dictionary.academySettingsSaveFailed
-                      : dictionary.academySettingsSaved}
-                </span>
-              ) : null}
-              <Button
-                className="h-8 rounded-md px-2.5 text-xs font-black"
-                disabled={!hasUnsavedChanges || settingsSaveStatus === 'saving'}
-                onClick={onRevertSettings}
-                type="button"
-                variant="outline"
-              >
-                <RotateCcw className="mr-1.5 size-3.5" />
-                {dictionary.academySettingsRevert}
-              </Button>
-              <Button
-                className="h-8 rounded-md px-3 text-xs font-black"
-                disabled={!hasUnsavedChanges || settingsSaveStatus === 'saving'}
-                onClick={() => onSaveSettings(settings)}
-                type="button"
-              >
-                {settingsSaveStatus === 'saving' ? dictionary.academySettingsSaving : dictionary.academySettingsSave}
-              </Button>
-            </div>
-          </div>
-          {settingsSaveError ? (
-            <div className="mt-3 rounded-md border border-red-500/35 bg-red-500/10 px-3 py-2 text-xs font-bold text-red-700 dark:text-red-200">
-              {settingsSaveError}
-            </div>
-          ) : null}
-        </CardHeader>
-        <CardContent className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
-          <div className="grid gap-3">
-            <details className="group rounded-lg border bg-muted/20 p-3">
-              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-black text-foreground">
-                <span className="flex min-w-0 items-center gap-2">
-                  <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-card text-primary">
-                    <Palette className="size-4" />
-                  </span>
-                  <span className="truncate">{dictionary.academyThemeSettingsTitle}</span>
-                </span>
-                <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
-              </summary>
-              <div className="mt-3 grid gap-4">
-                <div className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
-                  <span>{dictionary.academyThemeMode}</span>
-                  <div className="flex flex-wrap gap-2">
-                    {(['dark', 'light'] as const).map((mode) => (
-                      <Button
-                        className={cn(
-                          'h-9 rounded-lg px-3 text-xs font-black',
-                          settings.themeTimerEnabled
-                            ? 'cursor-not-allowed opacity-45'
-                            : settings.themeMode === mode
-                              ? 'bg-primary text-primary-foreground hover:bg-primary/90'
-                              : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
-                        )}
-                        disabled={settings.themeTimerEnabled}
-                        key={mode}
-                        onClick={() => updateSettings({ themeMode: mode })}
-                        type="button"
-                        variant="outline"
-                      >
-                        {mode === 'dark' ? (
-                          <Moon className="mr-1.5 size-3.5" />
-                        ) : (
-                          <Sun className="mr-1.5 size-3.5" />
-                        )}
-                        {mode === 'dark'
-                          ? dictionary.academyThemeDark
-                          : dictionary.academyThemeLight}
-                      </Button>
-                    ))}
-                  </div>
-                </div>
-                <div className="grid gap-3 rounded-lg border bg-card p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="inline-flex items-center gap-1.5 text-xs font-black uppercase text-muted-foreground">
-                        <Clock3 className="size-3.5" />
-                        {dictionary.academyThemeTimerEnabled}
-                      </div>
-                      <div className="mt-1 text-xs font-bold text-muted-foreground">
-                        {dictionary.academyThemeTimerHint}
-                      </div>
-                    </div>
-                    <Button
-                      className={cn(
-                        'h-9 rounded-lg px-3 text-xs font-black',
-                        settings.themeTimerEnabled
-                          ? 'bg-primary text-primary-foreground hover:bg-primary/90'
-                          : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
-                      )}
-                      onClick={() => updateSettings({ themeTimerEnabled: !settings.themeTimerEnabled })}
-                      type="button"
-                      variant="outline"
-                    >
-                      {settings.themeTimerEnabled ? dictionary.settingEnabled : dictionary.settingDisabled}
-                    </Button>
-                  </div>
-                  {settings.themeTimerEnabled ? (
-                    <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_120px_120px]">
-                      <div className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
-                        <span>{dictionary.academyThemeTimerMode}</span>
-                        <div className="flex flex-wrap gap-2">
-                          {(['light', 'dark'] as const).map((mode) => (
-                            <Button
-                              className={cn(
-                                'h-9 rounded-lg px-3 text-xs font-black',
-                                settings.themeTimerMode === mode
-                                  ? 'bg-primary text-primary-foreground hover:bg-primary/90'
-                                  : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
-                              )}
-                              key={mode}
-                              onClick={() => updateSettings({ themeTimerMode: mode })}
-                              type="button"
-                              variant="outline"
-                            >
-                              {mode === 'dark' ? (
-                                <Moon className="mr-1.5 size-3.5" />
-                              ) : (
-                                <Sun className="mr-1.5 size-3.5" />
-                              )}
-                              {mode === 'dark'
-                                ? dictionary.academyThemeDark
-                                : dictionary.academyThemeLight}
-                            </Button>
-                          ))}
-                        </div>
-                      </div>
-                      <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
-                        <span>{dictionary.academyThemeTimerStart}</span>
-                        <input
-                          className="h-9 rounded-md border bg-background px-3 text-sm font-bold text-foreground"
-                          onChange={(event) => updateSettings({ themeTimerStart: event.target.value })}
-                          type="time"
-                          value={settings.themeTimerStart}
-                        />
-                      </label>
-                      <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
-                        <span>{dictionary.academyThemeTimerEnd}</span>
-                        <input
-                          className="h-9 rounded-md border bg-background px-3 text-sm font-bold text-foreground"
-                          onChange={(event) => updateSettings({ themeTimerEnd: event.target.value })}
-                          type="time"
-                          value={settings.themeTimerEnd}
-                        />
-                      </label>
-                    </div>
-                  ) : null}
-                </div>
-                <div className="grid gap-2 text-xs font-black uppercase text-muted-foreground">
-                  <span>{dictionary.academyThemeAccentColor}</span>
-                  <div className="grid grid-cols-6 gap-2 sm:flex sm:flex-wrap">
-                    {academyAccentColors.map((color) => (
-                      <button
-                        aria-label={color}
-                        className={cn(
-                          'grid size-9 place-items-center rounded-lg border bg-card transition hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50',
-                          settings.accentColor === color && 'border-primary bg-primary/10 ring-2 ring-primary/45',
-                        )}
-                        key={color}
-                        onClick={() => updateSettings({ accentColor: color })}
-                        title={color}
-                        type="button"
-                      >
-                        <span
-                          aria-hidden="true"
-                          className={cn('size-4 rounded-full border border-foreground/10', dotColorClasses[color])}
-                        />
-                      </button>
-                    ))}
-                    <button
-                      aria-expanded={showAccentVariants}
-                      className={cn(
-                        'inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border bg-card px-2.5 text-xs font-black normal-case text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50',
-                        (showAccentVariants || isVariantAccentSelected) && 'border-primary bg-primary/10 text-primary ring-2 ring-primary/35',
-                      )}
-                      onClick={() => setShowAccentVariants((currentValue) => !currentValue)}
-                      type="button"
-                    >
-                      <span
-                        aria-hidden="true"
-                        className="size-3 rounded-full"
-                        style={{
-                          background:
-                            'conic-gradient(from 90deg, #ef4444, #f97316, #facc15, #22c55e, #06b6d4, #3b82f6, #8b5cf6, #ec4899, #ef4444)',
-                        }}
-                      />
-                      {dictionary.manualLectureChipColorOther}
-                    </button>
-                  </div>
-                  {showAccentVariants ? (
-                    <div className="rounded-lg border bg-card p-2">
-                      <div className="mb-2 flex items-center justify-between gap-2">
-                        <Button
-                          aria-label={dictionary.manualLectureChipColorPrevious}
-                          className="size-8 rounded-md"
-                          disabled={accentVariantPage === 0}
-                          onClick={() => setAccentVariantPage((currentPage) => Math.max(0, currentPage - 1))}
-                          size="icon-sm"
-                          type="button"
-                          variant="outline"
-                        >
-                          <ChevronLeft className="size-4" />
-                        </Button>
-                        <span className="text-[11px] font-black text-muted-foreground">
-                          {accentVariantPage + 1}/{academyAccentColorVariantPages.length}
-                        </span>
-                        <Button
-                          aria-label={dictionary.manualLectureChipColorNext}
-                          className="size-8 rounded-md"
-                          disabled={accentVariantPage === academyAccentColorVariantPages.length - 1}
-                          onClick={() => setAccentVariantPage((currentPage) => Math.min(
-                            academyAccentColorVariantPages.length - 1,
-                            currentPage + 1,
-                          ))}
-                          size="icon-sm"
-                          type="button"
-                          variant="outline"
-                        >
-                          <ChevronRight className="size-4" />
-                        </Button>
-                      </div>
-                      <div className="grid grid-cols-6 gap-1.5 sm:grid-cols-12">
-                        {accentVariantColors.map((color) => (
-                          <button
-                            aria-label={color}
-                            className={cn(
-                              'grid size-8 place-items-center rounded-md transition hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50',
-                              settings.accentColor === color && 'bg-primary/12 ring-2 ring-primary/45',
-                            )}
-                            key={color}
-                            onClick={() => updateSettings({ accentColor: color })}
-                            title={color}
-                            type="button"
-                          >
-                            <span
-                              aria-hidden="true"
-                              className={cn('size-4 rounded-full border border-foreground/10', dotColorClasses[color])}
-                            />
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            </details>
-            <details className="group rounded-lg border bg-muted/20 p-3">
-              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-black text-foreground">
-                <span className="flex min-w-0 items-center gap-2">
-                  <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-card text-primary">
-                    <Languages className="size-4" />
-                  </span>
-                  <span className="truncate">{dictionary.workspaceLanguageSettingsTitle}</span>
-                </span>
-                <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
-              </summary>
-              <div className="mt-3 grid gap-3">
-                <div className="grid gap-3 rounded-lg border bg-card p-3 md:grid-cols-4">
-                  <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
-                    <span>{dictionary.academyLanguageSelection}</span>
-                    <Select onValueChange={handleLanguageChange} value={settings.language}>
-                      <SelectTrigger className="h-9 rounded-md bg-background">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {languageOptions.map((option) => (
-                          <SelectItem key={option.value} textValue={option.label} value={option.value}>
-                            <span className="inline-flex min-w-0 items-center gap-2">
-                              <NationFlagIcon alt={`${option.label} flag`} src={option.flagIconSrc} />
-                              <span className="truncate">{option.label}</span>
-                            </span>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </label>
-                  <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
-                    <span>{dictionary.workspaceTimeZone}</span>
-                    <Select
-                      onValueChange={(value) => updateSettings({ timeZone: value })}
-                      value={settings.timeZone}
-                    >
-                      <SelectTrigger className="h-9 rounded-md bg-background">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {workspaceTimeZoneOptions.map((option) => (
-                          <SelectItem key={option.value} textValue={option.label} value={option.value}>
-                            <span className="inline-flex min-w-0 items-center gap-2">
-                              <NationFlagIcon
-                                alt={`${option.label} time zone`}
-                                label="UTC"
-                                src={getAcademyNationOptionByValue(option.nation)?.flagIconSrc}
-                              />
-                              <span className="grid min-w-0">
-                                <span className="truncate">{option.label}</span>
-                                <span className="truncate text-[10px] font-bold text-muted-foreground">
-                                  {option.value}
-                                </span>
-                              </span>
-                            </span>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </label>
-                  <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
-                    <span>{dictionary.academyFontFamily}</span>
-                    <Select
-                      onValueChange={(value) => updateSettings({ fontFamily: value as AcademyFontFamily })}
-                      value={settings.fontFamily}
-                    >
-                      <SelectTrigger
-                        className="h-9 rounded-md bg-background"
-                        style={{ fontFamily: selectedFontFamilyOption.cssValue }}
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {academyFontFamilyOptions.map((option) => (
-                          <SelectItem
-                            key={option.value}
-                            style={{ fontFamily: option.cssValue }}
-                            value={option.value}
-                          >
-                            {option.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </label>
-                  <div className="grid gap-2 text-xs font-black uppercase text-muted-foreground">
-                    <span className="inline-flex items-center gap-1.5">
-                      <TypeIcon className="size-3.5" />
-                      {dictionary.academyFontSize}
-                    </span>
-                    <div className="grid grid-cols-[minmax(0,1fr)_64px] items-center gap-2">
-                      <input
-                        aria-label={dictionary.academyFontSize}
-                        className="h-2 w-full cursor-pointer accent-primary"
-                        max={130}
-                        min={80}
-                        onChange={(event) => updateSettings({ fontSizePercent: Number(event.target.value) })}
-                        step={5}
-                        type="range"
-                        value={settings.fontSizePercent}
-                      />
-                      <div className="grid h-9 place-items-center rounded-md border bg-muted/30 text-sm font-black text-foreground">
-                        {settings.fontSizePercent}%
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                <div className="grid gap-3 rounded-lg border bg-card p-3">
-                  <div className="grid gap-1">
-                    <div className="text-xs font-black uppercase text-muted-foreground">
-                      {dictionary.workspaceHolidayNations}
-                    </div>
-                    <div className="text-xs font-bold text-muted-foreground">
-                      {dictionary.workspaceHolidayNationsHint}
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {academyNationOptions.map((option) => {
-                      const isSelected = settings.holidayNations.includes(option.value);
-
-                      return (
-                        <Button
-                          className={cn(
-                            'h-9 rounded-lg px-3 text-xs font-black',
-                            isSelected
-                              ? 'bg-primary text-primary-foreground hover:bg-primary/90'
-                              : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
-                          )}
-                          key={option.value}
-                          onClick={() => toggleHolidayNation(option.value)}
-                          type="button"
-                          variant="outline"
-                        >
-                          <NationFlagIcon
-                            alt={`${option.shortLabel} flag`}
-                            className="mr-1.5"
-                            src={option.flagIconSrc}
-                          />
-                          {option.shortLabel}
-                        </Button>
-                      );
-                    })}
-                  </div>
-                  <div className="grid gap-2 rounded-lg border bg-muted/25 p-3 text-xs font-bold text-muted-foreground md:grid-cols-2">
-                    <div>
-                      <div className="font-black uppercase">{dictionary.workspaceUtcStoragePreview}</div>
-                      <div className="mt-1 text-foreground">{previewDate.toISOString()}</div>
-                    </div>
-                    <div>
-                      <div className="font-black uppercase">{dictionary.workspaceTimeZonePreview}</div>
-                      <div className="mt-1 text-foreground">
-                        {formatWorkspaceDateTime(previewDate, settings.timeZone, settings.language)}
-                      </div>
-                      <div className="mt-1 text-[11px] font-black uppercase text-muted-foreground">
-                        {previewIsoDate} · {selectedTimeZoneOption.label}
-                      </div>
-                      {activeHolidayItems.length > 0 ? (
-                        <div className="mt-2 flex flex-wrap gap-1.5">
-                          {activeHolidayItems.map(({ holiday, nationOption }) => (
-                            <span
-                              className="inline-flex max-w-full items-center gap-1.5 rounded-md border bg-background px-2 py-1 text-xs font-black text-foreground"
-                              key={`${nationOption.value}-${holiday.date}-${holiday.label}`}
-                            >
-                              <NationFlagIcon
-                                alt={`${nationOption.shortLabel} flag`}
-                                src={nationOption.flagIconSrc}
-                              />
-                              <span className="truncate">
-                                {nationOption.shortLabel} · {holiday.label}
-                              </span>
-                            </span>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </details>
-            <details className="group rounded-lg border bg-muted/20 p-3">
-              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-black text-foreground">
-                <span className="flex min-w-0 items-center gap-2">
-                  <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-card text-primary">
-                    <Activity className="size-4" />
-                  </span>
-                  <span className="truncate">{dictionary.calendarProgressSettingsTitle}</span>
-                </span>
-                <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
-              </summary>
-              <div className="mt-3 grid gap-3">
-                <div className="flex flex-wrap gap-2">
-                  {(['linear', 'circular'] as const).map((display) => (
-                    <Button
-                      className={cn(
-                        'h-9 rounded-lg px-3 text-xs font-black',
-                        settings.progressDisplay === display
-                          ? 'bg-primary text-primary-foreground hover:bg-primary/90'
-                          : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
-                      )}
-                      key={display}
-                      onClick={() => updateSettings({ progressDisplay: display })}
-                      type="button"
-                      variant="outline"
-                    >
-                      {display === 'linear'
-                        ? dictionary.calendarProgressLinear
-                        : dictionary.calendarProgressCircular}
-                    </Button>
-                  ))}
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
-                    <span>{dictionary.calendarProgressGreenAt}</span>
-                    <input
-                      className="h-10 rounded-lg border bg-background px-3 text-sm font-bold text-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-                      max={100}
-                      min={0}
-                      onChange={(event) => updateProgressThreshold('progressGreenAt', event.target.value)}
-                      type="number"
-                      value={settings.progressGreenAt}
-                    />
-                  </label>
-                  <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
-                    <span>{dictionary.calendarProgressYellowAt}</span>
-                    <input
-                      className="h-10 rounded-lg border bg-background px-3 text-sm font-bold text-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-                      max={settings.progressGreenAt}
-                      min={0}
-                      onChange={(event) => updateProgressThreshold('progressYellowAt', event.target.value)}
-                      type="number"
-                      value={settings.progressYellowAt}
-                    />
-                  </label>
-                </div>
-                <div className="flex min-w-0 items-center gap-3 rounded-lg border bg-card p-3">
-                  <CalendarProgressIndicator
-                    className="flex-1"
-                    display={settings.progressDisplay}
-                    label={dictionary.calendarProgressLabel}
-                    thresholds={{
-                      greenAt: settings.progressGreenAt,
-                      yellowAt: settings.progressYellowAt,
-                    }}
-                    value={0}
-                  />
-                  <span className="text-xs font-black text-muted-foreground">
-                    {dictionary.calendarProgressRedBelow}
-                  </span>
-                </div>
-              </div>
-            </details>
-            <details className="group rounded-lg border bg-muted/20 p-3">
-              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-black text-foreground">
-                <span className="flex min-w-0 items-center gap-2">
-                  <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-card text-primary">
-                    <Clock3 className="size-4" />
-                  </span>
-                  <span className="truncate">{dictionary.academySessionSettingsTitle}</span>
-                </span>
-                <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
-              </summary>
-              <div className="mt-3 grid gap-3">
-                <div className="grid gap-3 rounded-lg border bg-card p-3 sm:grid-cols-[minmax(0,1fr)_96px]">
-                  <label className="grid gap-2 text-xs font-black uppercase text-muted-foreground">
-                    <span>{dictionary.academySessionDuration}</span>
-                    <input
-                      aria-label={dictionary.academySessionDuration}
-                      className="h-2 w-full cursor-pointer accent-primary"
-                      max={14}
-                      min={1}
-                      onChange={(event) => updateSettings({ sessionDurationDays: Number(event.target.value) })}
-                      step={1}
-                      type="range"
-                      value={settings.sessionDurationDays}
-                    />
-                  </label>
-                  <div className="grid place-items-center rounded-lg border bg-muted/30 px-3 py-2 text-lg font-black text-foreground">
-                    {settings.sessionDurationDays}d
-                  </div>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {[1, 3, 7, 14].map((days) => (
-                    <Button
-                      className={cn(
-                        'h-8 rounded-md px-2.5 text-xs font-black',
-                        settings.sessionDurationDays === days &&
-                          'border-primary bg-primary text-primary-foreground hover:bg-primary/90',
-                      )}
-                      key={days}
-                      onClick={() => updateSettings({ sessionDurationDays: days })}
-                      type="button"
-                      variant="outline"
-                    >
-                      {days}d
-                    </Button>
-                  ))}
-                </div>
-                <div className="grid gap-2 rounded-lg border bg-card p-3">
-                  <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
-                    <span>{dictionary.academyAutoRefreshInterval}</span>
-                    <Select
-                      onValueChange={(value) => updateSettings({ autoRefreshIntervalMs: Number(value) })}
-                      value={String(settings.autoRefreshIntervalMs)}
-                    >
-                      <SelectTrigger className="h-9 rounded-md bg-background">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {academyAutoRefreshIntervalOptions.map((intervalMs) => (
-                          <SelectItem key={intervalMs} value={String(intervalMs)}>
-                            {formatAcademyAutoRefreshInterval(intervalMs)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </label>
-                  <div className="text-xs font-bold text-muted-foreground">
-                    {dictionary.academyAutoRefreshIntervalHint}
-                  </div>
-                </div>
-                <div className="grid gap-2 rounded-lg border bg-card p-3">
-                  <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
-                    <span>{dictionary.academyRefocusRefreshThrottle}</span>
-                    <Select
-                      onValueChange={(value) => updateSettings({ refocusRefreshThrottleMs: Number(value) })}
-                      value={String(settings.refocusRefreshThrottleMs)}
-                    >
-                      <SelectTrigger className="h-9 rounded-md bg-background">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {academyRefocusRefreshThrottleOptions.map((intervalMs) => (
-                          <SelectItem key={intervalMs} value={String(intervalMs)}>
-                            {formatAcademyAutoRefreshInterval(intervalMs)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </label>
-                  <div className="text-xs font-bold text-muted-foreground">
-                    {dictionary.academyRefocusRefreshThrottleHint}
-                  </div>
-                </div>
-                <div className="rounded-lg border bg-muted/25 px-3 py-2 text-xs font-bold text-muted-foreground">
-                  {dictionary.workspaceSessionDurationHint}
-                </div>
-              </div>
-            </details>
-            <details className="group rounded-lg border bg-muted/20 p-3">
-              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-black text-foreground">
-                <span className="flex min-w-0 items-center gap-2">
-                  <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-card text-primary">
-                    <LayoutPanelTop className="size-4" />
-                  </span>
-                  <span className="truncate">{dictionary.academyTopBarSettingsTitle}</span>
-                </span>
-                <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
-              </summary>
-              <div className="mt-3 grid gap-3">
-                <div className="rounded-lg border bg-muted/25 px-3 py-2 text-xs font-bold text-muted-foreground">
-                  {dictionary.workspaceTopBarSettingsHint}
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {([false, true] as const).map((collapsed) => (
-                    <Button
-                      className={cn(
-                        'h-9 rounded-lg px-3 text-xs font-black',
-                        settings.topBarDefaultCollapsed === collapsed
-                          ? 'bg-primary text-primary-foreground hover:bg-primary/90'
-                          : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
-                      )}
-                      key={String(collapsed)}
-                      onClick={() => updateSettings({ topBarDefaultCollapsed: collapsed })}
-                      type="button"
-                      variant="outline"
-                    >
-                      {collapsed
-                        ? dictionary.academyTopBarCollapsed
-                        : dictionary.academyTopBarExpanded}
-                    </Button>
-                  ))}
-                </div>
-              </div>
-            </details>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
-function WaitingApprovalPage({
-  isChecking,
-  onRefresh,
-  onSignOut,
-  session,
-}: {
-  isChecking: boolean;
-  onRefresh: () => void;
-  onSignOut: () => void;
-  session: AuthSession | null;
-}) {
-  return (
-    <main className="flex min-h-screen items-center justify-center p-4 sm:p-6">
-      <Card className="w-full max-w-[560px] rounded-xl bg-card shadow-none">
-        <CardHeader className="gap-4 p-6 sm:p-7">
-          <div className="flex items-center gap-3">
-            <div className="grid size-12 shrink-0 place-items-center rounded-lg bg-yellow-400/15 text-yellow-700 dark:text-yellow-200">
-              <Clock3 aria-hidden="true" className="size-6" />
-            </div>
-            <div className="min-w-0">
-              <CardTitle className="text-2xl font-black leading-tight">Waiting for approval</CardTitle>
-              <p className="mt-1 truncate text-sm font-semibold text-muted-foreground">
-                {session?.loginId ?? session?.email ?? 'Google account'}
-              </p>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="grid gap-4 px-6 pb-6 sm:px-7 sm:pb-7">
-          <div className="rounded-lg border bg-muted/35 p-3 text-sm font-semibold leading-relaxed text-muted-foreground">
-            Your account has been created in Admin Console. An admin needs to activate it before you can open Workspace,
-            Academy, Canvas, or API features.
-          </div>
-          <div className="flex flex-wrap justify-end gap-2">
-            <Button onClick={onSignOut} type="button" variant="outline">
-              <LogOut aria-hidden="true" className="size-4" />
-              Log out
-            </Button>
-            <Button disabled={isChecking} onClick={onRefresh} type="button">
-              <RefreshCw aria-hidden="true" className={cn('size-4', isChecking && 'animate-spin')} />
-              Refresh status
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-    </main>
-  );
-}
-
-function WaitingAssignmentPage({
-  isChecking,
-  onRefresh,
-  onSignOut,
-  session,
-}: {
-  isChecking: boolean;
-  onRefresh: () => void;
-  onSignOut: () => void;
-  session: AuthSession | null;
-}) {
-  return (
-    <main className="flex min-h-screen items-center justify-center bg-black p-4 text-white sm:p-6">
-      <section className="w-full max-w-[560px] rounded-xl border border-white/10 bg-white/[0.04] p-6 shadow-none sm:p-7">
-        <div className="flex items-center gap-3">
-          <div className="grid size-12 shrink-0 place-items-center rounded-lg bg-white/10 text-white">
-            <Clock3 aria-hidden="true" className="size-6" />
-          </div>
-          <div className="min-w-0">
-            <h1 className="text-2xl font-black leading-tight">Waiting to be assigned</h1>
-            <p className="mt-1 truncate text-sm font-semibold text-white/60">
-              {session?.loginId ?? session?.email ?? 'Google account'}
-            </p>
-          </div>
-        </div>
-        <p className="mt-5 rounded-lg border border-white/10 bg-black/30 p-3 text-sm font-semibold leading-relaxed text-white/65">
-          Your login is approved, but no menus have been assigned yet. An admin needs to add you to a group before
-          Workspace, Academy, or Admin Console menus appear.
-        </p>
-        <div className="mt-5 flex flex-wrap justify-end gap-2">
-          <Button className="border-white/20 text-white hover:bg-white/10" onClick={onSignOut} type="button" variant="outline">
-            <LogOut aria-hidden="true" className="size-4" />
-            Log out
-          </Button>
-          <Button disabled={isChecking} onClick={onRefresh} type="button">
-            <RefreshCw aria-hidden="true" className={cn('size-4', isChecking && 'animate-spin')} />
-            Refresh access
-          </Button>
-        </div>
-      </section>
-    </main>
-  );
-}
-
-function PreviewModeBanner({
-  isExiting,
-  onExit,
-  session,
-}: {
-  isExiting: boolean;
-  onExit: () => void;
-  session: AuthSession | null;
-}) {
-  const previewLabel = session?.loginId ?? session?.email ?? session?.displayName ?? 'user';
-  const adminLabel = session?.previewAdminDisplayName ?? session?.previewAdminEmail;
-  const bannerRef = useRef<HTMLDivElement | null>(null);
-  const dragRef = useRef<{
-    height: number;
-    originX: number;
-    originY: number;
-    pointerId: number;
-    startX: number;
-    startY: number;
-    width: number;
-  } | null>(null);
-  const pendingDragRef = useRef<{
-    height: number;
-    originX: number;
-    originY: number;
-    pointerId: number;
-    startX: number;
-    startY: number;
-    target: HTMLDivElement;
-    width: number;
-  } | null>(null);
-  const dragHoldTimerRef = useRef<number | null>(null);
-  const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
-
-  const clampPosition = (x: number, y: number, width?: number, height?: number) => {
-    if (typeof window === 'undefined') {
-      return { x, y };
-    }
-
-    const margin = 12;
-    const bannerWidth = width ?? bannerRef.current?.offsetWidth ?? 320;
-    const bannerHeight = height ?? bannerRef.current?.offsetHeight ?? 72;
-    const maxX = Math.max(margin, window.innerWidth - bannerWidth - margin);
-    const maxY = Math.max(margin, window.innerHeight - bannerHeight - margin);
-
-    return {
-      x: Math.min(Math.max(x, margin), maxX),
-      y: Math.min(Math.max(y, margin), maxY),
-    };
-  };
-
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-
-    window.requestAnimationFrame(() => {
-      const banner = bannerRef.current;
-
-      if (!banner) {
-        return;
-      }
-
-      const storedPosition = window.sessionStorage.getItem(previewBannerPositionStorageKey);
-      let parsedPosition: { x?: unknown; y?: unknown } | null = null;
-
-      try {
-        parsedPosition = storedPosition ? JSON.parse(storedPosition) as { x?: unknown; y?: unknown } : null;
-      } catch {
-        window.sessionStorage.removeItem(previewBannerPositionStorageKey);
-      }
-
-      const nextPosition = typeof parsedPosition?.x === 'number' && typeof parsedPosition?.y === 'number'
-        ? clampPosition(parsedPosition.x, parsedPosition.y, banner.offsetWidth, banner.offsetHeight)
-        : clampPosition(window.innerWidth - banner.offsetWidth - 12, 12, banner.offsetWidth, banner.offsetHeight);
-
-      setPosition(nextPosition);
-    });
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return undefined;
-    }
-
-    const handleResize = () => {
-      setPosition((currentPosition) => {
-        if (!currentPosition) {
-          return currentPosition;
-        }
-
-        const nextPosition = clampPosition(currentPosition.x, currentPosition.y);
-        window.sessionStorage.setItem(previewBannerPositionStorageKey, JSON.stringify(nextPosition));
-        return nextPosition;
-      });
-    };
-
-    window.addEventListener('resize', handleResize);
-
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
-
-  useEffect(() => () => {
-    if (dragHoldTimerRef.current !== null) {
-      window.clearTimeout(dragHoldTimerRef.current);
-      dragHoldTimerRef.current = null;
-    }
-  }, []);
-
-  const cancelPendingDrag = () => {
-    if (dragHoldTimerRef.current !== null) {
-      window.clearTimeout(dragHoldTimerRef.current);
-      dragHoldTimerRef.current = null;
-    }
-
-    pendingDragRef.current = null;
-  };
-
-  const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const banner = bannerRef.current;
-
-    if (!banner || event.button !== 0) {
-      return;
-    }
-
-    cancelPendingDrag();
-    dragRef.current = null;
-
-    const origin = position ?? clampPosition(
-      banner.getBoundingClientRect().left,
-      banner.getBoundingClientRect().top,
-      banner.offsetWidth,
-      banner.offsetHeight,
-    );
-
-    pendingDragRef.current = {
-      height: banner.offsetHeight,
-      originX: origin.x,
-      originY: origin.y,
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      target: event.currentTarget,
-      width: banner.offsetWidth,
-    };
-
-    dragHoldTimerRef.current = window.setTimeout(() => {
-      const pendingDrag = pendingDragRef.current;
-
-      if (!pendingDrag || pendingDrag.pointerId !== event.pointerId) {
-        return;
-      }
-
-      dragRef.current = pendingDrag;
-      pendingDragRef.current = null;
-      dragHoldTimerRef.current = null;
-
-      if (!pendingDrag.target.hasPointerCapture(pendingDrag.pointerId)) {
-        pendingDrag.target.setPointerCapture(pendingDrag.pointerId);
-      }
-
-      setPosition({ x: pendingDrag.originX, y: pendingDrag.originY });
-    }, previewBannerDragHoldMs);
-  };
-
-  const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current;
-
-    if (!drag) {
-      const pendingDrag = pendingDragRef.current;
-
-      if (
-        pendingDrag?.pointerId === event.pointerId &&
-        Math.hypot(event.clientX - pendingDrag.startX, event.clientY - pendingDrag.startY) > previewBannerDragCancelDistance
-      ) {
-        cancelPendingDrag();
-      }
-
-      return;
-    }
-
-    if (drag.pointerId !== event.pointerId) {
-      return;
-    }
-
-    setPosition(clampPosition(
-      drag.originX + event.clientX - drag.startX,
-      drag.originY + event.clientY - drag.startY,
-      drag.width,
-      drag.height,
-    ));
-  };
-
-  const handlePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current;
-
-    if (pendingDragRef.current?.pointerId === event.pointerId) {
-      cancelPendingDrag();
-    }
-
-    if (!drag || drag.pointerId !== event.pointerId) {
-      return;
-    }
-
-    dragRef.current = null;
-
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-
-    setPosition((currentPosition) => {
-      if (currentPosition && typeof window !== 'undefined') {
-        window.sessionStorage.setItem(previewBannerPositionStorageKey, JSON.stringify(currentPosition));
-      }
-
-      return currentPosition;
-    });
-  };
-
-  return (
-    <div
-      className="fixed right-3 top-3 z-[80] flex max-w-[calc(100vw-1.5rem)] items-center gap-2 rounded-xl border-2 border-primary bg-background/95 p-2 text-foreground shadow-xl shadow-primary/20 ring-2 ring-primary/20 backdrop-blur"
-      ref={bannerRef}
-      style={position ? { left: position.x, right: 'auto', top: position.y } : undefined}
-    >
-      <div
-        className="min-w-0 max-w-[260px] cursor-move select-none rounded-lg bg-primary/10 px-2 py-1"
-        onPointerCancel={handlePointerUp}
-        onPointerDown={handlePointerDown}
-        onPointerLeave={() => {
-          if (!dragRef.current) {
-            cancelPendingDrag();
-          }
-        }}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        role="button"
-        tabIndex={0}
-        title="Drag preview banner"
-      >
-        <div className="truncate text-xs font-black uppercase text-muted-foreground">Previewing</div>
-        <div className="truncate text-sm font-black">{previewLabel}</div>
-        {adminLabel ? (
-          <div className="truncate text-[11px] font-semibold text-muted-foreground">Admin: {adminLabel}</div>
-        ) : null}
-      </div>
-      <Button
-        className="border-primary/60 bg-primary text-primary-foreground shadow-sm hover:bg-primary/90"
-        disabled={isExiting}
-        onClick={onExit}
-        onPointerDown={(event) => event.stopPropagation()}
-        size="sm"
-        type="button"
-      >
-        {isExiting ? (
-          <RefreshCw aria-hidden="true" className="size-4 animate-spin" />
-        ) : (
-          <EyeOff aria-hidden="true" className="size-4" />
-        )}
-        Exit preview
-      </Button>
-    </div>
-  );
-}
-
 function WorkspaceViewFallback() {
   return (
     <div
@@ -6258,30 +4655,55 @@ function WorkspaceViewFallback() {
   );
 }
 
+function AcademyBottomNavigationButton({
+  active,
+  icon,
+  isPhone,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  icon: string;
+  isPhone: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      aria-label={label}
+      className={cn(
+        'mx-auto min-w-0 rounded-full bg-transparent p-0 transition-colors hover:bg-transparent',
+        isPhone ? 'size-11' : 'size-10',
+        active
+          ? 'text-primary hover:text-primary'
+          : 'text-muted-foreground hover:text-foreground',
+      )}
+      onClick={onClick}
+      title={label}
+      type="button"
+      variant="ghost"
+    >
+      <WorkspaceIcon name={icon} size={isPhone ? 22 : 20} />
+    </Button>
+  );
+}
+
 function App() {
-  const { activeData, activeMode, setActiveModeId, visibleModes } = useWorkspaceMode();
+  const { activeData, activeMode } = useWorkspaceMode();
   const { dictionary, language, setLanguage, translateItemLabel } = useLanguage();
   const [navigation, setNavigation] = useState<WorkspaceNavigation>({
     modeId: '',
     sidebarItemId: 'dashboard',
     view: 'month',
   });
-  const [authStatus, setAuthStatus] = useState<'checking' | 'authenticated' | 'pending' | 'unassigned' | 'unauthenticated'>('checking');
+  const [authStatus, setAuthStatus] = useState<'checking' | 'authenticated' | 'unauthenticated'>('checking');
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
-  const [isAuthSessionRefreshing, setIsAuthSessionRefreshing] = useState(false);
-  const [isExitingPreview, setIsExitingPreview] = useState(false);
-  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isWorkspaceSidebarCollapsed, setIsWorkspaceSidebarCollapsed] = useState(false);
-  const [isAcademyTopBarCollapsed, setIsAcademyTopBarCollapsed] = useState(false);
-  const [isWorkspaceTopBarCollapsed, setIsWorkspaceTopBarCollapsed] = useState(
-    () => getStoredWorkspaceSettings().topBarDefaultCollapsed,
-  );
+  const [academyTopBarCollapseOverride, setAcademyTopBarCollapseOverride] = useState<{
+    defaultValue: boolean;
+    value: boolean;
+  } | null>(null);
   const [academySettingsFocusSection, setAcademySettingsFocusSection] = useState<'profile' | null>(null);
-  const [isAdminTopBarCollapsed, setIsAdminTopBarCollapsed] = useState(
-    () => getStoredAdminConsoleSettings().topBarDefaultCollapsed,
-  );
-  const [theme, setTheme] = useState<AppTheme>(getInitialTheme);
-  const [selectedDriveItem, setSelectedDriveItem] = useState<GoogleDriveFile | null>(null);
   const [calendarMonth, setCalendarMonth] = useState(() => getInitialCalendarMonth(activeData));
   const [selectedCalendarDayIso, setSelectedCalendarDayIso] = useState(getTodayIsoDate);
   const [isCalendarExpanded, setIsCalendarExpanded] = useState(false);
@@ -6289,11 +4711,6 @@ function App() {
   const [academyCalendarSettings, setAcademyCalendarSettings] = useState(getStoredAcademyCalendarSettings);
   const [savedAcademyCalendarSettings, setSavedAcademyCalendarSettings] = useState(getStoredAcademyCalendarSettings);
   const [academyThemeClock, setAcademyThemeClock] = useState(() => Date.now());
-  const [workspaceSettings, setWorkspaceSettings] = useState(getStoredWorkspaceSettings);
-  const [savedWorkspaceSettings, setSavedWorkspaceSettings] = useState(getStoredWorkspaceSettings);
-  const [workspacePreferencesSaveStatus, setWorkspacePreferencesSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle');
-  const [workspacePreferencesSaveError, setWorkspacePreferencesSaveError] = useState('');
-  const [adminConsoleSettings, setAdminConsoleSettings] = useState(getStoredAdminConsoleSettings);
   const [academyResponsiveState, setAcademyResponsiveState] = useState(() => getAcademyResponsiveState());
   const [hiddenCalendarCourseIds, setHiddenCalendarCourseIds] = useState(getStoredHiddenCalendarCourseIds);
   const [academyPreferencesSaveStatus, setAcademyPreferencesSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle');
@@ -6303,6 +4720,8 @@ function App() {
   const [isCanvasTokenExpiryDialogOpen, setIsCanvasTokenExpiryDialogOpen] = useState(false);
   const [isCanvasTokenExpirySaving, setIsCanvasTokenExpirySaving] = useState(false);
   const [canvasTokenExpiryError, setCanvasTokenExpiryError] = useState('');
+  const [selectedCourseOverviewRowId, setSelectedCourseOverviewRowId] = useState<string | null>(null);
+  const [selectedCourseOverviewResourceUrl, setSelectedCourseOverviewResourceUrl] = useState<string | null>(null);
   const [canvasTokenExpiryDraft, setCanvasTokenExpiryDraft] = useState({
     accessToken: '',
     expiresAt: '',
@@ -6311,54 +4730,38 @@ function App() {
   const [selectedCalendarTodoDetailsId, setSelectedCalendarTodoDetailsId] = useState<string | null>(null);
   const [canvasCalendarPages, setCanvasCalendarPages] = useState<Record<string, CanvasCalendarPage>>({});
   const [authRedirectMessage] = useState(getInitialAuthRedirectMessage);
+  const [canvasRedirectFeedback, setCanvasRedirectFeedback] = useState(getInitialCanvasRedirectFeedback);
   const [academyPreferenceVersion, setAcademyPreferenceVersion] = useState(0);
   const [hasLoadedAcademyPreferences, setHasLoadedAcademyPreferences] = useState(false);
   const [academyPreferencesLoadStatus, setAcademyPreferencesLoadStatus] =
     useState<CanvasCalendarLoadStatus>('idle');
-  const [selectedCourseOverviewRowId, setSelectedCourseOverviewRowId] = useState<string | null>(null);
-  const [selectedCourseOverviewResourceUrl, setSelectedCourseOverviewResourceUrl] = useState<string | null>(null);
   const calendarTodoTapTimeoutRef = useRef<{ itemId: string; timeoutId: number } | null>(null);
   const isApplyingHistoryRef = useRef(false);
   const hasAppliedUrlNavigationRef = useRef(false);
   const academyPreferencesSaveSequenceRef = useRef(0);
   const academyPreferencesLoadSequenceRef = useRef(0);
-  const workspacePreferencesSaveSequenceRef = useRef(0);
-  const workspacePreferencesLoadSequenceRef = useRef(0);
   const isAcademyPreferencesSavingRef = useRef(false);
-  const isWorkspacePreferencesSavingRef = useRef(false);
   const academyCalendarSettingsRef = useRef(academyCalendarSettings);
   const savedAcademyCalendarSettingsRef = useRef(savedAcademyCalendarSettings);
-  const workspaceSettingsRef = useRef(workspaceSettings);
-  const savedWorkspaceSettingsRef = useRef(savedWorkspaceSettings);
   const academySettingsProtectedUntilRef = useRef(0);
   const hasLoadedRemoteAcademySettingsRef = useRef(false);
   const hasUnsavedAcademySettingsRef = useRef(false);
-  const hasUnsavedWorkspaceSettingsRef = useRef(false);
   const authSessionKeyRef = useRef<string | null>(null);
   const ignoredExpiredCanvasTokenOwnerRef = useRef<string | null>(null);
   const canvasTokenStatusLoadSequenceRef = useRef(0);
+  const hasHandledCanvasRedirectRef = useRef(false);
   const pendingSettingsNavigationRef = useRef<(() => void) | null>(null);
   const academyResumeRefreshRef = useRef({
     isRunning: false,
     lastStartedAt: 0,
   });
-  const accessKey = (authSession?.access ?? []).join('\u001f');
+const accessKey = (authSession?.access ?? []).join('\u001f');
   const academyAutoRefreshIntervalMs = academyCalendarSettings.autoRefreshIntervalMs;
   const academyRefocusRefreshThrottleMs = academyCalendarSettings.refocusRefreshThrottleMs;
   const accessSet = useMemo(
     () => createAccessSet(accessKey ? accessKey.split('\u001f') : []),
     [accessKey],
   );
-  const accessibleModes = useMemo(
-    () => getAccessibleModes(visibleModes, accessSet),
-    [accessSet, visibleModes],
-  );
-  const accessibleModeIds = useMemo(
-    () => accessibleModes.map((mode) => mode.id),
-    [accessibleModes],
-  );
-  const isAcademyOnlySession = authSession?.provider === 'academy' ||
-    (authStatus === 'authenticated' && accessibleModeIds.length === 1 && accessibleModeIds[0] === 'academy');
   const {
     isCalendarAutoExpanded,
     isDayTodoDialogMode,
@@ -6381,36 +4784,20 @@ function App() {
     : firstAccessibleSidebarItem?.id ?? requestedSidebarItem;
   const activeView = navigation.modeId === activeMode.id ? navigation.view : 'month';
   const currentView = activeMode.views.includes(activeView) ? activeView : (activeMode.views[0] ?? 'month');
-  const isDriveView = activeSidebarItem === 'drive';
-  const isEmailView = activeSidebarItem === 'email';
-  const isOutlookView = activeSidebarItem === 'outlook';
-  const isChatView = activeSidebarItem === 'chat';
-  const isCanvasInboxView = activeMode.id === 'academy' && activeSidebarItem === 'inbox';
-  const isAcademyPeopleView = activeMode.id === 'academy' && activeSidebarItem === 'people';
-  const isAcademyGradesView = activeMode.id === 'academy' && activeSidebarItem === 'grades';
-  const isCommunicationView = isEmailView || isOutlookView || isChatView;
-  const isCoursesView = activeMode.id === 'academy' && activeSidebarItem === 'courses';
-  const isAcademySettingsView = activeMode.id === 'academy' && activeSidebarItem === 'settings';
-  const isWorkspaceManagementView = activeMode.id === 'project' &&
-    workspaceManagementSidebarItems.has(activeSidebarItem);
-  const isWorkspaceSettingsView = activeMode.id === 'project' && activeSidebarItem === 'settings';
-  const isAdminUsersView = activeMode.id === 'admin-console' && activeSidebarItem === 'users';
-  const isAdminGroupsView = activeMode.id === 'admin-console' && activeSidebarItem === 'groups';
-  const isAdminGeneralSettingsView = activeMode.id === 'admin-console' && activeSidebarItem === 'settings-general';
-  const isSettingsMainView = isAcademySettingsView || isWorkspaceSettingsView || isAdminGeneralSettingsView;
+  const isAcademySettingsView = activeSidebarItem === 'settings';
+  const isAdminUsersView = activeSidebarItem === 'admin-users';
+  const isCoursesView = activeSidebarItem === 'courses';
+  const isGradesView = activeSidebarItem === 'grades';
+  const isInboxView = activeSidebarItem === 'inbox';
+  const isPeopleView = activeSidebarItem === 'people';
   const isMainOnlyView =
-    isCommunicationView ||
-    isCoursesView ||
-    isAcademyGradesView ||
-    isCanvasInboxView ||
-    isAcademyPeopleView ||
     isAcademySettingsView ||
-    isWorkspaceSettingsView ||
-    isWorkspaceManagementView ||
     isAdminUsersView ||
-    isAdminGroupsView ||
-    isAdminGeneralSettingsView;
-  const isDashboardWorkspaceView = !isDriveView && !isMainOnlyView;
+    isCoursesView ||
+    isGradesView ||
+    isInboxView ||
+    isPeopleView;
+  const isDashboardWorkspaceView = !isMainOnlyView;
   const shouldAutoExpandCalendar = isCalendarAutoExpanded && isPhoneAcademyMode;
   const effectiveCalendarExpanded = isCalendarExpanded || shouldAutoExpandCalendar;
   const canvasCalendarMonthKey = getCalendarMonthKey(calendarMonth);
@@ -6419,29 +4806,29 @@ function App() {
   const isCalendarDataView = !isMainOnlyView && (
     currentView === 'month' ||
     currentView === 'agenda' ||
-    currentView === 'board' ||
-    currentView === 'timeline'
+    currentView === 'board'
   );
   const selectedAcademySemester = normalizeSemesterName(academyCalendarSettings.selectedSemester);
   const shouldFetchLiveCanvasCalendar = selectedAcademySemester !== defaultCanvasTermSemester;
   const shouldLoadCanvasCalendar =
     authStatus === 'authenticated' &&
-    activeMode.id === 'academy' &&
     isCalendarDataView &&
     shouldFetchLiveCanvasCalendar;
   const canvasCalendarPage = canvasCalendarPages[canvasCalendarMonthKey];
+  const isCanvasCalendarPageLoaded = canvasCalendarPage?.status === 'loaded';
   const visibleCanvasCalendarItems = getCanvasCalendarItemsForMonthKeys(
     canvasCalendarPages,
     visibleCalendarMonthKeys,
   );
+  const hasIncompleteVisibleCanvasCalendar = visibleCalendarMonthKeys.some(
+    (monthKey) => canvasCalendarPages[monthKey]?.isComplete === false,
+  );
   const canvasCalendarLoadStatus: CanvasCalendarLoadStatus =
     canvasCalendarPage?.status ?? (shouldLoadCanvasCalendar ? 'loading' : 'idle');
   const isWaitingForAcademyPreferences =
-    activeMode.id === 'academy' &&
     !hasLoadedAcademyPreferences &&
     academyPreferencesLoadStatus !== 'failed';
   const hasFailedAcademyPreferencesLoad =
-    activeMode.id === 'academy' &&
     !hasLoadedAcademyPreferences &&
     academyPreferencesLoadStatus === 'failed';
   const effectiveCanvasCalendarLoadStatus: CanvasCalendarLoadStatus =
@@ -6450,12 +4837,12 @@ function App() {
       : hasFailedAcademyPreferencesLoad
         ? 'failed'
         : canvasCalendarLoadStatus;
-  const canvasCalendarEmptyMessage = activeMode.id === 'academy' && effectiveCanvasCalendarLoadStatus === 'failed'
+  const canvasCalendarEmptyMessage = effectiveCanvasCalendarLoadStatus === 'failed'
     ? hasFailedAcademyPreferencesLoad
       ? dictionary.academyPreferencesUnavailable
       : canvasCalendarPage?.errorMessage ?? dictionary.canvasCalendarUnavailable
     : undefined;
-  const canRenderAcademyCalendarSourceItems = activeMode.id === 'academy' && hasLoadedAcademyPreferences;
+  const canRenderAcademyCalendarSourceItems = hasLoadedAcademyPreferences;
   const allCalendarSourceItems = canRenderAcademyCalendarSourceItems
     ? getCalendarSourceItems(visibleCanvasCalendarItems, academyPreferenceVersion, academyCalendarSettings)
         .filter((item) => (
@@ -6473,40 +4860,34 @@ function App() {
       )
     : [];
   const activeCalendarCourseOptionIds = new Set(calendarCourseFilterOptions.map((option) => option.id));
-  const calendarSourceItems = activeMode.id === 'academy'
-    ? filterCalendarSourceItemsByCourse(
-        allCalendarSourceItems,
-        hiddenCalendarCourseIds,
-        dictionary.selectedDayTodoNoCourse,
-      )
-    : [];
+  const calendarSourceItems = filterCalendarSourceItemsByCourse(
+    allCalendarSourceItems,
+    hiddenCalendarCourseIds,
+    dictionary.selectedDayTodoNoCourse,
+  );
   const selectedDaySourceItems = calendarSourceItems
     .filter((item) => getLocalIsoDate(getCalendarSourceItemDate(item)) === selectedCalendarDayIso)
     .sort((firstItem, secondItem) => (
       new Date(getCalendarSourceItemDate(firstItem) ?? '').getTime() -
       new Date(getCalendarSourceItemDate(secondItem) ?? '').getTime()
     ));
-  const inactiveSelectedDayCourseOptions = activeMode.id === 'academy'
-    ? Array.from(
-        selectedDaySourceItems.reduce<Map<string, CalendarCourseFilterOption>>((options, item) => {
-          const option = getCalendarCourseFilterOption(item, dictionary.selectedDayTodoNoCourse);
+  const inactiveSelectedDayCourseOptions = Array.from(
+    selectedDaySourceItems.reduce<Map<string, CalendarCourseFilterOption>>((options, item) => {
+      const option = getCalendarCourseFilterOption(item, dictionary.selectedDayTodoNoCourse);
 
-          if (!activeCalendarCourseOptionIds.has(option.id) && !options.has(option.id)) {
-            options.set(option.id, {
-              ...option,
-              canAdd: false,
-              checked: true,
-            });
-          }
+      if (!activeCalendarCourseOptionIds.has(option.id) && !options.has(option.id)) {
+        options.set(option.id, {
+          ...option,
+          canAdd: false,
+          checked: true,
+        });
+      }
 
-          return options;
-        }, new Map()).values(),
-      )
-    : [];
+      return options;
+    }, new Map()).values(),
+  );
   const calendarBoardCourseOptions = [...calendarCourseFilterOptions, ...inactiveSelectedDayCourseOptions];
-  const calendarBoardColumns = activeMode.id === 'academy'
-    ? getCalendarBoardColumns(calendarBoardCourseOptions)
-    : undefined;
+  const calendarBoardColumns = getCalendarBoardColumns(calendarBoardCourseOptions);
   const selectedDayItemsByCourse = selectedDaySourceItems.reduce<Record<string, SelectedDayCourseGroup>>((groups, item) => {
     const courseDisplay = getActiveAwareCourseDisplay(
       item,
@@ -6523,73 +4904,53 @@ function App() {
       },
     };
   }, {});
-  const selectedDayGroups: SelectedDayCourseGroup[] = activeMode.id === 'academy'
-    ? [
-        ...calendarCourseFilterOptions
-          .filter((option) => option.checked)
-          .map((option) => ({
-            color: option.color,
-            canAdd: option.canAdd !== false,
-            items: selectedDayItemsByCourse[option.label]?.items ?? [],
-            label: option.label,
-          })),
-        ...Object.values(selectedDayItemsByCourse)
-          .filter((group) => !calendarCourseFilterOptions.some((option) => option.label === group.label))
-          .map((group) => ({ ...group, canAdd: false })),
-      ]
-    : Object.values(selectedDayItemsByCourse);
+  const selectedDayGroups: SelectedDayCourseGroup[] = [
+    ...calendarCourseFilterOptions
+      .filter((option) => option.checked)
+      .map((option) => ({
+        color: option.color,
+        canAdd: option.canAdd !== false,
+        items: selectedDayItemsByCourse[option.label]?.items ?? [],
+        label: option.label,
+      })),
+    ...Object.values(selectedDayItemsByCourse)
+      .filter((group) => !calendarCourseFilterOptions.some((option) => option.label === group.label))
+      .map((group) => ({ ...group, canAdd: false })),
+  ];
   const selectedDayHeading = formatSelectedDayHeading(selectedCalendarDayIso, language);
-  const selectedDayHolidayItems = activeMode.id === 'project'
-    ? getHolidayItemsForDateByNations(workspaceSettings.holidayNations, selectedCalendarDayIso)
-    : getHolidayItemsForDateByNations([academyCalendarSettings.nation], selectedCalendarDayIso);
+  const selectedDayHolidayItems = getHolidayItemsForDateByNations(
+    [academyCalendarSettings.nation],
+    selectedCalendarDayIso,
+  );
   const selectedDayRelativeBadge = formatRelativeDayBadge(selectedCalendarDayIso);
-  const activeCalendarTodayIso = activeMode.id === 'project'
-    ? getTodayIsoDateForTimeZone(workspaceSettings.timeZone)
-    : getTodayIsoDate();
+  const activeCalendarTodayIso = getTodayIsoDate();
   const isSelectedCalendarDayToday = selectedCalendarDayIso === activeCalendarTodayIso;
-  const calendarData = activeMode.id === 'academy'
-    ? createAcademyCalendarData(
-        activeData,
-        calendarMonth,
-        calendarSourceItems,
-        effectiveCanvasCalendarLoadStatus,
-        selectedCalendarDayIso,
-        dictionary.selectedDayTodoNoCourse,
-        activeCalendarCourseOptionIds,
-      )
-    : activeMode.id === 'project'
-      ? createEmptyWorkspaceCalendarData(activeData, calendarMonth, workspaceSettings)
-      : activeData;
+  const calendarData = createAcademyCalendarData(
+    activeData,
+    calendarMonth,
+    calendarSourceItems,
+    effectiveCanvasCalendarLoadStatus,
+    selectedCalendarDayIso,
+    dictionary.selectedDayTodoNoCourse,
+    activeCalendarCourseOptionIds,
+  );
   const selectedDayProgressInfo = getDayTodoProgress(selectedDaySourceItems);
   const selectedCalendarTodoDetailsItem = selectedCalendarTodoDetailsId
     ? calendarSourceItems.find((item) => item.id === selectedCalendarTodoDetailsId) ?? null
     : null;
   const selectedDayProgress = selectedDayProgressInfo.percent;
-  const activeCalendarProgressDisplay = activeMode.id === 'project'
-    ? workspaceSettings.progressDisplay
-    : academyCalendarSettings.progressDisplay;
-  const calendarProgressThresholds: CalendarProgressThresholds = activeMode.id === 'project'
-    ? {
-        greenAt: workspaceSettings.progressGreenAt,
-        yellowAt: workspaceSettings.progressYellowAt,
-      }
-    : {
-        greenAt: academyCalendarSettings.progressGreenAt,
-        yellowAt: academyCalendarSettings.progressYellowAt,
-      };
-  const isAcademyMode = activeMode.id === 'academy';
-  const isWorkspaceMode = activeMode.id === 'project';
+  const calendarProgressThresholds: CalendarProgressThresholds = {
+    greenAt: academyCalendarSettings.progressGreenAt,
+    yellowAt: academyCalendarSettings.progressYellowAt,
+  };
   const shouldForceDashboardCalendarFill =
-    isAcademyMode &&
     isDashboardWorkspaceView &&
     effectiveCalendarExpanded &&
     !isPhoneAcademyMode;
   const canShowAcademyDashboardSideTodo =
-    isAcademyMode &&
     isDashboardWorkspaceView &&
     isAcademyEffectiveTwoExtraLarge;
   const shouldUseCompactDashboardMonth =
-    isAcademyMode &&
     isDashboardWorkspaceView &&
     !isPhoneAcademyMode &&
     !effectiveCalendarExpanded &&
@@ -6598,52 +4959,32 @@ function App() {
     isAcademyEffectiveLarge ||
     shouldForceDashboardCalendarFill ||
     shouldUseCompactDashboardMonth;
-  const shouldUseWorkspaceCalendarFullHeightLayout =
-    isWorkspaceMode &&
-    isDashboardWorkspaceView;
   const shouldHideCompactAcademyTopBar =
-    isAcademyMode &&
     isDashboardWorkspaceView &&
     !isPhoneAcademyMode &&
     !canShowAcademyDashboardSideTodo;
-  const shouldShowAcademyBottomNav = isAcademyMode && !isAcademyEffectiveLarge;
-  const mainGridColumnsClass = isAcademyMode
-    ? isMainOnlyView
-      ? isWorkspaceSidebarCollapsed
-        ? 'grid-cols-[78px_minmax(0,1fr)]'
-        : 'grid-cols-[220px_minmax(0,1fr)]'
-      : isWorkspaceSidebarCollapsed
-        ? canShowAcademyDashboardSideTodo
-          ? 'grid-cols-[82px_minmax(0,1fr)_340px]'
-          : 'grid-cols-[78px_minmax(0,1fr)]'
-        : canShowAcademyDashboardSideTodo
-          ? 'grid-cols-[230px_minmax(0,1fr)_340px]'
-          : 'grid-cols-[220px_minmax(0,1fr)]'
-    : isMainOnlyView
-      ? isWorkspaceSidebarCollapsed
-        ? 'grid-cols-[72px_minmax(0,1fr)] xl:grid-cols-[78px_minmax(0,1fr)]'
-        : 'grid-cols-[200px_minmax(0,1fr)] xl:grid-cols-[220px_minmax(0,1fr)] 2xl:grid-cols-[230px_minmax(0,1fr)]'
-      : isWorkspaceSidebarCollapsed
-        ? 'grid-cols-[72px_minmax(0,1fr)] xl:grid-cols-[78px_minmax(0,1fr)] 2xl:grid-cols-[82px_minmax(0,1fr)_340px]'
-        : 'grid-cols-[200px_minmax(0,1fr)] xl:grid-cols-[220px_minmax(0,1fr)] 2xl:grid-cols-[230px_minmax(0,1fr)_340px]';
+  const shouldShowAcademyBottomNav = !isAcademyEffectiveLarge;
+  const mainGridColumnsClass = isMainOnlyView
+    ? isWorkspaceSidebarCollapsed
+      ? 'grid-cols-[78px_minmax(0,1fr)]'
+      : 'grid-cols-[220px_minmax(0,1fr)]'
+    : isWorkspaceSidebarCollapsed
+      ? canShowAcademyDashboardSideTodo
+        ? 'grid-cols-[82px_minmax(0,1fr)_340px]'
+        : 'grid-cols-[78px_minmax(0,1fr)]'
+      : canShowAcademyDashboardSideTodo
+        ? 'grid-cols-[230px_minmax(0,1fr)_340px]'
+        : 'grid-cols-[220px_minmax(0,1fr)]';
   const effectiveTopBarCollapsed =
-    (activeMode.id === 'academy' && isAcademyTopBarCollapsed) ||
-    (activeMode.id === 'project' && isWorkspaceTopBarCollapsed) ||
-    (activeMode.id === 'admin-console' && isAdminTopBarCollapsed);
+    academyTopBarCollapseOverride?.defaultValue === academyCalendarSettings.topBarDefaultCollapsed
+      ? academyTopBarCollapseOverride.value
+      : academyCalendarSettings.topBarDefaultCollapsed;
   const hasUnsavedAcademySettings = !areAcademyCalendarSettingsEqual(
     academyCalendarSettings,
     savedAcademyCalendarSettings,
   );
-  const hasUnsavedWorkspaceSettings = !areWorkspaceSettingsEqual(
-    workspaceSettings,
-    savedWorkspaceSettings,
-  );
   const academyEffectiveTheme = getAcademyEffectiveTheme(
     academyCalendarSettings,
-    new Date(academyThemeClock),
-  );
-  const workspaceEffectiveTheme = getWorkspaceEffectiveTheme(
-    workspaceSettings,
     new Date(academyThemeClock),
   );
 
@@ -6656,31 +4997,17 @@ function App() {
   }, [savedAcademyCalendarSettings]);
 
   useEffect(() => {
-    workspaceSettingsRef.current = workspaceSettings;
-  }, [workspaceSettings]);
-
-  useEffect(() => {
-    savedWorkspaceSettingsRef.current = savedWorkspaceSettings;
-  }, [savedWorkspaceSettings]);
-
-  useEffect(() => {
     hasUnsavedAcademySettingsRef.current = hasUnsavedAcademySettings;
   }, [hasUnsavedAcademySettings]);
 
   useEffect(() => {
-    hasUnsavedWorkspaceSettingsRef.current = hasUnsavedWorkspaceSettings;
-  }, [hasUnsavedWorkspaceSettings]);
-
-  useEffect(() => {
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (!hasUnsavedAcademySettingsRef.current && !hasUnsavedWorkspaceSettingsRef.current) {
+      if (!hasUnsavedAcademySettingsRef.current) {
         return;
       }
 
       event.preventDefault();
-      event.returnValue = hasUnsavedWorkspaceSettingsRef.current
-        ? dictionary.workspaceSettingsBeforeUnload
-        : dictionary.academySettingsBeforeUnload;
+      event.returnValue = dictionary.academySettingsBeforeUnload;
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
@@ -6688,14 +5015,10 @@ function App() {
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
-  }, [dictionary.academySettingsBeforeUnload, dictionary.workspaceSettingsBeforeUnload]);
+  }, [dictionary.academySettingsBeforeUnload]);
 
   const requestSettingsNavigation = (action: () => void) => {
-    const hasUnsavedActiveSettings =
-      (isAcademySettingsView && hasUnsavedAcademySettingsRef.current) ||
-      (isWorkspaceSettingsView && hasUnsavedWorkspaceSettingsRef.current);
-
-    if (hasUnsavedActiveSettings) {
+    if (isAcademySettingsView && hasUnsavedAcademySettingsRef.current) {
       pendingSettingsNavigationRef.current = action;
       setIsAcademySettingsLeaveDialogOpen(true);
       return;
@@ -6738,6 +5061,10 @@ function App() {
       };
     }
 
+    if (currentSettings.topBarDefaultCollapsed !== nextVisibleSettings.topBarDefaultCollapsed) {
+      setAcademyTopBarCollapseOverride(null);
+    }
+
     savedAcademyCalendarSettingsRef.current = nextSavedSettings;
     hasLoadedRemoteAcademySettingsRef.current = true;
 
@@ -6754,7 +5081,7 @@ function App() {
     loadSequence === academyPreferencesLoadSequenceRef.current
   );
 
-  const resetAcademyRuntimeState = () => {
+  const resetAcademyRuntimeState = useCallback(() => {
     resetAcademyPreferenceCache();
     clearLegacyAcademyPreferenceStorage();
     setCanvasCalendarPages({});
@@ -6779,9 +5106,10 @@ function App() {
     setIsCanvasTokenExpirySaving(false);
     setCanvasTokenExpiryError('');
     setCanvasTokenExpiryDraft({ accessToken: '', expiresAt: '' });
+    setAcademyTopBarCollapseOverride(null);
     ignoredExpiredCanvasTokenOwnerRef.current = null;
     canvasTokenStatusLoadSequenceRef.current += 1;
-  };
+  }, []);
 
   const canvasTokenOwnerKey = authSession
     ? getAuthSessionIdentityKey(authSession) ?? authSession.email ?? null
@@ -6811,11 +5139,11 @@ function App() {
     setCanvasTokenExpiryError('');
     canvasTokenStatusLoadSequenceRef.current += 1;
 
-    workspaceApi
+    canvasToDoApi
       .updateCanvasToken({
         accessToken: canvasTokenExpiryDraft.accessToken,
         expiresAt: optionalIsoFromDateInput(canvasTokenExpiryDraft.expiresAt),
-        instanceUrl: canvasTokenStatus?.instanceUrl ?? 'https://canvas.sfu.ca',
+        instanceUrl: canvasTokenStatus?.instanceUrl ?? 'https://sfu.instructure.com',
       })
       .then((status) => {
         setCanvasTokenStatus(status);
@@ -6835,7 +5163,6 @@ function App() {
   useEffect(() => {
     if (
       authStatus !== 'authenticated' ||
-      activeMode.id !== 'academy' ||
       !canvasTokenOwnerKey
     ) {
       return undefined;
@@ -6844,7 +5171,7 @@ function App() {
     let isCancelled = false;
     const loadSequence = ++canvasTokenStatusLoadSequenceRef.current;
 
-    workspaceApi
+    canvasToDoApi
       .getCanvasTokenStatus()
       .then((status) => {
         if (isCancelled || loadSequence !== canvasTokenStatusLoadSequenceRef.current) {
@@ -6853,7 +5180,12 @@ function App() {
 
         setCanvasTokenStatus(status);
 
-        if (status.status === 'expired' && ignoredExpiredCanvasTokenOwnerRef.current !== canvasTokenOwnerKey) {
+        if (
+          status.status === 'expired' &&
+          status.manualTokenEnabled !== false &&
+          !status.oauthConfigured &&
+          ignoredExpiredCanvasTokenOwnerRef.current !== canvasTokenOwnerKey
+        ) {
           setCanvasTokenExpiryDraft({ accessToken: '', expiresAt: '' });
           setCanvasTokenExpiryError('');
           setIsCanvasTokenExpiryDialogOpen(true);
@@ -6868,7 +5200,7 @@ function App() {
     return () => {
       isCancelled = true;
     };
-  }, [activeMode.id, authStatus, canvasTokenOwnerKey]);
+  }, [authStatus, canvasTokenOwnerKey]);
 
   const runPendingSettingsNavigation = () => {
     const pendingAction = pendingSettingsNavigationRef.current;
@@ -6878,7 +5210,7 @@ function App() {
     pendingAction?.();
   };
 
-  const navigateWorkspace = (nextNavigation: WorkspaceNavigation) => {
+  const navigateWorkspace = useCallback((nextNavigation: WorkspaceNavigation) => {
     const isSameNavigation =
       navigation.modeId === nextNavigation.modeId
       && navigation.sidebarItemId === nextNavigation.sidebarItemId
@@ -6891,7 +5223,7 @@ function App() {
     if (!isApplyingHistoryRef.current) {
       window.history.pushState(
         {
-          source: 'incos-workspace',
+          source: 'canvas-to-do',
           navigation: nextNavigation,
         } satisfies WorkspaceHistoryState,
         '',
@@ -6900,7 +5232,48 @@ function App() {
     }
 
     setNavigation(nextNavigation);
-  };
+  }, [navigation]);
+
+  useEffect(() => {
+    if (
+      authStatus !== 'authenticated' ||
+      !canvasRedirectFeedback ||
+      hasHandledCanvasRedirectRef.current
+    ) {
+      return;
+    }
+
+    const navigationTimeoutId = canvasRedirectFeedback.returnToSettings
+      ? window.setTimeout(() => {
+          hasHandledCanvasRedirectRef.current = true;
+          navigateWorkspace({
+            modeId: 'academy',
+            sidebarItemId: 'settings',
+            view: currentView,
+          });
+        }, 0)
+      : undefined;
+
+    if (!canvasRedirectFeedback.returnToSettings) {
+      hasHandledCanvasRedirectRef.current = true;
+    }
+
+    const currentUrl = new URL(window.location.href);
+    currentUrl.searchParams.delete('canvasConnected');
+    currentUrl.searchParams.delete('canvasError');
+    currentUrl.searchParams.delete('canvasReturn');
+    window.history.replaceState(
+      window.history.state,
+      '',
+      `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`,
+    );
+
+    return () => {
+      if (typeof navigationTimeoutId === 'number') {
+        window.clearTimeout(navigationTimeoutId);
+      }
+    };
+  }, [authStatus, canvasRedirectFeedback, currentView, navigateWorkspace]);
 
   const handleSelectSidebarItem = (itemId: string) => {
     if (!canAccessSidebarItem(activeMode.id, itemId, accessSet)) {
@@ -6908,15 +5281,6 @@ function App() {
     }
 
     const navigateToItem = () => {
-      if (activeMode.id === 'project' && itemId === 'toptrack') {
-        window.open(topTrackExternalUrl, '_blank', 'noopener,noreferrer');
-        return;
-      }
-
-      if (itemId !== 'drive') {
-        setSelectedDriveItem(null);
-      }
-
       let nextView = currentView;
 
       if (itemId === 'calendar') {
@@ -6925,10 +5289,6 @@ function App() {
 
       if (itemId === 'board') {
         nextView = 'board';
-      }
-
-      if (itemId === 'timeline') {
-        nextView = 'timeline';
       }
 
       navigateWorkspace({
@@ -6940,10 +5300,8 @@ function App() {
 
     if (
       itemId !== 'settings' &&
-      (
-        (isAcademySettingsView && hasUnsavedAcademySettingsRef.current) ||
-        (isWorkspaceSettingsView && hasUnsavedWorkspaceSettingsRef.current)
-      )
+      isAcademySettingsView &&
+      hasUnsavedAcademySettingsRef.current
     ) {
       requestSettingsNavigation(navigateToItem);
       return;
@@ -6953,19 +5311,8 @@ function App() {
   };
 
   useEffect(() => {
-    if (authStatus !== 'authenticated' || accessibleModeIds.length === 0) {
-      return;
-    }
-
-    if (!accessibleModeIds.includes(activeMode.id)) {
-      setActiveModeId(accessibleModeIds[0]);
-    }
-  }, [accessibleModeIds, activeMode.id, authStatus, setActiveModeId]);
-
-  useEffect(() => {
     if (
       authStatus !== 'authenticated' ||
-      !accessibleModeIds.includes(activeMode.id) ||
       !firstAccessibleSidebarItem
     ) {
       return;
@@ -6979,28 +5326,27 @@ function App() {
       return;
     }
 
-    navigateWorkspace({
-      modeId: activeMode.id,
-      sidebarItemId: firstAccessibleSidebarItem.id,
-      view: currentView,
-    });
+    const navigationTimeoutId = window.setTimeout(() => {
+      navigateWorkspace({
+        modeId: activeMode.id,
+        sidebarItemId: firstAccessibleSidebarItem.id,
+        view: currentView,
+      });
+    }, 0);
+
+    return () => window.clearTimeout(navigationTimeoutId);
   }, [
     accessSet,
-    accessibleModeIds,
     activeMode.id,
     authStatus,
     currentView,
     firstAccessibleSidebarItem,
     navigation.modeId,
     navigation.sidebarItemId,
+    navigateWorkspace,
   ]);
 
   const openAcademyCourseworkDialog = (detail?: AcademyOpenCourseworkDialogDetail) => {
-    if (activeMode.id !== 'academy') {
-      setIsAddModalOpen(true);
-      return;
-    }
-
     if (isMainOnlyView || effectiveCalendarExpanded) {
       setIsCalendarExpanded(false);
       navigateWorkspace({
@@ -7016,10 +5362,6 @@ function App() {
   };
 
   const openAcademyCourseResource = (courseRowId?: string | null, resourceUrl?: string | null) => {
-    if (activeMode.id !== 'academy') {
-      return;
-    }
-
     setSelectedCourseOverviewRowId(courseRowId ?? null);
     setSelectedCourseOverviewResourceUrl(resourceUrl ?? null);
     navigateWorkspace({
@@ -7063,7 +5405,7 @@ function App() {
     academyPreferencesSaveSequenceRef.current = saveSequence;
     academyPreferencesLoadSequenceRef.current += 1;
     isAcademyPreferencesSavingRef.current = true;
-    academySettingsProtectedUntilRef.current = Date.now() + 30000;
+    academySettingsProtectedUntilRef.current = getCurrentTimeMilliseconds() + 30000;
     setAcademyPreferencesSaveStatus('saving');
     setAcademyPreferencesSaveError('');
 
@@ -7080,7 +5422,7 @@ function App() {
           ...(shouldSubmitCalendarSettings ? { calendarSettings: settingsToSave } : {}),
         };
 
-    return workspaceApi.saveAcademyPreferences(preferencesPayload)
+    return canvasToDoApi.saveAcademyPreferences(preferencesPayload)
       .then((preferences) => {
         if (saveSequence !== academyPreferencesSaveSequenceRef.current) {
           return;
@@ -7129,6 +5471,10 @@ function App() {
   const handleAcademyCalendarSettingsChange = (settings: AcademyCalendarSettings) => {
     const nextSettings = normalizeAcademyCalendarSettings(settings);
 
+    if (academyCalendarSettingsRef.current.topBarDefaultCollapsed !== nextSettings.topBarDefaultCollapsed) {
+      setAcademyTopBarCollapseOverride(null);
+    }
+
     academyCalendarSettingsRef.current = nextSettings;
     setAcademyCalendarSettings(nextSettings);
     setAcademyPreferencesSaveStatus('idle');
@@ -7143,9 +5489,7 @@ function App() {
 
     academyCalendarSettingsRef.current = nextSettings;
     setAcademyCalendarSettings(nextSettings);
-    if (activeMode.id === 'academy') {
-      setLanguage(nextSettings.language);
-    }
+    setLanguage(nextSettings.language);
     return persistAcademyCalendarSettings(nextSettings);
   };
 
@@ -7169,185 +5513,45 @@ function App() {
   const handleRevertAcademyCalendarSettings = () => {
     const nextSettings = savedAcademyCalendarSettingsRef.current;
 
+    if (academyCalendarSettingsRef.current.topBarDefaultCollapsed !== nextSettings.topBarDefaultCollapsed) {
+      setAcademyTopBarCollapseOverride(null);
+    }
+
     academyCalendarSettingsRef.current = nextSettings;
     setAcademyCalendarSettings(nextSettings);
-    if (activeMode.id === 'academy') {
-      setLanguage(nextSettings.language);
-    }
+    setLanguage(nextSettings.language);
     setHiddenCalendarCourseIds(nextSettings.hiddenCourseIds ?? []);
     setAcademyPreferencesSaveStatus('idle');
     setAcademyPreferencesSaveError('');
   };
 
-  const applyRemoteWorkspacePreferences = (preferences: WorkspacePreferences) => {
-    const currentSettings = workspaceSettingsRef.current;
-    const hasRemoteSettings = hasMeaningfulSettingsRecord(preferences.settings);
-    const nextSavedSettings = preferences.exists && hasRemoteSettings
-      ? normalizeWorkspaceSettings(preferences.settings)
-      : savedWorkspaceSettingsRef.current;
-
-    setSavedWorkspaceSettings(nextSavedSettings);
-    savedWorkspaceSettingsRef.current = nextSavedSettings;
-    storeWorkspaceSettings(nextSavedSettings);
-
-    if (!hasUnsavedWorkspaceSettingsRef.current && !isWorkspacePreferencesSavingRef.current) {
-      workspaceSettingsRef.current = nextSavedSettings;
-      setWorkspaceSettings(nextSavedSettings);
-      if (activeMode.id === 'project') {
-        setLanguage(nextSavedSettings.language);
-        setIsWorkspaceTopBarCollapsed(nextSavedSettings.topBarDefaultCollapsed);
-      }
-      return nextSavedSettings;
-    }
-
-    return currentSettings;
-  };
-
-  const beginWorkspacePreferencesLoad = () => {
-    workspacePreferencesLoadSequenceRef.current += 1;
-
-    return workspacePreferencesLoadSequenceRef.current;
-  };
-
-  const isCurrentWorkspacePreferencesLoad = (loadSequence: number) => (
-    loadSequence === workspacePreferencesLoadSequenceRef.current
-  );
-
-  const persistWorkspaceSettings = (settings: WorkspaceSettings) => {
-    const settingsToSave = normalizeWorkspaceSettings(settings, workspaceSettingsRef.current);
-    const saveSequence = workspacePreferencesSaveSequenceRef.current + 1;
-
-    workspacePreferencesSaveSequenceRef.current = saveSequence;
-    workspacePreferencesLoadSequenceRef.current += 1;
-    isWorkspacePreferencesSavingRef.current = true;
-    setWorkspacePreferencesSaveStatus('saving');
-    setWorkspacePreferencesSaveError('');
-
-    return workspaceApi.saveWorkspacePreferences({ settings: settingsToSave })
-      .then((preferences) => {
-        if (saveSequence !== workspacePreferencesSaveSequenceRef.current) {
-          return;
-        }
-
-        const nextSavedSettings = normalizeWorkspaceSettings(preferences.settings, settingsToSave);
-
-        setSavedWorkspaceSettings(nextSavedSettings);
-        savedWorkspaceSettingsRef.current = nextSavedSettings;
-        workspaceSettingsRef.current = nextSavedSettings;
-        setWorkspaceSettings(nextSavedSettings);
-        storeWorkspaceSettings(nextSavedSettings);
-        if (activeMode.id === 'project') {
-          setLanguage(nextSavedSettings.language);
-          setIsWorkspaceTopBarCollapsed(nextSavedSettings.topBarDefaultCollapsed);
-        }
-        setWorkspacePreferencesSaveStatus('saved');
-      })
-      .catch((error: unknown) => {
-        if (saveSequence !== workspacePreferencesSaveSequenceRef.current) {
-          return;
-        }
-
-        setWorkspacePreferencesSaveStatus('failed');
-        setWorkspacePreferencesSaveError(error instanceof Error ? error.message : dictionary.academySettingsSaveFailed);
-      })
-      .finally(() => {
-        if (saveSequence === workspacePreferencesSaveSequenceRef.current) {
-          isWorkspacePreferencesSavingRef.current = false;
-        }
-      });
-  };
-
-  const handleWorkspaceSettingsChange = (settings: WorkspaceSettings) => {
-    const nextSettings = normalizeWorkspaceSettings(settings);
-
-    workspaceSettingsRef.current = nextSettings;
-    setWorkspaceSettings(nextSettings);
-    storeWorkspaceSettings(nextSettings);
-    if (activeMode.id === 'project') {
-      setLanguage(nextSettings.language);
-      setIsWorkspaceTopBarCollapsed(nextSettings.topBarDefaultCollapsed);
-    }
-    setWorkspacePreferencesSaveStatus('idle');
-    setWorkspacePreferencesSaveError('');
-  };
-
-  const handleSaveWorkspaceSettings = (settings?: WorkspaceSettings) => {
-    const nextSettings = normalizeWorkspaceSettings(
-      settings ?? workspaceSettingsRef.current,
-      workspaceSettingsRef.current,
-    );
-
-    workspaceSettingsRef.current = nextSettings;
-    setWorkspaceSettings(nextSettings);
-    storeWorkspaceSettings(nextSettings);
-    if (activeMode.id === 'project') {
-      setLanguage(nextSettings.language);
-      setIsWorkspaceTopBarCollapsed(nextSettings.topBarDefaultCollapsed);
-    }
-
-    return persistWorkspaceSettings(nextSettings);
-  };
-
-  const handleRevertWorkspaceSettings = () => {
-    const nextSettings = savedWorkspaceSettingsRef.current;
-
-    workspaceSettingsRef.current = nextSettings;
-    setWorkspaceSettings(nextSettings);
-    storeWorkspaceSettings(nextSettings);
-    if (activeMode.id === 'project') {
-      setLanguage(nextSettings.language);
-      setIsWorkspaceTopBarCollapsed(nextSettings.topBarDefaultCollapsed);
-    }
-    setWorkspacePreferencesSaveStatus('idle');
-    setWorkspacePreferencesSaveError('');
-  };
-
-  const handleAdminConsoleSettingsChange = (settings: AdminConsoleSettings) => {
-    const nextSettings = normalizeAdminConsoleSettings(settings);
-
-    setAdminConsoleSettings(nextSettings);
-    setIsAdminTopBarCollapsed(nextSettings.topBarDefaultCollapsed);
-    storeAdminConsoleSettings(nextSettings);
-  };
-
   const handleThemeChange = (nextTheme: AppTheme) => {
-    if (activeMode.id === 'academy') {
-      return;
-    }
+    const nextSettings = normalizeAcademyCalendarSettings({
+      ...academyCalendarSettingsRef.current,
+      themeMode: nextTheme,
+      themeTimerEnabled: false,
+    });
 
-    if (activeMode.id === 'project') {
-      const nextSettings = normalizeWorkspaceSettings({
-        ...workspaceSettingsRef.current,
-        themeMode: nextTheme,
-      });
-
-      workspaceSettingsRef.current = nextSettings;
-      setWorkspaceSettings(nextSettings);
-      storeWorkspaceSettings(nextSettings);
-      setWorkspacePreferencesSaveStatus('idle');
-      setWorkspacePreferencesSaveError('');
-      return;
-    }
-
-    setTheme(nextTheme);
+    academyCalendarSettingsRef.current = nextSettings;
+    setAcademyCalendarSettings(nextSettings);
+    storeAcademyCalendarSettings(nextSettings);
+    void persistAcademyCalendarSettings(nextSettings);
   };
 
   const handleToggleCalendarCourse = (courseId: string) => {
-    setHiddenCalendarCourseIds((currentCourseIds) => {
-      const nextCourseIds = currentCourseIds.includes(courseId)
-        ? currentCourseIds.filter((currentCourseId) => currentCourseId !== courseId)
-        : [...currentCourseIds, courseId];
-      const nextSettings = normalizeAcademyCalendarSettings({
-        ...academyCalendarSettings,
-        hiddenCourseIds: nextCourseIds,
-      });
-
-      storeHiddenCalendarCourseIds(nextCourseIds);
-      setAcademyCalendarSettings(nextSettings);
-      persistAcademyPreferencesFromStorage(nextSettings);
-
-      return nextCourseIds;
+    const nextCourseIds = hiddenCalendarCourseIds.includes(courseId)
+      ? hiddenCalendarCourseIds.filter((currentCourseId) => currentCourseId !== courseId)
+      : [...hiddenCalendarCourseIds, courseId];
+    const nextSettings = normalizeAcademyCalendarSettings({
+      ...academyCalendarSettingsRef.current,
+      hiddenCourseIds: nextCourseIds,
     });
+
+    storeHiddenCalendarCourseIds(nextCourseIds);
+    academyCalendarSettingsRef.current = nextSettings;
+    setHiddenCalendarCourseIds(nextCourseIds);
+    setAcademyCalendarSettings(nextSettings);
+    void persistAcademyPreferencesFromStorage(nextSettings);
   };
 
   const handleMoveSelectedAgendaDay = (amount: number) => {
@@ -7362,9 +5566,7 @@ function App() {
   };
 
   const handleMoveSelectedDayToToday = () => {
-    const todayIso = activeMode.id === 'project'
-      ? getTodayIsoDateForTimeZone(workspaceSettingsRef.current.timeZone)
-      : getTodayIsoDate();
+    const todayIso = getTodayIsoDate();
     const todayCalendarMonth = getCalendarMonthFromIsoDate(todayIso);
 
     setSelectedCalendarDayIso(todayIso);
@@ -7387,9 +5589,7 @@ function App() {
     focusBoardItem?: boolean;
     title?: string;
   }) => {
-    const randomId = typeof crypto !== 'undefined' && 'randomUUID' in crypto
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const randomId = createClientRuntimeId();
     const newCoursework: StoredManualCoursework = {
       id: `manual-coursework-${randomId}`,
       title,
@@ -7682,20 +5882,19 @@ function App() {
   };
 
   useEffect(() => {
-    const shouldRunThemeTimer =
-      (activeMode.id === 'academy' && academyCalendarSettings.themeTimerEnabled) ||
-      (activeMode.id === 'project' && workspaceSettings.themeTimerEnabled);
-
-    if (!shouldRunThemeTimer) {
+    if (!academyCalendarSettings.themeTimerEnabled) {
       return undefined;
     }
 
-    setAcademyThemeClock(Date.now());
+    const initialTimeoutId = window.setTimeout(() => {
+      setAcademyThemeClock(Date.now());
+    }, 0);
     const intervalId = window.setInterval(() => {
       setAcademyThemeClock(Date.now());
     }, 60_000);
 
     return () => {
+      window.clearTimeout(initialTimeoutId);
       window.clearInterval(intervalId);
     };
   }, [
@@ -7703,98 +5902,29 @@ function App() {
     academyCalendarSettings.themeTimerEnd,
     academyCalendarSettings.themeTimerMode,
     academyCalendarSettings.themeTimerStart,
-    activeMode.id,
-    workspaceSettings.themeTimerEnabled,
-    workspaceSettings.themeTimerEnd,
-    workspaceSettings.themeTimerMode,
-    workspaceSettings.themeTimerStart,
   ]);
 
   useEffect(() => {
-    const isAcademyMode = activeMode.id === 'academy';
-    const isWorkspaceMode = activeMode.id === 'project';
-
-    applyTheme(
-      isAcademyMode
-        ? academyEffectiveTheme
-        : isWorkspaceMode
-          ? workspaceEffectiveTheme
-          : theme,
-      {
-        persist: !isAcademyMode && !isWorkspaceMode,
-      },
-    );
-
-    if (isAcademyMode) {
-      applyAcademyAccentColor(academyCalendarSettings.accentColor);
-    } else if (isWorkspaceMode) {
-      applyAcademyAccentColor(workspaceSettings.accentColor);
-    } else {
-      clearAcademyAccentColor();
-    }
+    applyTheme(academyEffectiveTheme, { persist: false });
+    applyAcademyAccentColor(academyCalendarSettings.accentColor);
   }, [
     academyCalendarSettings.accentColor,
     academyEffectiveTheme,
-    activeMode.id,
-    theme,
-    workspaceEffectiveTheme,
-    workspaceSettings.accentColor,
   ]);
 
   useEffect(() => {
-    if (activeMode.id === 'academy' && language !== academyCalendarSettings.language) {
+    if (language !== academyCalendarSettings.language) {
       setLanguage(academyCalendarSettings.language);
-      return;
     }
-
-    if (activeMode.id === 'project' && language !== workspaceSettings.language) {
-      setLanguage(workspaceSettings.language);
-    }
-  }, [academyCalendarSettings.language, activeMode.id, language, setLanguage, workspaceSettings.language]);
-
-  useEffect(() => {
-    setIsAcademyTopBarCollapsed(
-      activeMode.id === 'academy' && academyCalendarSettings.topBarDefaultCollapsed,
-    );
-  }, [academyCalendarSettings.topBarDefaultCollapsed, activeMode.id]);
-
-  useEffect(() => {
-    setIsWorkspaceTopBarCollapsed(
-      activeMode.id === 'project' && workspaceSettings.topBarDefaultCollapsed,
-    );
-  }, [activeMode.id, workspaceSettings.topBarDefaultCollapsed]);
-
-  useEffect(() => {
-    if (activeMode.id !== 'project') {
-      return;
-    }
-
-    const workspaceTodayIso = getTodayIsoDateForTimeZone(workspaceSettings.timeZone);
-
-    if (selectedCalendarDayIso !== getTodayIsoDate() || selectedCalendarDayIso === workspaceTodayIso) {
-      return;
-    }
-
-    setSelectedCalendarDayIso(workspaceTodayIso);
-    const todayCalendarMonth = getCalendarMonthFromIsoDate(workspaceTodayIso);
-
-    if (todayCalendarMonth) {
-      setCalendarMonth(todayCalendarMonth);
-    }
-  }, [activeMode.id, selectedCalendarDayIso, workspaceSettings.timeZone]);
+  }, [academyCalendarSettings.language, language, setLanguage]);
 
   useEffect(() => {
     applyDocumentBranding({
-      iconSrc: isAcademyMode ? defaultAcademyTabIconSrc : defaultWorkspaceTabIconSrc,
-      title: isAcademyOnlySession ? dictionary.academyManagerName : dictionary.workspaceName,
-      touchIconSrc: isAcademyMode ? defaultAcademyTabIconSrc : defaultWorkspaceTouchIconSrc,
+      iconSrc: defaultAcademyTabIconSrc,
+      title: dictionary.productName,
+      touchIconSrc: defaultAcademyTabIconSrc,
     });
-  }, [
-    dictionary.academyManagerName,
-    dictionary.workspaceName,
-    isAcademyMode,
-    isAcademyOnlySession,
-  ]);
+  }, [dictionary.productName]);
 
   useEffect(() => {
     const updateResponsiveState = () => {
@@ -7833,7 +5963,8 @@ function App() {
       if (event instanceof CustomEvent && event.detail) {
         if (isRecord(event.detail) && 'calendarSettings' in event.detail) {
           if (isRecord(event.detail.calendarSettings)) {
-            const previousSemester = normalizeSemesterName(academyCalendarSettingsRef.current.selectedSemester);
+            const previousSettings = academyCalendarSettingsRef.current;
+            const previousSemester = normalizeSemesterName(previousSettings.selectedSemester);
             const calendarSettingKeys = Object.keys(event.detail.calendarSettings);
             const isSelectedSemesterPatch =
               calendarSettingKeys.length <= 2 &&
@@ -7855,6 +5986,10 @@ function App() {
                 ? academyCalendarSettingsRef.current
                 : eventSettings;
             const nextSemester = normalizeSemesterName(nextSettings.selectedSemester);
+
+            if (previousSettings.topBarDefaultCollapsed !== nextSettings.topBarDefaultCollapsed) {
+              setAcademyTopBarCollapseOverride(null);
+            }
 
             academyPreferenceCache = {
               ...academyPreferenceCache,
@@ -7903,161 +6038,60 @@ function App() {
   useEffect(() => {
     let isCancelled = false;
 
-    if (authStatus !== 'authenticated' || !accessibleModeIds.includes('academy')) {
+    if (authStatus !== 'authenticated') {
       return undefined;
     }
 
-    const loadSequence = beginAcademyPreferencesLoad();
-
-    if (!hasLoadedAcademyPreferences) {
-      setAcademyPreferencesLoadStatus('loading');
-    }
-    workspaceApi
-      .getAcademyPreferences()
-      .then((preferences) => {
-        if (
-          isCancelled ||
-          isAcademyPreferencesSavingRef.current ||
-          !isCurrentAcademyPreferencesLoad(loadSequence)
-        ) {
-          return;
-        }
-
-        const nextSavedSettings = applyRemoteAcademyPreferences(preferences);
-        setSavedAcademyCalendarSettings(nextSavedSettings);
-        if (!hasUnsavedAcademySettingsRef.current) {
-          academyCalendarSettingsRef.current = nextSavedSettings;
-          setAcademyCalendarSettings(nextSavedSettings);
-          setHiddenCalendarCourseIds(nextSavedSettings.hiddenCourseIds ?? []);
-        }
-        setAcademyPreferenceVersion((currentVersion) => currentVersion + 1);
-        setHasLoadedAcademyPreferences(true);
-        setAcademyPreferencesLoadStatus('loaded');
-        dispatchAcademyPreferencesUpdated();
-      })
-      .catch((error) => {
-        if (isSessionExpiredError(error)) {
-          setAuthSession(null);
-          setAuthStatus('unauthenticated');
-        } else if (!isCancelled) {
-          setHasLoadedAcademyPreferences(false);
-          setAcademyPreferencesLoadStatus('failed');
-        }
-      });
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [accessibleModeIds, authStatus]);
-
-  useEffect(() => {
-    let isCancelled = false;
-
-    if (authStatus !== 'authenticated' || !accessibleModeIds.includes('project')) {
-      return undefined;
-    }
-
-    const loadSequence = beginWorkspacePreferencesLoad();
-
-    workspaceApi
-      .getWorkspacePreferences()
-      .then((preferences) => {
-        if (
-          isCancelled ||
-          isWorkspacePreferencesSavingRef.current ||
-          !isCurrentWorkspacePreferencesLoad(loadSequence)
-        ) {
-          return;
-        }
-
-        applyRemoteWorkspacePreferences(preferences);
-      })
-      .catch((error) => {
-        if (isSessionExpiredError(error)) {
-          setAuthSession(null);
-          setAuthStatus('unauthenticated');
-        }
-      });
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [accessibleModeIds, authStatus]);
-
-  useEffect(() => {
-    if (authStatus !== 'authenticated' || activeMode.id !== 'project') {
-      return undefined;
-    }
-
-    let isSyncing = false;
-    // Loading the app in an unfocused tab must not make the first click trigger
-    // a second preferences sync just because it focuses the tab.
-    let lastFocusSyncStartedAt = Date.now();
-    const syncWorkspacePreferences = () => {
-      if (isSyncing || isWorkspacePreferencesSavingRef.current || document.visibilityState === 'hidden') {
+    const requestStartTimeoutId = window.setTimeout(() => {
+      if (isCancelled) {
         return;
       }
 
-      isSyncing = true;
-      const loadSequence = beginWorkspacePreferencesLoad();
+      const loadSequence = beginAcademyPreferencesLoad();
 
-      workspaceApi
-        .getWorkspacePreferences()
+      setAcademyPreferencesLoadStatus('loading');
+      void canvasToDoApi
+        .getAcademyPreferences()
         .then((preferences) => {
           if (
-            isWorkspacePreferencesSavingRef.current ||
-            !isCurrentWorkspacePreferencesLoad(loadSequence)
+            isCancelled ||
+            isAcademyPreferencesSavingRef.current ||
+            !isCurrentAcademyPreferencesLoad(loadSequence)
           ) {
             return;
           }
 
-          applyRemoteWorkspacePreferences(preferences);
+          const nextSavedSettings = applyRemoteAcademyPreferences(preferences);
+          setSavedAcademyCalendarSettings(nextSavedSettings);
+          if (!hasUnsavedAcademySettingsRef.current) {
+            academyCalendarSettingsRef.current = nextSavedSettings;
+            setAcademyCalendarSettings(nextSavedSettings);
+            setHiddenCalendarCourseIds(nextSavedSettings.hiddenCourseIds ?? []);
+          }
+          setAcademyPreferenceVersion((currentVersion) => currentVersion + 1);
+          setHasLoadedAcademyPreferences(true);
+          setAcademyPreferencesLoadStatus('loaded');
+          dispatchAcademyPreferencesUpdated();
         })
         .catch((error) => {
           if (isSessionExpiredError(error)) {
             setAuthSession(null);
             setAuthStatus('unauthenticated');
+          } else if (!isCancelled) {
+            setHasLoadedAcademyPreferences(false);
+            setAcademyPreferencesLoadStatus('failed');
           }
-        })
-        .finally(() => {
-          isSyncing = false;
         });
-    };
-    const syncInterval = window.setInterval(syncWorkspacePreferences, workspaceSettings.autoRefreshIntervalMs);
-    const syncWorkspacePreferencesOnFocus = () => {
-      const now = Date.now();
-
-      if (now - lastFocusSyncStartedAt < workspaceSettings.refocusRefreshThrottleMs) {
-        return;
-      }
-
-      lastFocusSyncStartedAt = now;
-      syncWorkspacePreferences();
-    };
-    const handleFocus = () => syncWorkspacePreferencesOnFocus();
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        syncWorkspacePreferencesOnFocus();
-      }
-    };
-
-    window.addEventListener('focus', handleFocus);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
+    }, 0);
 
     return () => {
-      window.clearInterval(syncInterval);
-      window.removeEventListener('focus', handleFocus);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      isCancelled = true;
+      window.clearTimeout(requestStartTimeoutId);
     };
-  }, [
-    activeMode.id,
-    authStatus,
-    workspaceSettings.autoRefreshIntervalMs,
-    workspaceSettings.refocusRefreshThrottleMs,
-  ]);
+  }, [authStatus]);
 
   useEffect(() => {
-    if (authStatus !== 'authenticated' || activeMode.id !== 'academy') {
+    if (authStatus !== 'authenticated') {
       return undefined;
     }
 
@@ -8073,7 +6107,7 @@ function App() {
       }
       const loadSequence = beginAcademyPreferencesLoad();
 
-      workspaceApi
+      canvasToDoApi
         .getAcademyPreferences()
         .then((preferences) => {
           if (
@@ -8115,7 +6149,6 @@ function App() {
     };
   }, [
     academyAutoRefreshIntervalMs,
-    activeMode.id,
     authStatus,
     hasLoadedAcademyPreferences,
   ]);
@@ -8125,19 +6158,23 @@ function App() {
       return;
     }
 
+    let navigationTimeoutId: number | undefined;
+
     if (!hasAppliedUrlNavigationRef.current) {
       const searchParams = new URLSearchParams(window.location.search);
       const requestedModeId = searchParams.get('mode');
       const requestedSidebarItemId = searchParams.get('item');
 
       if (requestedModeId === activeMode.id && requestedSidebarItemId) {
-        hasAppliedUrlNavigationRef.current = true;
-        setNavigation({
-          modeId: activeMode.id,
-          sidebarItemId: requestedSidebarItemId,
-          view: currentView,
-        });
-        return;
+        navigationTimeoutId = window.setTimeout(() => {
+          hasAppliedUrlNavigationRef.current = true;
+          setNavigation({
+            modeId: activeMode.id,
+            sidebarItemId: requestedSidebarItemId,
+            view: currentView,
+          });
+        }, 0);
+        return () => window.clearTimeout(navigationTimeoutId);
       }
     }
 
@@ -8151,29 +6188,18 @@ function App() {
         && navigation.view === nextNavigation.view;
 
       if (!isSameNavigation) {
-        window.setTimeout(() => setNavigation(nextNavigation), 0);
+        navigationTimeoutId = window.setTimeout(() => setNavigation(nextNavigation), 0);
       }
-      return;
-    }
-
-    if (isDriveBrowserHistoryState(currentHistoryState)) {
-      if (activeSidebarItem !== 'drive') {
-        window.setTimeout(
-          () =>
-            setNavigation({
-              modeId: activeMode.id,
-              sidebarItemId: 'drive',
-              view: currentView,
-            }),
-          0,
-        );
-      }
-      return;
+      return () => {
+        if (typeof navigationTimeoutId === 'number') {
+          window.clearTimeout(navigationTimeoutId);
+        }
+      };
     }
 
     window.history.replaceState(
       {
-        source: 'incos-workspace',
+        source: 'canvas-to-do',
         navigation: {
           modeId: activeMode.id,
           sidebarItemId: activeSidebarItem,
@@ -8183,6 +6209,8 @@ function App() {
       '',
       window.location.href,
     );
+
+    return undefined;
   }, [activeMode.id, activeSidebarItem, authStatus, currentView, navigation]);
 
   useEffect(() => {
@@ -8194,25 +6222,12 @@ function App() {
       if (isWorkspaceHistoryState(event.state)) {
         isApplyingHistoryRef.current = true;
         setNavigation(event.state.navigation);
-        setSelectedDriveItem(null);
         window.setTimeout(() => {
           isApplyingHistoryRef.current = false;
         }, 0);
         return;
       }
 
-      if (isDriveBrowserHistoryState(event.state)) {
-        isApplyingHistoryRef.current = true;
-        setNavigation({
-          modeId: activeMode.id,
-          sidebarItemId: 'drive',
-          view: currentView,
-        });
-        setSelectedDriveItem(null);
-        window.setTimeout(() => {
-          isApplyingHistoryRef.current = false;
-        }, 0);
-      }
     };
 
     window.addEventListener('popstate', handlePopState);
@@ -8224,60 +6239,35 @@ function App() {
 
   useEffect(() => {
     let isCancelled = false;
+    let responseTimeoutId: number | undefined;
 
     if (!shouldLoadCanvasCalendar) {
       return undefined;
     }
 
     const monthKey = getCalendarMonthKey(calendarMonth);
-    const cachedPage = canvasCalendarPages[monthKey];
 
-    if (cachedPage?.status === 'loaded') {
+    if (isCanvasCalendarPageLoaded) {
       return undefined;
     }
 
     const gridRange = getCalendarGridRange(calendarMonth);
     const requestedAt = Date.now();
-
-    setCanvasCalendarPages((currentPages) => ({
-      ...currentPages,
-      [monthKey]: {
-        items: currentPages[monthKey]?.items ?? [],
-        requestedAt,
-        status: 'loading',
-      },
-    }));
-
-    const timeoutId = window.setTimeout(() => {
+    const requestStartTimeoutId = window.setTimeout(() => {
       if (isCancelled) {
         return;
       }
 
-      setCanvasCalendarPages((currentPages) => {
-        const currentPage = currentPages[monthKey];
+      setCanvasCalendarPages((currentPages) => ({
+        ...currentPages,
+        [monthKey]: {
+          items: currentPages[monthKey]?.items ?? [],
+          requestedAt,
+          status: 'loading',
+        },
+      }));
 
-        if (currentPage?.status !== 'loading' || currentPage.requestedAt !== requestedAt) {
-          return currentPages;
-        }
-
-        return {
-          ...currentPages,
-          [monthKey]: {
-            items: currentPage.items ?? [],
-            status: 'failed',
-          },
-        };
-      });
-    }, canvasCalendarLoadingTimeoutMs);
-
-    workspaceApi
-      .getCanvasCalendarItems({
-        endDate: formatDateParam(gridRange.endDate),
-        pageSize: 100,
-        startDate: formatDateParam(gridRange.startDate),
-      })
-      .then(({ items }) => {
-        window.clearTimeout(timeoutId);
+      responseTimeoutId = window.setTimeout(() => {
         if (isCancelled) {
           return;
         }
@@ -8285,54 +6275,92 @@ function App() {
         setCanvasCalendarPages((currentPages) => {
           const currentPage = currentPages[monthKey];
 
-          if (currentPage?.requestedAt !== requestedAt) {
+          if (currentPage?.status !== 'loading' || currentPage.requestedAt !== requestedAt) {
             return currentPages;
           }
 
           return {
             ...currentPages,
             [monthKey]: {
-              items,
-              status: 'loaded',
-            },
-          };
-        });
-      })
-      .catch((error) => {
-        window.clearTimeout(timeoutId);
-        if (isCancelled) {
-          return;
-        }
-
-        if (isSessionExpiredError(error)) {
-          setAuthSession(null);
-          setAuthStatus('unauthenticated');
-          return;
-        }
-
-        setCanvasCalendarPages((currentPages) => {
-          const currentPage = currentPages[monthKey];
-
-          if (currentPage?.requestedAt !== requestedAt) {
-            return currentPages;
-          }
-
-          return {
-            ...currentPages,
-            [monthKey]: {
-              items: [],
-              errorMessage: error instanceof Error ? error.message : undefined,
+              items: currentPage.items ?? [],
               status: 'failed',
             },
           };
         });
-      });
+      }, canvasCalendarLoadingTimeoutMs);
+
+      void canvasToDoApi
+        .getCanvasCalendarItems({
+          endDate: formatDateParam(gridRange.endDate),
+          pageSize: 100,
+          startDate: formatDateParam(gridRange.startDate),
+        })
+        .then(({ isComplete, items }) => {
+          if (typeof responseTimeoutId === 'number') {
+            window.clearTimeout(responseTimeoutId);
+          }
+          if (isCancelled) {
+            return;
+          }
+
+          setCanvasCalendarPages((currentPages) => {
+            const currentPage = currentPages[monthKey];
+
+            if (currentPage?.requestedAt !== requestedAt) {
+              return currentPages;
+            }
+
+            return {
+              ...currentPages,
+              [monthKey]: {
+                isComplete,
+                items,
+                status: 'loaded',
+              },
+            };
+          });
+        })
+        .catch((error) => {
+          if (typeof responseTimeoutId === 'number') {
+            window.clearTimeout(responseTimeoutId);
+          }
+          if (isCancelled) {
+            return;
+          }
+
+          if (isSessionExpiredError(error)) {
+            setAuthSession(null);
+            setAuthStatus('unauthenticated');
+            return;
+          }
+
+          setCanvasCalendarPages((currentPages) => {
+            const currentPage = currentPages[monthKey];
+
+            if (currentPage?.requestedAt !== requestedAt) {
+              return currentPages;
+            }
+
+            return {
+              ...currentPages,
+              [monthKey]: {
+                items: [],
+                errorMessage: error instanceof Error ? error.message : undefined,
+                status: 'failed',
+              },
+            };
+          });
+        });
+    }, 0);
 
     return () => {
       isCancelled = true;
-      window.clearTimeout(timeoutId);
+      window.clearTimeout(requestStartTimeoutId);
+      if (typeof responseTimeoutId === 'number') {
+        window.clearTimeout(responseTimeoutId);
+      }
     };
-  }, [calendarMonth, selectedAcademySemester, shouldLoadCanvasCalendar]);
+  }, [calendarMonth, isCanvasCalendarPageLoaded, selectedAcademySemester, shouldLoadCanvasCalendar]);
 
   useEffect(() => {
     const refreshCurrentCalendarMonth = (forceRefresh = false) => {
@@ -8376,7 +6404,7 @@ function App() {
         }, canvasCalendarLoadingTimeoutMs);
       });
 
-      const calendarTask = workspaceApi.getCanvasCalendarItems({
+      const calendarTask = canvasToDoApi.getCanvasCalendarItems({
         endDate: formatDateParam(gridRange.endDate),
         forceRefresh,
         pageSize: 100,
@@ -8384,7 +6412,7 @@ function App() {
       });
 
       return Promise.race([calendarTask, timeoutTask])
-        .then(({ items }) => {
+        .then(({ isComplete, items }) => {
           if (typeof timeoutId === 'number') {
             window.clearTimeout(timeoutId);
           }
@@ -8399,6 +6427,7 @@ function App() {
             return {
               ...currentPages,
               [monthKey]: {
+                isComplete,
                 items,
                 status: 'loaded',
               },
@@ -8438,7 +6467,7 @@ function App() {
     };
 
     const refreshAcademyPageData = async (forceRefresh = false) => {
-      if (authStatus !== 'authenticated' || activeMode.id !== 'academy') {
+      if (authStatus !== 'authenticated') {
         return;
       }
 
@@ -8446,7 +6475,7 @@ function App() {
       if (!hasLoadedAcademyPreferences) {
         setAcademyPreferencesLoadStatus('loading');
       }
-      const preferencesTask = workspaceApi
+      const preferencesTask = canvasToDoApi
         .getAcademyPreferences()
         .then((preferences) => {
           if (
@@ -8511,18 +6540,18 @@ function App() {
       window.removeEventListener(academyRefreshRequestedEvent, handleAcademyRefreshRequested);
     };
   }, [
-    activeMode.id,
     authStatus,
     calendarMonth,
+    dictionary.canvasCalendarUnavailable,
     hasLoadedAcademyPreferences,
     selectedAcademySemester,
     shouldLoadCanvasCalendar,
   ]);
 
-  const applyAuthSession = (session: AuthSession) => {
+  const applyAuthSession = useCallback((session: AuthSession) => {
     const nextSessionKey = getAuthSessionIdentityKey(session);
 
-    workspaceApi.setAcademyPreferenceOwnerKey(session.academyPreferenceOwnerKey);
+    canvasToDoApi.setAcademyPreferenceOwnerKey(session.academyPreferenceOwnerKey);
 
     if (authSessionKeyRef.current !== nextSessionKey) {
       authSessionKeyRef.current = nextSessionKey;
@@ -8536,53 +6565,29 @@ function App() {
       return;
     }
 
-    if (session.canAccessWorkspace) {
-      if (session.requiresAssignment || (session.access ?? []).length === 0) {
-        setAuthStatus('unassigned');
-        return;
-      }
+    setAuthStatus('authenticated');
+  }, [resetAcademyRuntimeState]);
 
-      setAuthStatus('authenticated');
-      return;
-    }
+  useEffect(() => {
+    const handleAuthenticationRequired = () => {
+      applyAuthSession({ isAuthenticated: false });
+    };
 
-    setAuthStatus('pending');
-  };
+    window.addEventListener(authenticationRequiredEvent, handleAuthenticationRequired);
+    return () => window.removeEventListener(authenticationRequiredEvent, handleAuthenticationRequired);
+  }, [applyAuthSession]);
 
   const refreshAuthSession = () => {
-    setIsAuthSessionRefreshing(true);
     setAuthStatus((currentStatus) => (currentStatus === 'unauthenticated' ? 'checking' : currentStatus));
 
-    return workspaceApi
+    return canvasToDoApi
       .getAuthSession()
       .then(applyAuthSession)
       .catch(() => {
         setAuthSession(null);
         setAuthStatus('unauthenticated');
       })
-      .finally(() => {
-        setIsAuthSessionRefreshing(false);
-      });
-  };
-
-  const exitPreviewMode = () => {
-    setIsExitingPreview(true);
-
-    void workspaceApi
-      .exitPreviewMode()
-      .then((session) => {
-        applyAuthSession(session);
-        setActiveModeId('admin-console');
-        navigateWorkspace({
-          modeId: 'admin-console',
-          sidebarItemId: 'users',
-          view: 'month',
-        });
-      })
-      .catch(() => refreshAuthSession())
-      .finally(() => {
-        setIsExitingPreview(false);
-      });
+      ;
   };
 
   useEffect(() => {
@@ -8604,7 +6609,7 @@ function App() {
         }
 
         try {
-          return await workspaceApi.getAuthSession();
+          return await canvasToDoApi.getAuthSession();
         } catch (error) {
           lastError = error;
         }
@@ -8657,9 +6662,7 @@ function App() {
           applyAuthSession(session);
 
           if (
-            session.isAuthenticated &&
-            session.canAccessWorkspace &&
-            activeMode.id === 'academy'
+            session.isAuthenticated
           ) {
             await requestAcademyDataRefresh();
           }
@@ -8688,22 +6691,27 @@ function App() {
       window.removeEventListener('pageshow', refreshResumedApp);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [academyAutoRefreshIntervalMs, academyRefocusRefreshThrottleMs, activeMode.id, authStatus]);
+  }, [academyAutoRefreshIntervalMs, academyRefocusRefreshThrottleMs, applyAuthSession, authStatus]);
 
   const signOut = () => {
-    void workspaceApi
+    void canvasToDoApi
       .logout()
-      .catch(() => undefined)
-      .finally(() => {
-        setAuthSession(null);
-        setAuthStatus('unauthenticated');
+      .then(() => {
+        applyAuthSession({ isAuthenticated: false });
+      })
+      .catch(() => {
+        setCanvasRedirectFeedback({
+          message: 'Canvas To Do could not end your server session. Check your connection and try again.',
+          returnToSettings: false,
+          tone: 'error',
+        });
       });
   };
 
   useEffect(() => {
     let isMounted = true;
 
-    workspaceApi
+    canvasToDoApi
       .getAuthSession()
       .then((session) => {
         if (isMounted) {
@@ -8720,10 +6728,13 @@ function App() {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [applyAuthSession]);
 
   useEffect(() => () => {
-    clearCalendarTodoTap();
+    if (calendarTodoTapTimeoutRef.current) {
+      window.clearTimeout(calendarTodoTapTimeoutRef.current.timeoutId);
+      calendarTodoTapTimeoutRef.current = null;
+    }
   }, []);
 
   const clearCalendarTodoTap = () => {
@@ -8825,7 +6836,7 @@ function App() {
         </div>
         <CalendarProgressIndicator
           className={cn('mt-3', variant === 'mobile' && 'hidden')}
-          display={activeCalendarProgressDisplay}
+          display={academyCalendarSettings.progressDisplay}
           label={dictionary.calendarProgressLabel}
           thresholds={calendarProgressThresholds}
           value={selectedDayProgress}
@@ -9045,11 +7056,11 @@ function App() {
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
                                 <button
-                                  aria-label={dictionary.gmailMoreActions}
+                                  aria-label={dictionary.moreActions}
                                   className="grid size-7 shrink-0 place-items-center rounded-md border bg-background/80 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                                   onClick={(event) => event.stopPropagation()}
                                   onPointerDown={(event) => event.stopPropagation()}
-                                  title={dictionary.gmailMoreActions}
+                                  title={dictionary.moreActions}
                                   type="button"
                                 >
                                   <MoreHorizontal className="size-4" />
@@ -9177,181 +7188,77 @@ function App() {
       </div>
     </>
   );
-  const previewModeBanner = authSession?.isPreview ? (
-    <PreviewModeBanner
-      isExiting={isExitingPreview}
-      onExit={exitPreviewMode}
-      session={authSession}
-    />
-  ) : null;
-
-  if (authStatus === 'pending') {
-    return (
-      <>
-        {previewModeBanner}
-        <WaitingApprovalPage
-          isChecking={isAuthSessionRefreshing}
-          onRefresh={() => {
-            void refreshAuthSession();
-          }}
-          onSignOut={signOut}
-          session={authSession}
-        />
-      </>
-    );
-  }
-
-  if (authStatus === 'unassigned') {
-    return (
-      <>
-        {previewModeBanner}
-        <WaitingAssignmentPage
-          isChecking={isAuthSessionRefreshing}
-          onRefresh={() => {
-            void refreshAuthSession();
-          }}
-          onSignOut={signOut}
-          session={authSession}
-        />
-      </>
-    );
-  }
-
   if (authStatus !== 'authenticated') {
-    const loginTheme = activeMode.id === 'academy'
-      ? academyEffectiveTheme
-      : activeMode.id === 'project'
-        ? workspaceEffectiveTheme
-      : theme;
-
     return (
       <LoginPage
-        academyLogoSrc={activeMode.id === 'academy' ? academyCalendarSettings.academyLogoSrc : undefined}
+        academyLogoSrc={academyCalendarSettings.academyLogoSrc}
         authMessage={authRedirectMessage}
         isCheckingSession={authStatus === 'checking'}
         onAcademyAuthenticated={refreshAuthSession}
         onThemeChange={(nextTheme) => {
-          if (activeMode.id === 'academy') {
-            setAcademyCalendarSettings((currentSettings) => normalizeAcademyCalendarSettings({
-              ...currentSettings,
-              themeMode: nextTheme,
-            }));
-            return;
-          }
-
-          if (activeMode.id === 'project') {
-            setWorkspaceSettings((currentSettings) => normalizeWorkspaceSettings({
-              ...currentSettings,
-              themeMode: nextTheme,
-            }));
-            return;
-          }
-
-          setTheme(nextTheme);
+          setAcademyCalendarSettings((currentSettings) => normalizeAcademyCalendarSettings({
+            ...currentSettings,
+            themeMode: nextTheme,
+          }));
         }}
-        theme={loginTheme}
+        theme={academyEffectiveTheme}
       />
     );
   }
 
   return (
     <div
-        className={cn(
-          'min-h-screen',
-          (activeMode.id === 'academy' || activeMode.id === 'project') && 'academy-typography',
-          (!isMainOnlyView || isSettingsMainView) && 'lg:h-screen lg:overflow-hidden',
-        isAcademyMode &&
-          shouldUseAcademyFullHeightLayout &&
-          (!isMainOnlyView || isSettingsMainView) &&
+      className={cn(
+        'min-h-screen academy-typography',
+        (!isMainOnlyView || isAcademySettingsView) && 'lg:h-screen lg:overflow-hidden',
+        shouldUseAcademyFullHeightLayout &&
+          (!isMainOnlyView || isAcademySettingsView) &&
           'h-screen overflow-hidden',
-        isSettingsMainView && 'h-screen overflow-hidden',
+        isAcademySettingsView && 'h-screen overflow-hidden',
       )}
       style={
         {
-          '--mode-accent': activeMode.accent.primary,
-          '--mode-accent-2': activeMode.accent.secondary,
-          '--workspace-accent': activeMode.accent.primary,
-          '--workspace-accent-2': activeMode.accent.secondary,
-          '--academy-font-family': activeMode.id === 'academy'
-            ? academyFontFamilyCss[academyCalendarSettings.fontFamily]
-            : activeMode.id === 'project'
-              ? academyFontFamilyCss[workspaceSettings.fontFamily]
-            : undefined,
-          '--academy-font-size-scale': activeMode.id === 'academy'
-            ? `${academyCalendarSettings.fontSizePercent / 100}`
-            : activeMode.id === 'project'
-              ? `${workspaceSettings.fontSizePercent / 100}`
-            : '1',
+          '--academy-font-family': academyFontFamilyCss[academyCalendarSettings.fontFamily],
+          '--academy-font-size-scale': `${academyCalendarSettings.fontSizePercent / 100}`,
         } as CSSProperties
       }
     >
-      {previewModeBanner}
       {shouldHideCompactAcademyTopBar ? null : (
         <TopBar
-          academyLogoSrc={activeMode.id === 'academy' ? academyCalendarSettings.academyLogoSrc : undefined}
-          allowedModeIds={accessibleModeIds}
+          academyLogoSrc={academyCalendarSettings.academyLogoSrc}
           authSession={authSession}
           isTopBarCollapsed={effectiveTopBarCollapsed}
-          onBeforeModeChange={(modeId) => {
-            if (
-              (isAcademySettingsView && hasUnsavedAcademySettingsRef.current) ||
-              (isWorkspaceSettingsView && hasUnsavedWorkspaceSettingsRef.current)
-            ) {
-              pendingSettingsNavigationRef.current = () => {
-                setIsAcademyTopBarCollapsed(
-                  modeId === 'academy' && academyCalendarSettingsRef.current.topBarDefaultCollapsed,
-                );
-                setIsAdminTopBarCollapsed(
-                  modeId === 'admin-console' && adminConsoleSettings.topBarDefaultCollapsed,
-                );
-                setIsWorkspaceTopBarCollapsed(
-                  modeId === 'project' && workspaceSettingsRef.current.topBarDefaultCollapsed,
-                );
-                setActiveModeId(modeId);
-              };
-              setIsAcademySettingsLeaveDialogOpen(true);
-              return false;
-            }
-
-            setIsAcademyTopBarCollapsed(
-              modeId === 'academy' && academyCalendarSettings.topBarDefaultCollapsed,
-            );
-            setIsAdminTopBarCollapsed(
-              modeId === 'admin-console' && adminConsoleSettings.topBarDefaultCollapsed,
-            );
-            setIsWorkspaceTopBarCollapsed(
-              modeId === 'project' && workspaceSettings.topBarDefaultCollapsed,
-            );
-          }}
           onOpenAddItem={openAcademyCourseworkDialog}
-          onOpenProfile={
-            activeMode.id === 'academy'
-              ? () => {
-                  setAcademySettingsFocusSection('profile');
-                  handleSelectSidebarItem('settings');
-                }
-              : activeMode.id === 'project'
-                ? () => handleSelectSidebarItem('settings')
-              : undefined
-          }
+          onOpenProfile={() => {
+            setAcademySettingsFocusSection('profile');
+            handleSelectSidebarItem('settings');
+          }}
           onSignOut={signOut}
-          onToggleTopBarCollapsed={
-            activeMode.id === 'academy'
-              ? () => setIsAcademyTopBarCollapsed((currentValue) => !currentValue)
-              : activeMode.id === 'project'
-                ? () => setIsWorkspaceTopBarCollapsed((currentValue) => !currentValue)
-              : activeMode.id === 'admin-console'
-                ? () => setIsAdminTopBarCollapsed((currentValue) => !currentValue)
-                : undefined
-          }
+          onToggleTopBarCollapsed={() => setAcademyTopBarCollapseOverride({
+            defaultValue: academyCalendarSettings.topBarDefaultCollapsed,
+            value: !effectiveTopBarCollapsed,
+          })}
           onThemeChange={handleThemeChange}
-          theme={activeMode.id === 'academy'
-            ? academyEffectiveTheme
-            : activeMode.id === 'project'
-              ? workspaceEffectiveTheme
-              : theme}
+          theme={academyEffectiveTheme}
         />
       )}
+
+      {canvasRedirectFeedback ? (
+        <div
+          className={cn(
+            'mx-3 mt-3 flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-sm font-semibold lg:mx-4',
+            canvasRedirectFeedback.tone === 'error'
+              ? 'border-destructive/35 bg-destructive/10 text-destructive'
+              : 'border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200',
+          )}
+          role={canvasRedirectFeedback.tone === 'error' ? 'alert' : 'status'}
+        >
+          <span>{canvasRedirectFeedback.message}</span>
+          <Button onClick={() => setCanvasRedirectFeedback(null)} size="sm" type="button" variant="ghost">
+            Dismiss
+          </Button>
+        </div>
+      ) : null}
 
       <Dialog
         onOpenChange={(open) => {
@@ -9364,16 +7271,10 @@ function App() {
       >
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>
-              {isWorkspaceSettingsView
-                ? dictionary.workspaceSettingsLeaveTitle
-                : dictionary.academySettingsLeaveTitle}
-            </DialogTitle>
+            <DialogTitle>{dictionary.academySettingsLeaveTitle}</DialogTitle>
           </DialogHeader>
           <p className="text-sm font-semibold text-muted-foreground">
-            {isWorkspaceSettingsView
-              ? dictionary.workspaceSettingsLeaveDescription
-              : dictionary.academySettingsLeaveDescription}
+            {dictionary.academySettingsLeaveDescription}
           </p>
           <DialogFooter className="gap-2 sm:justify-between">
             <Button
@@ -9389,11 +7290,7 @@ function App() {
             <div className="flex flex-wrap justify-end gap-2">
               <Button
                 onClick={() => {
-                  if (isWorkspaceSettingsView) {
-                    handleRevertWorkspaceSettings();
-                  } else {
-                    handleRevertAcademyCalendarSettings();
-                  }
+                  handleRevertAcademyCalendarSettings();
                   runPendingSettingsNavigation();
                 }}
                 type="button"
@@ -9402,26 +7299,16 @@ function App() {
                 {dictionary.academySettingsLeaveRevert}
               </Button>
               <Button
-                disabled={
-                  isWorkspaceSettingsView
-                    ? workspacePreferencesSaveStatus === 'saving'
-                    : academyPreferencesSaveStatus === 'saving'
-                }
+                disabled={academyPreferencesSaveStatus === 'saving'}
                 onClick={() => {
-                  const saveTask = isWorkspaceSettingsView
-                    ? handleSaveWorkspaceSettings()
-                    : handleSaveAcademyCalendarSettings();
-
-                  void saveTask
+                  void handleSaveAcademyCalendarSettings()
                     .then(() => {
                       runPendingSettingsNavigation();
                     });
                 }}
                 type="button"
               >
-                {(isWorkspaceSettingsView
-                  ? workspacePreferencesSaveStatus === 'saving'
-                  : academyPreferencesSaveStatus === 'saving')
+                {academyPreferencesSaveStatus === 'saving'
                   ? dictionary.academySettingsSaving
                   : dictionary.academySettingsLeaveSave}
               </Button>
@@ -9498,19 +7385,18 @@ function App() {
       <main
         className={cn(
           'mx-auto grid w-full max-w-[2400px] items-start gap-3 overflow-x-clip p-3',
-          isAcademyMode ? !isAcademyEffectiveLarge && 'block' : 'max-lg:block',
-          isMainOnlyView && !isSettingsMainView && !isCoursesView
+          !isAcademyEffectiveLarge && 'block',
+          isMainOnlyView && !isAcademySettingsView
             ? 'lg:min-h-[calc(100vh_-_var(--top-bar-height))] lg:overflow-visible'
             : 'lg:h-[calc(100vh_-_var(--top-bar-height))] lg:grid-rows-1 lg:items-stretch lg:overflow-hidden',
-          isAcademyMode &&
-            shouldUseAcademyFullHeightLayout &&
-            (isMainOnlyView && !isSettingsMainView && !isCoursesView
+          shouldUseAcademyFullHeightLayout &&
+            (isMainOnlyView && !isAcademySettingsView
               ? 'min-h-[calc(100vh_-_var(--top-bar-height))] overflow-visible'
               : 'h-[calc(100vh_-_var(--top-bar-height))] grid-rows-1 items-stretch overflow-hidden'),
-          isSettingsMainView &&
+          isAcademySettingsView &&
             'h-[calc(100vh_-_var(--top-bar-height))] grid-rows-1 items-stretch overflow-hidden',
           shouldShowAcademyBottomNav && 'pb-20 max-[520px]:pb-24',
-          activeMode.id === 'academy' && 'max-[520px]:px-2 max-[520px]:pb-24 max-[520px]:pt-2',
+          'max-[520px]:px-2 max-[520px]:pb-24 max-[520px]:pt-2',
           mainGridColumnsClass,
         )}
         style={{
@@ -9531,29 +7417,22 @@ function App() {
         <section
           className={cn(
             'grid w-full min-w-0 lg:min-h-0 lg:pr-1',
-            ((isAcademyMode && shouldUseAcademyFullHeightLayout) || shouldUseWorkspaceCalendarFullHeightLayout) && 'min-h-0 pr-1',
-            isMainOnlyView && !isSettingsMainView && !isCoursesView
+            shouldUseAcademyFullHeightLayout && 'min-h-0 pr-1',
+            isMainOnlyView && !isAcademySettingsView
               ? 'lg:overflow-visible'
               : 'lg:h-full lg:overflow-x-hidden',
-            isAcademyMode &&
-              shouldUseAcademyFullHeightLayout &&
-              (isMainOnlyView && !isSettingsMainView && !isCoursesView
+            shouldUseAcademyFullHeightLayout &&
+              (isMainOnlyView && !isAcademySettingsView
                 ? 'overflow-visible'
                 : 'h-full overflow-x-hidden'),
-            shouldUseWorkspaceCalendarFullHeightLayout && 'h-full overflow-x-hidden',
-            isSettingsMainView && 'h-full min-h-0 overflow-y-auto overflow-x-hidden pr-1',
-            (isCommunicationView || isCoursesView)
-              ? 'gap-4 content-stretch lg:grid-rows-[minmax(0,1fr)] lg:overflow-hidden max-lg:gap-3'
-              : isDashboardWorkspaceView
+            isAcademySettingsView && 'h-full min-h-0 overflow-y-auto overflow-x-hidden pr-1',
+            isDashboardWorkspaceView
                 ? effectiveCalendarExpanded
                   ? 'gap-0 content-stretch lg:grid-rows-[minmax(0,1fr)] lg:overflow-hidden'
                   : 'gap-4 content-stretch lg:grid-rows-[auto_minmax(0,1fr)] lg:overflow-hidden max-lg:gap-3'
                 : 'gap-4 content-start lg:overflow-y-auto max-lg:gap-3',
-            isAcademyMode &&
-              shouldUseAcademyFullHeightLayout &&
-              ((isCommunicationView || isCoursesView)
-                ? 'grid-rows-[minmax(0,1fr)] overflow-hidden'
-                : isDashboardWorkspaceView
+            shouldUseAcademyFullHeightLayout &&
+              (isDashboardWorkspaceView
                   ? effectiveCalendarExpanded
                     ? 'grid-rows-[minmax(0,1fr)] overflow-hidden'
                     : 'grid-rows-[auto_minmax(0,1fr)] overflow-hidden'
@@ -9564,33 +7443,7 @@ function App() {
             fallback={<WorkspaceViewFallback />}
             key={authSession ? getAuthSessionIdentityKey(authSession) ?? 'anonymous' : 'anonymous'}
           >
-            {isDriveView ? (
-              <DriveFilesView onSelectedItemChange={setSelectedDriveItem} />
-            ) : isEmailView ? (
-              <GoogleCommunicationView key="email" type="email" />
-            ) : isOutlookView ? (
-              <OutlookEmailView />
-            ) : isChatView ? (
-              <GoogleCommunicationView key="chat" type="chat" />
-            ) : isCanvasInboxView ? (
-              <CanvasInboxView
-                onOpenIntegration={openAcademyCourseResource}
-                selectedSemester={selectedAcademySemester}
-              />
-            ) : isAcademyPeopleView ? (
-              <CanvasPeopleView
-                onOpenCoursePeople={openAcademyCourseResource}
-                selectedSemester={selectedAcademySemester}
-              />
-            ) : isAcademyGradesView ? (
-              <AcademyGradesView selectedSemester={selectedAcademySemester} />
-            ) : isCoursesView ? (
-              <CourseOverviewView
-                initialResourceUrl={selectedCourseOverviewResourceUrl}
-                initialSelectedCourseRowId={selectedCourseOverviewRowId}
-                selectedSemester={selectedAcademySemester}
-              />
-            ) : isAcademySettingsView ? (
+            {isAcademySettingsView ? (
               <AcademySettingsView
                 authSession={authSession}
                 focusSection={academySettingsFocusSection}
@@ -9605,34 +7458,25 @@ function App() {
                 settingsSaveError={academyPreferencesSaveError}
                 settingsSaveStatus={academyPreferencesSaveStatus}
               />
-            ) : isWorkspaceManagementView ? (
-              <WorkspaceManagementView
-                access={authSession?.access ?? []}
-                canManageCalendar={(authSession?.permissions ?? []).some(
-                  (permission) => permission.toLowerCase() === 'workspace-manage-calendar',
-                )}
-                onNavigate={handleSelectSidebarItem}
-                section={activeSidebarItem}
-                timeZone={workspaceSettings.timeZone}
-              />
-            ) : isWorkspaceSettingsView ? (
-              <WorkspaceSettingsView
-                hasUnsavedChanges={hasUnsavedWorkspaceSettings}
-                onRevertSettings={handleRevertWorkspaceSettings}
-                onSaveSettings={handleSaveWorkspaceSettings}
-                onSettingsChange={handleWorkspaceSettingsChange}
-                settings={workspaceSettings}
-                settingsSaveError={workspacePreferencesSaveError}
-                settingsSaveStatus={workspacePreferencesSaveStatus}
-              />
             ) : isAdminUsersView ? (
               <AdminUsersView />
-            ) : isAdminGroupsView ? (
-              <AdminGroupsView />
-            ) : isAdminGeneralSettingsView ? (
-              <AdminGeneralSettingsView
-                onSettingsChange={handleAdminConsoleSettingsChange}
-                settings={adminConsoleSettings}
+            ) : isCoursesView ? (
+              <CourseOverviewView
+                initialResourceUrl={selectedCourseOverviewResourceUrl}
+                initialSelectedCourseRowId={selectedCourseOverviewRowId}
+                selectedSemester={selectedAcademySemester}
+              />
+            ) : isGradesView ? (
+              <AcademyGradesView selectedSemester={selectedAcademySemester} />
+            ) : isInboxView ? (
+              <CanvasInboxView
+                onOpenIntegration={openAcademyCourseResource}
+                selectedSemester={selectedAcademySemester}
+              />
+            ) : isPeopleView ? (
+              <CanvasPeopleView
+                onOpenCoursePeople={openAcademyCourseResource}
+                selectedSemester={selectedAcademySemester}
               />
             ) : (
               <>
@@ -9651,28 +7495,15 @@ function App() {
                       uncompletedAfterHours: academyCalendarSettings.courseworkHideUncompletedAfterHours,
                     }}
                     courseworkShowStudyItems={academyCalendarSettings.courseworkShowStudyItems}
-                    effectiveWideSummaryCards={isAcademyMode ? isAcademyEffectiveExtraLarge : undefined}
+                    effectiveWideSummaryCards={isAcademyEffectiveExtraLarge}
                     hideSummaryCards={effectiveCalendarExpanded}
                     onOpenAddItem={openAcademyCourseworkDialog}
                     onOpenCourse={openAcademyCourseResource}
                     onToggleCourseworkStudyItems={handleToggleCourseworkStudyItems}
                     selectedSemester={selectedAcademySemester}
-                    onPlanMeeting={() => {
-                      window.open(
-                        'https://calendar.google.com/calendar/u/0/r/eventedit',
-                        '_blank',
-                        'noopener,noreferrer',
-                      );
-                    }}
-                    onStartMeetingNow={() => {
-                      window.open('https://meet.google.com/new', '_blank', 'noopener,noreferrer');
-                    }}
-                    onWriteInPersonMeetingReport={() => {
-                      window.open('https://docs.new', '_blank', 'noopener,noreferrer');
-                    }}
                   />
                 </div>
-              {activeMode.id === 'academy' && currentView === 'board' ? (
+              {currentView === 'board' ? (
                 <div
                   className={cn(
                     'min-h-[calc(100dvh_-_var(--top-bar-height)_-_6.5rem)] flex-col overflow-hidden rounded-xl bg-card p-3 shadow-none',
@@ -9685,10 +7516,9 @@ function App() {
               <div
                 className={cn(
                   'min-w-0 lg:flex lg:h-full lg:min-h-0 lg:flex-col',
-                  (shouldForceDashboardCalendarFill || shouldUseCompactDashboardMonth || shouldUseWorkspaceCalendarFullHeightLayout) &&
+                  (shouldForceDashboardCalendarFill || shouldUseCompactDashboardMonth) &&
                     'flex h-full min-h-0 flex-col',
-                  activeMode.id === 'academy' &&
-                    currentView === 'board' &&
+                  currentView === 'board' &&
                     isPhoneAcademyMode &&
                     'hidden',
                 )}
@@ -9702,56 +7532,42 @@ function App() {
                   courseFilterOptions={calendarCourseFilterOptions}
                   data={calendarData}
                   emptyMessage={canvasCalendarEmptyMessage}
-                  fillHeight={(shouldUseAcademyFullHeightLayout && isDashboardWorkspaceView) || shouldUseWorkspaceCalendarFullHeightLayout}
+                  warningMessage={hasIncompleteVisibleCanvasCalendar
+                    ? dictionary.canvasCalendarIncomplete
+                    : undefined}
+                  fillHeight={shouldUseAcademyFullHeightLayout && isDashboardWorkspaceView}
                   focusedBoardItemId={focusedCalendarTodoId}
-                  holidayNation={activeMode.id === 'academy' ? academyCalendarSettings.nation : undefined}
-                  holidayNations={activeMode.id === 'project' ? workspaceSettings.holidayNations : undefined}
+                  holidayNation={academyCalendarSettings.nation}
                   isExpanded={effectiveCalendarExpanded}
                   isCompactMonth={shouldUseCompactDashboardMonth}
                   isSelectedDateToday={isSelectedCalendarDayToday}
-                  isLoading={activeMode.id === 'academy' && effectiveCanvasCalendarLoadStatus === 'loading'}
+                  isLoading={effectiveCanvasCalendarLoadStatus === 'loading'}
                   mode={activeMode}
-                  onAddCourseworkForDay={activeMode.id === 'academy'
-                    ? handleQuickAddCalendarCourseworkForDay
-                    : undefined}
+                  onAddCourseworkForDay={handleQuickAddCalendarCourseworkForDay}
                   onFinishTodoTitleEdit={handleFinishCalendarTodoTitleEdit}
-                  onNextMonth={activeMode.id === 'academy'
-                    ? () => setCalendarMonth((currentMonth) => addCalendarMonths(currentMonth, 1))
-                    : activeMode.id === 'project'
-                      ? () => setCalendarMonth((currentMonth) => addCalendarMonths(currentMonth, 1))
-                      : undefined}
-                  onNextAgendaDay={activeMode.id === 'academy' || activeMode.id === 'project'
-                    ? () => handleMoveSelectedAgendaDay(1)
-                    : undefined}
-                  onOpenAddItem={activeMode.id === 'academy'
-                    ? handleQuickAddCalendarTodo
-                    : undefined}
+                  onNextMonth={() => setCalendarMonth((currentMonth) => addCalendarMonths(currentMonth, 1))}
+                  onNextAgendaDay={() => handleMoveSelectedAgendaDay(1)}
+                  onOpenAddItem={handleQuickAddCalendarTodo}
                   onOpenTodo={openCalendarActionItem}
                   onOpenTodoDetails={handleOpenCalendarTodoDetails}
                   onMoveTodoDueDate={handleMoveCalendarTodoDueDate}
-                  onPreviousAgendaDay={activeMode.id === 'academy' || activeMode.id === 'project'
-                    ? () => handleMoveSelectedAgendaDay(-1)
-                    : undefined}
-                  onPreviousMonth={activeMode.id === 'academy'
-                    ? () => setCalendarMonth((currentMonth) => addCalendarMonths(currentMonth, -1))
-                    : activeMode.id === 'project'
-                      ? () => setCalendarMonth((currentMonth) => addCalendarMonths(currentMonth, -1))
-                      : undefined}
+                  onPreviousAgendaDay={() => handleMoveSelectedAgendaDay(-1)}
+                  onPreviousMonth={() => setCalendarMonth((currentMonth) => addCalendarMonths(currentMonth, -1))}
                   onRemoveTodo={handleRemoveCalendarTodo}
                   onStartTodoTitleEdit={(item) => setFocusedCalendarTodoId(item.id)}
                   onToggleCourseFilter={handleToggleCalendarCourse}
                   onSelectItem={(day) => {
                     if (day?.dateIso) {
                       setSelectedCalendarDayIso(day.dateIso);
-                      if (activeMode.id === 'academy' && isDayTodoDialogMode && !isPhoneAcademyMode) {
+                      if (isDayTodoDialogMode && !isPhoneAcademyMode) {
                         setIsDayTodoDialogOpen(true);
                       }
                     }
                   }}
-                  onToggleExpanded={(activeMode.id === 'academy' && !shouldAutoExpandCalendar) || activeMode.id === 'project'
+                  onToggleExpanded={!shouldAutoExpandCalendar
                     ? () => setIsCalendarExpanded((currentValue) => !currentValue)
                     : undefined}
-                  onToday={activeMode.id === 'academy' || activeMode.id === 'project' ? handleMoveSelectedDayToToday : undefined}
+                  onToday={handleMoveSelectedDayToToday}
                   onToggleTodoDone={handleToggleCalendarTodoDone}
                   onToggleTodoStar={handleToggleCalendarTodoStar}
                   onUpdateTodoTitle={handleUpdateCalendarTodoTitle}
@@ -9759,23 +7575,23 @@ function App() {
                     const isOpeningDayScopedView = view === 'agenda' || view === 'board';
                     const isLeavingDayScopedViews = currentView !== 'agenda' && currentView !== 'board';
 
-                    if ((activeMode.id === 'academy' || activeMode.id === 'project') && isOpeningDayScopedView && isLeavingDayScopedViews) {
+                    if (isOpeningDayScopedView && isLeavingDayScopedViews) {
                       handleMoveSelectedDayToToday();
                     }
 
                     navigateWorkspace({
                       modeId: activeMode.id,
-                      sidebarItemId: view === 'board' || view === 'timeline' ? view : 'calendar',
+                      sidebarItemId: view === 'board' ? view : 'calendar',
                       view,
                     });
                   }}
-                  progressDisplay={activeCalendarProgressDisplay}
+                  progressDisplay={academyCalendarSettings.progressDisplay}
                   progressThresholds={calendarProgressThresholds}
                   showCurrentTime={isSelectedCalendarDayToday}
                   todayIso={activeCalendarTodayIso}
                   view={currentView}
                 />
-                {activeMode.id === 'academy' && currentView === 'month' ? (
+                {currentView === 'month' ? (
                   <div
                     className={cn(
                       'px-1 pb-3 pt-2',
@@ -9790,27 +7606,21 @@ function App() {
             )}
           </Suspense>
         </section>
-        {isDriveView ? (
-          <DriveDetailPanel item={selectedDriveItem} />
-        ) : isMainOnlyView ? null : (
-          activeMode.id === 'academy' ? (
-            <aside
-              className={cn(
-                'min-h-0 w-full min-w-0 overflow-hidden rounded-xl bg-card p-4 shadow-none',
-                canShowAcademyDashboardSideTodo
-                  ? 'flex h-full flex-col self-stretch'
-                  : 'hidden',
-              )}
-            >
-              {renderDayTodoContent()}
-            </aside>
-          ) : (
-            <DetailPanel item={calendarData.detailItem} mode={activeMode} />
-          )
+        {isMainOnlyView ? null : (
+          <aside
+            className={cn(
+              'min-h-0 w-full min-w-0 overflow-hidden rounded-xl bg-card p-4 shadow-none',
+              canShowAcademyDashboardSideTodo
+                ? 'flex h-full flex-col self-stretch'
+                : 'hidden',
+            )}
+          >
+            {renderDayTodoContent()}
+          </aside>
         )}
       </main>
 
-      {activeMode.id === 'academy' && isDashboardWorkspaceView && isDayTodoDialogMode ? (
+      {isDashboardWorkspaceView && isDayTodoDialogMode ? (
         <>
           <Dialog onOpenChange={setIsDayTodoDialogOpen} open={isDayTodoDialogOpen}>
             <DialogContent className="grid max-h-[calc(100vh-2rem)] overflow-hidden sm:max-w-lg">
@@ -9827,132 +7637,73 @@ function App() {
         </>
       ) : null}
 
-      {activeMode.id === 'academy' ? (
-        <CalendarTodoDetailsDialog
-          item={selectedCalendarTodoDetailsItem}
-          onOpenItem={openCalendarSourceItem}
-          onOpenChange={(isOpen) => {
-            if (!isOpen) {
-              setSelectedCalendarTodoDetailsId(null);
-            }
-          }}
-          onSave={handleSaveCalendarTodoDetails}
-        />
-      ) : null}
-
-      {activeMode.id === 'academy' ? (
-        <nav
-          className={cn(
-            'fixed inset-x-0 bottom-0 z-50 gap-2 border-t bg-card/95 py-1.5 pb-[calc(env(safe-area-inset-bottom)+0.375rem)] shadow-[0_-12px_32px_hsl(var(--background)/0.75)] backdrop-blur-xl',
-            shouldShowAcademyBottomNav ? 'grid' : 'hidden',
-            isPhoneAcademyMode ? 'grid-cols-3 px-5' : 'px-4',
-          )}
-          aria-label="Academy navigation"
-          style={isPhoneAcademyMode
-            ? undefined
-            : {
-                gridTemplateColumns: `repeat(${Math.max(
-                  1,
-                  filteredActiveMode.sidebar.flatMap((section) => section.items).length,
-                )}, minmax(0, 1fr))`,
-              }}
-        >
-          {(isPhoneAcademyMode
-            ? [
-                {
-                  id: 'calendar',
-                  icon: 'calendar-days',
-                  label: dictionary.mobileCalendar,
-                  active: isDashboardWorkspaceView && currentView !== 'board',
-                  onClick: () => navigateWorkspace({
-                    modeId: activeMode.id,
-                    sidebarItemId: 'calendar',
-                    view: 'month',
-                  }),
-                },
-                {
-                  id: 'courses',
-                  icon: 'book-open',
-                  label: dictionary.itemLabels.courses,
-                  active: isCoursesView,
-                  onClick: () => navigateWorkspace({
-                    modeId: activeMode.id,
-                    sidebarItemId: 'courses',
-                    view: currentView,
-                  }),
-                },
-                {
-                  id: 'todo',
-                  icon: 'list-checks',
-                  label: language === 'ko' ? '할 일' : 'To Do',
-                  active: isDashboardWorkspaceView && currentView === 'board',
-                  onClick: () => {
-                    handleMoveSelectedDayToToday();
-                    navigateWorkspace({
-                      modeId: activeMode.id,
-                      sidebarItemId: 'calendar',
-                      view: 'board',
-                    });
-                  },
-                },
-              ]
-            : filteredActiveMode.sidebar.flatMap((section) =>
-                section.items.map((item) => ({
-                  id: item.id,
-                  icon: item.icon,
-                  label: translateItemLabel(item.id, item.label),
-                  active: activeSidebarItem === item.id,
-                  onClick: () => handleSelectSidebarItem(item.id),
-                })),
-              )).map((item) => (
-            <Button
-              aria-label={item.label}
-              className={cn(
-                'mx-auto min-w-0 rounded-full bg-transparent p-0 transition-colors hover:bg-transparent',
-                isPhoneAcademyMode ? 'size-11' : 'size-10',
-                item.active
-                  ? 'text-primary hover:text-primary'
-                  : 'text-muted-foreground hover:text-foreground',
-              )}
-              key={item.id}
-              onClick={item.onClick}
-              title={item.label}
-              type="button"
-              variant="ghost"
-            >
-              <WorkspaceIcon name={item.icon} size={isPhoneAcademyMode ? 22 : 20} />
-            </Button>
-          ))}
-        </nav>
-      ) : (
-        <nav
-          className="sticky bottom-0 z-30 hidden grid-cols-4 gap-2 border-t bg-card/90 p-2 backdrop-blur-xl max-lg:grid"
-          aria-label="Mobile workspace navigation"
-        >
-          <Button className="h-10 rounded-lg bg-primary text-primary-foreground" type="button" variant="ghost">
-            <WorkspaceIcon name="layout-dashboard" size={16} />
-            <span>{dictionary.mobileHome}</span>
-          </Button>
-          <Button className="h-10 rounded-lg bg-muted/60 text-muted-foreground" type="button" variant="ghost">
-            <WorkspaceIcon name="calendar-days" size={16} />
-            <span>{dictionary.mobileCalendar}</span>
-          </Button>
-          <Button className="h-10 rounded-lg bg-muted/60 text-muted-foreground" type="button" variant="ghost">
-            <WorkspaceIcon name="list-checks" size={16} />
-            <span>{dictionary.mobileTasks}</span>
-          </Button>
-          <Button className="h-10 rounded-lg bg-muted/60 text-muted-foreground" type="button" variant="ghost">
-            <WorkspaceIcon name="settings" size={16} />
-            <span>{dictionary.mobileMore}</span>
-          </Button>
-        </nav>
-      )}
-
-      <AddItemModal
-        mode={activeMode}
-        onClose={() => setIsAddModalOpen(false)}
-        open={isAddModalOpen}
+      <CalendarTodoDetailsDialog
+        item={selectedCalendarTodoDetailsItem}
+        key={selectedCalendarTodoDetailsItem?.id ?? 'closed-calendar-todo-details'}
+        onOpenItem={openCalendarSourceItem}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) {
+            setSelectedCalendarTodoDetailsId(null);
+          }
+        }}
+        onSave={handleSaveCalendarTodoDetails}
       />
+
+      <nav
+        className={cn(
+          'fixed inset-x-0 bottom-0 z-50 gap-2 border-t bg-card/95 py-1.5 pb-[calc(env(safe-area-inset-bottom)+0.375rem)] shadow-[0_-12px_32px_hsl(var(--background)/0.75)] backdrop-blur-xl',
+          shouldShowAcademyBottomNav ? 'grid' : 'hidden',
+          isPhoneAcademyMode ? 'flex overflow-x-auto px-2' : 'px-4',
+        )}
+        aria-label="Academy navigation"
+        style={isPhoneAcademyMode
+          ? undefined
+          : {
+              gridTemplateColumns: `repeat(${Math.max(
+                1,
+                filteredActiveMode.sidebar.flatMap((section) => section.items).length,
+              )}, minmax(0, 1fr))`,
+            }}
+      >
+        {isPhoneAcademyMode ? (
+          <>
+            {filteredActiveMode.sidebar.flatMap((section) => section.items).map((item) => (
+              <div className="min-w-12 flex-1" key={item.id}>
+                <AcademyBottomNavigationButton
+                  active={activeSidebarItem === item.id && currentView !== 'board'}
+                  icon={item.icon}
+                  isPhone
+                  label={translateItemLabel(item.id, item.label)}
+                  onClick={() => handleSelectSidebarItem(item.id)}
+                />
+              </div>
+            ))}
+            <AcademyBottomNavigationButton
+              active={isDashboardWorkspaceView && currentView === 'board'}
+              icon="list-checks"
+              isPhone
+              label={language === 'ko' ? '할 일' : 'To Do'}
+              onClick={() => {
+                handleMoveSelectedDayToToday();
+                navigateWorkspace({
+                  modeId: activeMode.id,
+                  sidebarItemId: 'calendar',
+                  view: 'board',
+                });
+              }}
+            />
+          </>
+        ) : filteredActiveMode.sidebar.flatMap((section) => section.items).map((item) => (
+          <AcademyBottomNavigationButton
+            active={activeSidebarItem === item.id}
+            icon={item.icon}
+            isPhone={false}
+            key={item.id}
+            label={translateItemLabel(item.id, item.label)}
+            onClick={() => handleSelectSidebarItem(item.id)}
+          />
+        ))}
+      </nav>
     </div>
   );
 }

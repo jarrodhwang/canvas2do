@@ -1,16 +1,15 @@
 import type { WorkspaceModeMockData } from '../data/mockWorkspaceData';
-import { ChevronLeft, ChevronRight, LoaderCircle, Maximize2, Minimize2 } from 'lucide-react';
+import { AlertTriangle, ChevronLeft, ChevronRight, LoaderCircle, Maximize2, Minimize2 } from 'lucide-react';
 import { useRef, useState, type WheelEvent } from 'react';
 import { useLanguage } from '../context/LanguageContext';
 import { formatMonthHeading, getViewLabel, type AcademyNation } from '../i18n';
 import { cn } from '../lib/utils';
-import type { WorkspaceModeConfig, WorkspaceView } from '../modes/types';
+import type { ColorToken, WorkspaceModeConfig, WorkspaceView } from '../modes/types';
 import { AgendaView } from './AgendaView';
 import { BoardView } from './BoardView';
-import type { CalendarProgressDisplay, CalendarProgressThresholds } from './CalendarProgressIndicator';
+import type { CalendarProgressDisplay, CalendarProgressThresholds } from './calendarProgress';
 import { FilterPanel } from './FilterPanel';
 import { MonthCalendar } from './MonthCalendar';
-import { TimelineView } from './TimelineView';
 import { Button } from './ui/button';
 import { Card, CardContent, CardHeader } from './ui/card';
 import {
@@ -25,7 +24,7 @@ type CalendarActionItem = { id: string };
 
 interface CourseFilterOption {
   checked: boolean;
-  color: WorkspaceModeConfig['filters'][number]['options'][number]['color'];
+  color: ColorToken;
   id: string;
   label: string;
 }
@@ -34,7 +33,6 @@ const viewLabels: Record<WorkspaceView, { label: string; icon: string }> = {
   month: { label: 'Month', icon: 'calendar-days' },
   agenda: { label: 'Agenda', icon: 'list-checks' },
   board: { label: 'Board', icon: 'columns-3' },
-  timeline: { label: 'Timeline', icon: 'gantt-chart' },
 };
 
 interface CalendarShellProps {
@@ -78,6 +76,7 @@ interface CalendarShellProps {
   progressThresholds: CalendarProgressThresholds;
   showCurrentTime?: boolean;
   todayIso?: string;
+  warningMessage?: string;
 }
 
 export function CalendarShell({
@@ -121,19 +120,18 @@ export function CalendarShell({
   progressThresholds,
   showCurrentTime = false,
   todayIso,
+  warningMessage,
 }: CalendarShellProps) {
   const { dictionary, language } = useLanguage();
   const monthWheelLockRef = useRef(0);
   const [monthTransitionDirection, setMonthTransitionDirection] = useState<'next' | 'previous'>('next');
   const [mobileCalendarScope, setMobileCalendarScope] = useState<'month' | 'week'>('month');
   const monthHeading = formatMonthHeading(language, data.monthLabel);
-  const hasFilters = mode.id === 'academy'
-    ? Boolean(courseFilterOptions?.length)
-    : mode.filters.length > 0;
+  const hasFilters = Boolean(courseFilterOptions?.length);
   const hasMonthControls = Boolean(onPreviousMonth && onNextMonth);
   const hasMonthControlsForView = view === 'month' && hasMonthControls;
   const hasDayControls = (view === 'agenda' || view === 'board') && Boolean(onPreviousAgendaDay && onNextAgendaDay);
-  const showCalendarLoading = isLoading && (view === 'month' || view === 'agenda' || view === 'board' || view === 'timeline');
+  const showCalendarLoading = isLoading;
   const previousMonthLabel = language === 'ko' ? '이전 달' : 'Previous month';
   const nextMonthLabel = language === 'ko' ? '다음 달' : 'Next month';
   const previousDayLabel = language === 'ko' ? '이전 날짜' : 'Previous day';
@@ -346,9 +344,8 @@ export function CalendarShell({
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-72 p-2">
                 <FilterPanel
-                  courseOptions={courseFilterOptions}
+                  courseOptions={courseFilterOptions ?? []}
                   onToggleCourseOption={onToggleCourseFilter}
-                  variant="menu"
                 />
               </DropdownMenuContent>
             </DropdownMenu>
@@ -376,6 +373,16 @@ export function CalendarShell({
           fillHeight && 'flex min-h-0 flex-1 flex-col',
         )}
       >
+        {warningMessage && !showCalendarLoading ? (
+          <div
+            aria-live="polite"
+            className="mb-3 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-950 dark:border-amber-800 dark:bg-amber-950/35 dark:text-amber-100"
+            role="status"
+          >
+            <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+            <span>{warningMessage}</span>
+          </div>
+        ) : null}
         <div
           className={cn(
             'relative min-w-0 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col',
@@ -463,18 +470,6 @@ export function CalendarShell({
                 onToggleItemStar={onToggleTodoStar}
                 onUpdateItemTitle={onUpdateTodoTitle}
                 showCurrentTime={showCurrentTime}
-              />
-            ) : null}
-            {view === 'timeline' ? (
-              <TimelineView
-                items={data.timeline}
-                label={mode.timeline.label}
-                monthLabel={data.monthLabel}
-                onOpenItem={onOpenTodo}
-                onOpenItemDetails={onOpenTodoDetails}
-                onRemoveItem={onRemoveTodo}
-                onToggleItemDone={onToggleTodoDone}
-                onToggleItemStar={onToggleTodoStar}
               />
             ) : null}
           </div>

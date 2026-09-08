@@ -1,0 +1,15 @@
+# Temporary HTTP-only site used to obtain the first Let's Encrypt certificate.
+server {
+  listen 80;
+  listen [::]:80;
+  server_name example.com www.example.com;
+
+  location /.well-known/acme-challenge/ {
+    root /var/www/html;
+  }
+
+  location / {
+    return 200 "Canvas To Do origin is preparing HTTPS.\n";
+    add_header Content-Type text/plain;
+  }
+}

@@ -1,5 +1,5 @@
 <Solution>
   <Folder Name="/backend/">
-    <Project Path="backend/Incos.Workspace.Api/Incos.Workspace.Api.csproj" />
+    <Project Path="backend/CanvasToDo.Api/CanvasToDo.Api.csproj" />
   </Folder>
 </Solution>

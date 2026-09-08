@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useLanguage } from '../context/LanguageContext';
 import { getWeekdayLabels, type AcademyNation } from '../i18n';
 import { cn } from '../lib/utils';
-import type { CalendarProgressDisplay, CalendarProgressThresholds } from './CalendarProgressIndicator';
+import type { CalendarProgressDisplay, CalendarProgressThresholds } from './calendarProgress';
 import { DayCell } from './DayCell';
 import { Card } from './ui/card';
 import {

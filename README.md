@@ -41,17 +41,26 @@ or copies their data into the administrator's local Academy storage. Existing
 Canvas credentials are never returned; administrators can validate/replace or
 disconnect them using the same institution allowlist as users.
 
-Users submit a new password and confirmation under **Settings → Request a password
-change**. The old password remains valid until an administrator approves the request
-under **User Management → Details → Password & requests**. Requests expire after
-seven days, are replaced on resubmission, and become invalid if the account's
-security stamp changes. Approval revokes existing sessions and clears lockout.
-Administrators can also directly set a replacement password. Email recovery also
-submits for approval; changing the bootstrap environment password does not reset
-an existing account. Password requests store only an Identity password hash in the
-existing `auth_user_tokens` table; no schema migration is required. Approval/rejection
-removes the stored pending hash and records the actor and time. Account, credential,
-and scoped data actions are audited without logging passwords or Canvas tokens.
+Signed-in users change their password immediately under **Settings → Change password**,
+using their current password plus the new password and confirmation. No administrator
+approval is required. The current session is refreshed; other sessions and pending
+reset requests are revoked. Signed-in accounts without a password can set one there.
+
+On the sign-in page, **Forgot password? → Reset your password** asks for email,
+new password, and confirmation, then queues a reset for administrator approval under
+**User Management → Details → Password & requests**. This works without email delivery.
+The public response does not reveal whether an account exists. Existing passwords
+remain valid until approval, and anonymous resubmissions cannot replace an active
+pending request. Admins see the request source and must verify the requester's identity
+before approving a public request: entering an email does not prove ownership.
+
+Requests expire after seven days and become invalid when the security stamp changes.
+Approval revokes sessions and clears lockout; rejection leaves the password unchanged.
+Existing verified email recovery links also submit requests for approval. Administrators
+can directly set a replacement password. Changing the bootstrap environment password
+does not reset an existing account. Requests store only an Identity password hash in
+`auth_user_tokens`, so no schema migration is required. Approval/rejection removes the
+pending hash and records actor/time. Passwords and Canvas tokens are never logged.
 
 Standard users can access only their own Academy calendar, course and
 grade summaries, Canvas inbox and course rosters, Canvas connection, preferences,

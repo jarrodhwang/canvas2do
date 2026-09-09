@@ -281,6 +281,8 @@ export function LoginPage({
     setFeedback(null);
     setDevelopmentLink(null);
 
+    setResetPassword('');
+    setResetConfirmPassword('');
     if (view === 'forgot-password' || view === 'resend-confirmation') {
       setRecoveryEmail(email);
     }
@@ -368,29 +370,33 @@ export function LoginPage({
     event.preventDefault();
     setFeedback(null);
     setDevelopmentLink(null);
-
-    if (!config.emailDeliveryConfigured) {
-      setFeedback({
-        message: 'Email delivery is not configured. Contact the site operator for account help.',
-        tone: 'error',
-      });
+    const isReset = authView === 'forgot-password';
+    if (isReset && resetPassword !== resetConfirmPassword) {
+      setFeedback({ message: 'The passwords do not match.', tone: 'error' });
       return;
     }
-
+    if (isReset && !isCompliantPassword(resetPassword)) {
+      setFeedback({ message: passwordHelp, tone: 'error' });
+      return;
+    }
+    if (!isReset && !config.emailDeliveryConfigured) {
+      setFeedback({ message: 'Email delivery is not configured. Contact the site operator for account help.', tone: 'error' });
+      return;
+    }
     setIsSubmitting(true);
-
     try {
-      const result = authView === 'forgot-password'
-        ? await canvasToDoApi.forgotPassword(recoveryEmail)
+      const result = isReset
+        ? await canvasToDoApi.requestPasswordReset({ email: recoveryEmail, newPassword: resetPassword, confirmPassword: resetConfirmPassword })
         : await canvasToDoApi.resendConfirmation(recoveryEmail);
-      const action = authView === 'forgot-password' ? 'reset-password' : 'confirm-email';
       setFeedback({ message: result.message, tone: 'success' });
-      setDevelopmentLink(getDevelopmentLink(result, action));
+      if (isReset) {
+        setResetPassword('');
+        setResetConfirmPassword('');
+      } else {
+        setDevelopmentLink(getDevelopmentLink(result, 'confirm-email'));
+      }
     } catch (requestError) {
-      setFeedback({
-        message: requestError instanceof Error ? requestError.message : 'Unable to send account instructions.',
-        tone: 'error',
-      });
+      setFeedback({ message: requestError instanceof Error ? requestError.message : 'Unable to submit your request.', tone: 'error' });
     } finally {
       setIsSubmitting(false);
     }
@@ -651,7 +657,7 @@ export function LoginPage({
           </h2>
           <p className="mt-1 text-sm font-semibold leading-relaxed text-muted-foreground">
             {isPasswordRequest
-              ? 'If an eligible password account uses this address, we will send reset instructions.'
+              ? 'Enter your email and desired new password. An administrator will review your request. Your current password stays valid until approval.'
               : 'If an unconfirmed account uses this address, we will send a fresh confirmation link.'}
           </p>
         </div>
@@ -668,18 +674,33 @@ export function LoginPage({
             value={recoveryEmail}
           />
         </div>
-        {!isConfigLoading && !config.emailDeliveryConfigured ? (
+        {isPasswordRequest ? <>
+          <div className="grid gap-1.5">
+            <Label htmlFor="recovery-new-password">New password</Label>
+            <Input id="recovery-new-password" autoComplete="new-password" type="password" minLength={10} maxLength={256}
+              aria-describedby="recovery-password-help" required disabled={isSubmitting}
+              value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} />
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="recovery-confirm-password">Confirm new password</Label>
+            <Input id="recovery-confirm-password" autoComplete="new-password" type="password" minLength={10} maxLength={256}
+              aria-describedby="recovery-password-help" required disabled={isSubmitting}
+              value={resetConfirmPassword} onChange={(event) => setResetConfirmPassword(event.target.value)} />
+          </div>
+          <p id="recovery-password-help" className="text-xs text-muted-foreground">{passwordHelp} If a request is already pending, submitting again keeps that request.</p>
+        </> : null}
+        {!isPasswordRequest && !isConfigLoading && !config.emailDeliveryConfigured ? (
           <div className="rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-sm font-semibold text-amber-800 dark:text-amber-200" role="status">
             Email delivery is not configured. Contact the site operator for account help.
           </div>
         ) : null}
         <Button
           className="h-11 font-black"
-          disabled={isSubmitting || isConfigLoading || !config.emailDeliveryConfigured}
+          disabled={isSubmitting || (!isPasswordRequest && (isConfigLoading || !config.emailDeliveryConfigured))}
           type="submit"
         >
           {isSubmitting ? <Loader2 className="size-4 animate-spin" /> : <Mail className="size-4" />}
-          {isPasswordRequest ? 'Send reset instructions' : 'Resend confirmation'}
+          {isPasswordRequest ? 'Request password reset' : 'Resend confirmation'}
         </Button>
       </form>
     );

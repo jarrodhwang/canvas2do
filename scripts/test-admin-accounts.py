@@ -130,37 +130,70 @@ def main():
             print("PASS target isolation, read-only preview, partial settings preservation, Canvas allowlist")
 
             alice.call('/api/auth/profile', 'PATCH', {'newPassword': 'BypassTest123!', 'currentPassword': 'OriginalTest123!'}, 409)
-            alice.call('/api/auth/password-request', 'POST', {'newPassword': 'NewPasswordTest123!', 'confirmPassword': 'mismatch'}, 400)
-            pending = alice.call('/api/auth/password-request', 'POST', {'newPassword': 'NewPasswordTest123!', 'confirmPassword': 'NewPasswordTest123!'}, 202)['request']
+            anonymous.call('/api/auth/change-password', 'POST', {'newPassword': 'OwnPassword123!', 'confirmPassword': 'OwnPassword123!'}, 401)
+            other_alice = Client(base)
+            other_alice.login('alice@example.test', 'OriginalTest123!')
+            own_change = {'currentPassword': 'WrongPassword123!', 'newPassword': 'ImmediateChange123!', 'confirmPassword': 'ImmediateChange123!'}
+            alice.call('/api/auth/change-password', 'POST', own_change, 400)
+            own_change['currentPassword'] = 'OriginalTest123!'
+            alice.call('/api/auth/change-password', 'POST', {**own_change, 'confirmPassword': 'Mismatch123!'}, 400)
+            alice.call('/api/auth/change-password', 'POST', {**own_change, 'newPassword': 'short', 'confirmPassword': 'short'}, 400)
+            alice.call('/api/auth/change-password', 'POST', own_change)
+            assert alice.call('/api/auth/session')['isAuthenticated']
+            assert not other_alice.call('/api/auth/session')['isAuthenticated']
+            assert admin.call(target).get('passwordRequest') is None
+            alice.login('alice@example.test', 'OriginalTest123!', 401)
+            alice.login('alice@example.test', 'ImmediateChange123!')
+            print("PASS immediate Settings password change, current-password validation, refreshed own session, other-session revocation")
+
+            restart()
+            reset_path = '/api/auth/reset-password/request'
+            reset_body = {'email': 'alice@example.test', 'newPassword': 'NewPasswordTest123!', 'confirmPassword': 'NewPasswordTest123!'}
+            anonymous.call(reset_path, 'POST', {**reset_body, 'confirmPassword': 'Mismatch123!'}, 400)
+            unknown = anonymous.call(reset_path, 'POST', {**reset_body, 'email': 'unknown@example.test'}, 202)
+            submitted = anonymous.call(reset_path, 'POST', reset_body, 202)
+            assert unknown == submitted and 'request' not in submitted
+            pending = admin.call(target)['passwordRequest']
+            assert pending['source'] == 'sign-in-reset'
+            duplicate = anonymous.call(reset_path, 'POST', {**reset_body, 'newPassword': 'UntrustedReplacement123!', 'confirmPassword': 'UntrustedReplacement123!'}, 202)
+            assert duplicate == submitted and admin.call(target)['passwordRequest']['id'] == pending['id']
+            anonymous.call(reset_path, 'POST', {**reset_body, 'email': 'another-unknown@example.test'}, 202)
+            anonymous.call(reset_path, 'POST', reset_body, 429)
             stored = sql(f'''SELECT "Value" FROM auth_user_tokens WHERE "UserId" = '{ids['alice']}' AND "LoginProvider" = 'CanvasToDo.PasswordChange';''')
             assert 'NewPasswordTest123!' not in stored and json.loads(stored)['PasswordHash']
-            alice.login('alice@example.test', 'OriginalTest123!')
             detail = admin.call(target)
-            assert detail['passwordRequest']['id'] == pending['id']
             assert 'PasswordHash' not in json.dumps(detail) and 'NewPasswordTest123!' not in json.dumps(detail)
+            alice.login('alice@example.test', 'NewPasswordTest123!', 401)
+            alice.login('alice@example.test', 'ImmediateChange123!')
             assert next(p for p in admin.call('/api/admin/users')['users'] if p['id'] == ids['alice'])['passwordRequest']['status'] == 'pending'
+            bob.call(target + '/password-request/review', 'POST', {'requestId': pending['id'], 'approve': True}, 403)
             admin.call(target + '/password-request/review', 'POST', {'requestId': pending['id'], 'approve': True})
             stored = sql(f'''SELECT "Value" FROM auth_user_tokens WHERE "UserId" = '{ids['alice']}' AND "LoginProvider" = 'CanvasToDo.PasswordChange';''')
             assert json.loads(stored)['PasswordHash'] is None
             assert not alice.call('/api/auth/session')['isAuthenticated']
-            alice.login('alice@example.test', 'OriginalTest123!', 401)
+            alice.login('alice@example.test', 'ImmediateChange123!', 401)
             alice.login('alice@example.test', 'NewPasswordTest123!')
             admin.call(target + '/password-request/review', 'POST', {'requestId': pending['id'], 'approve': True}, 409)
-            print("PASS password approval, no immediate change, no hash disclosure, session revocation, replay rejection")
+            print("PASS public reset request, generic responses, rate limiting, pending-request preservation, approval, hash secrecy, replay rejection")
 
-            restart()  # Isolate rate-limit windows between scenarios; cookies and DB survive.
-            first = alice.call('/api/auth/password-request', 'POST', {'newPassword': 'ReplacementTest123!', 'confirmPassword': 'ReplacementTest123!'}, 202)['request']
-            second = alice.call('/api/auth/password-request', 'POST', {'newPassword': 'SecondRequest123!', 'confirmPassword': 'SecondRequest123!'}, 202)['request']
-            admin.call(target + '/password-request/review', 'POST', {'requestId': first['id'], 'approve': True}, 409)
-            admin.call(target + '/password-request/review', 'POST', {'requestId': second['id'], 'approve': False})
+            restart()
+            anonymous.call(reset_path, 'POST', {**reset_body, 'newPassword': 'RejectedRequest123!', 'confirmPassword': 'RejectedRequest123!'}, 202)
+            pending = admin.call(target)['passwordRequest']
+            admin.call(target + '/password-request/review', 'POST', {'requestId': pending['id'], 'approve': False})
             alice.login('alice@example.test', 'NewPasswordTest123!')
-            pending = alice.call('/api/auth/password-request', 'POST', {'newPassword': 'DiscardThis123!', 'confirmPassword': 'DiscardThis123!'}, 202)['request']
+            anonymous.call(reset_path, 'POST', {**reset_body, 'newPassword': 'DiscardThis123!', 'confirmPassword': 'DiscardThis123!'}, 202)
+            pending = admin.call(target)['passwordRequest']
+            alice.call('/api/auth/change-password', 'POST', {'currentPassword': 'NewPasswordTest123!', 'newPassword': 'OwnAfterRequest123!', 'confirmPassword': 'OwnAfterRequest123!'})
+            assert admin.call(target).get('passwordRequest') is None
+            admin.call(target + '/password-request/review', 'POST', {'requestId': pending['id'], 'approve': True}, 409)
+            anonymous.call(reset_path, 'POST', reset_body, 202)
+            pending = admin.call(target)['passwordRequest']
             admin.call(target + '/password', 'POST', {'newPassword': 'short', 'confirmPassword': 'short'}, 400)
             admin.call(target + '/password', 'POST', {'newPassword': 'AdminReplacement123!', 'confirmPassword': 'AdminReplacement123!'})
             assert not alice.call('/api/auth/session')['isAuthenticated']
             admin.call(target + '/password-request/review', 'POST', {'requestId': pending['id'], 'approve': True}, 409)
             alice.login('alice@example.test', 'AdminReplacement123!')
-            print("PASS request replacement/rejection and direct administrator reset invalidation")
+            print("PASS rejection and immediate user/admin changes invalidate pending requests")
 
             admin.call(target, 'PATCH', {'email': 'bob@example.test'}, 409)
             admin.call(target, 'PATCH', {'displayName': 'Alice Updated', 'phoneNumber': '+1 555 0100', 'email': 'alice.updated@example.test', 'status': 'active'})
@@ -170,11 +203,13 @@ def main():
             assert detail['displayName'] == 'Alice Updated' and detail['phoneNumber'] == '+1 555 0100'
             print("PASS profile updates, unique email enforcement, and email-change session revocation")
 
+            restart()
             reset = anonymous.call('/api/auth/forgot-password', 'POST', {'email': 'alice.updated@example.test'}, 202)
             params = urllib.parse.parse_qs(urllib.parse.urlparse(reset['developmentActionUrl']).fragment)
             request = anonymous.call('/api/auth/reset-password', 'POST', {'email': params['email'][0], 'code': params['code'][0],
                 'newPassword': 'RecoveryRequest123!', 'confirmPassword': 'RecoveryRequest123!'}, 202)
             assert request['request']['status'] == 'pending'
+            assert request['request']['source'] == 'email-verified-reset'
             alice.login('alice.updated@example.test', 'AdminReplacement123!')
             print("PASS email recovery also requires administrator approval")
 
@@ -184,7 +219,8 @@ def main():
             assert admin.call(target)['passwordRequest']['status'] == 'expired'
             print("PASS stale password requests cannot restore a credential after revocation")
 
-            pending = bob.call('/api/auth/password-request', 'POST', {'userId': ids['alice'], 'newPassword': 'BobRequest123!', 'confirmPassword': 'BobRequest123!'}, 202)['request']
+            anonymous.call(reset_path, 'POST', {'email': 'bob@example.test', 'userId': ids['alice'], 'newPassword': 'BobRequest123!', 'confirmPassword': 'BobRequest123!'}, 202)
+            pending = admin.call(f"/api/admin/users/{ids['bob']}")['passwordRequest']
             sql(f'''UPDATE auth_user_tokens SET "Value" = jsonb_set("Value"::jsonb, '{{RequestedAt}}', to_jsonb(now() - interval '8 days'))::text
                 WHERE "UserId" = '{ids['bob']}' AND "LoginProvider" = 'CanvasToDo.PasswordChange';''')
             admin.call(f"/api/admin/users/{ids['bob']}/password-request/review", 'POST', {'requestId': pending['id'], 'approve': True}, 409)

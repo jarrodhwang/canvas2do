@@ -392,6 +392,7 @@ export interface PasswordChangeStatus {
   requestedAt: string;
   expiresAt: string;
   reviewedAt?: string;
+  source?: 'sign-in-reset' | 'email-verified-reset' | 'legacy';
 }
 
 export interface AdminUsersResponse {
@@ -867,6 +868,10 @@ export const canvasToDoApi = {
     }
 
     return response.json() as Promise<AuthActionResponse>;
+  },
+
+  async requestPasswordReset(request: { email: string; newPassword: string; confirmPassword: string }) {
+    return this.accountRequest<AuthActionResponse>('/auth/reset-password/request', 'POST', request);
   },
 
   async forgotPassword(email: string) {

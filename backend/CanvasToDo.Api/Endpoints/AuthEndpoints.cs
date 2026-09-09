@@ -48,6 +48,10 @@ public static class AuthEndpoints
             .AllowAnonymous()
             .RequireRateLimiting("auth-sensitive")
             .WithName("ForgotPassword");
+        auth.MapPost("/reset-password/request", RequestPasswordResetAsync)
+            .AllowAnonymous()
+            .RequireRateLimiting("auth-sensitive")
+            .WithName("RequestPasswordReset");
         auth.MapPost("/reset-password", ResetPasswordAsync)
             .AllowAnonymous()
             .RequireRateLimiting("auth-sensitive")
@@ -68,17 +72,10 @@ public static class AuthEndpoints
             .RequireAuthorization()
             .RequireRateLimiting("auth-sensitive")
             .WithName("UpdateProfile");
-        auth.MapGet("/password-request", async (HttpContext context, UserManager<ApplicationUser> users, PasswordChangeService passwords) =>
-        {
-            var user = await users.GetUserAsync(context.User);
-            return user is null ? Results.Unauthorized() : Results.Ok(new { request = await passwords.GetAsync(user) });
-        }).RequireAuthorization();
-        auth.MapPost("/password-request", async (AdminAuthEndpoints.PasswordRequest request, HttpContext context,
-            UserManager<ApplicationUser> users, PasswordChangeService passwords) =>
-        {
-            var user = await users.GetUserAsync(context.User);
-            return user is null ? Results.Unauthorized() : await passwords.SubmitAsync(user.Id, request.NewPassword, request.ConfirmPassword, user.SecurityStamp);
-        }).RequireAuthorization().RequireRateLimiting("auth-sensitive");
+        auth.MapPost("/change-password", ChangePasswordAsync)
+            .RequireAuthorization()
+            .RequireRateLimiting("auth-sensitive")
+            .WithName("ChangeOwnPassword");
 
         auth.MapGet("/2fa/status", GetTwoFactorStatusAsync)
             .RequireAuthorization()
@@ -330,6 +327,30 @@ public static class AuthEndpoints
 
         // Keep the same status and message for unknown, inactive, external-only, and eligible users.
         return GenericPasswordResetAccepted(sendResult);
+    }
+
+    private static async Task<IResult> RequestPasswordResetAsync(
+        PasswordResetApprovalRequest request, HttpContext context, PasswordChangeService passwords)
+    {
+        context.Response.Headers.CacheControl = "no-store";
+        var email = NormalizeEmail(request.Email);
+        if (!IsValidEmail(email))
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["email"] = ["Enter a valid email address."] });
+        return await passwords.RequestResetAsync(email, request.NewPassword, request.ConfirmPassword);
+    }
+
+    private static async Task<IResult> ChangePasswordAsync(
+        ChangeOwnPasswordRequest request, HttpContext context, UserManager<ApplicationUser> users,
+        SignInManager<ApplicationUser> signInManager, PasswordChangeService passwords)
+    {
+        context.Response.Headers.CacheControl = "no-store";
+        var user = await users.GetUserAsync(context.User);
+        if (user is null) return Results.Unauthorized();
+        var result = await passwords.ChangeOwnAsync(user.Id, request.CurrentPassword,
+            request.NewPassword, request.ConfirmPassword, user.SecurityStamp);
+        if (result is IStatusCodeHttpResult { StatusCode: StatusCodes.Status200OK })
+            await signInManager.RefreshSignInAsync(user);
+        return result;
     }
 
     private static async Task<IResult> ResetPasswordAsync(
@@ -690,7 +711,7 @@ public static class AuthEndpoints
         var user = await userManager.GetUserAsync(context.User);
         if (user is null) return Results.Unauthorized();
         if (request.CurrentPassword is not null || request.NewPassword is not null)
-            return Results.Problem(statusCode: 409, detail: "Submit a password change request for administrator approval.");
+            return Results.Problem(statusCode: 409, detail: "Use the change-password endpoint to update your password.");
 
         var displayName = request.DisplayName?.Trim();
         if (string.IsNullOrWhiteSpace(displayName) || displayName.Length > 160)
@@ -1330,6 +1351,9 @@ public static class AuthEndpoints
     public sealed record EmailRequest(string? Email);
 
     public sealed record EmailTokenRequest(string? UserId, string? Code);
+
+    public sealed record PasswordResetApprovalRequest(string? Email, string? NewPassword, string? ConfirmPassword);
+    public sealed record ChangeOwnPasswordRequest(string? CurrentPassword, string? NewPassword, string? ConfirmPassword);
 
     public sealed record ResetPasswordRequest(string? Email, string? Code, string? NewPassword, string? ConfirmPassword = null);
 

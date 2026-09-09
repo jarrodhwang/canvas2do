@@ -151,14 +151,17 @@ export function AdminUserDetails({ userId, preview, onClose, onSaved }: Props) {
       </form>}
       {tab === 'password' && <div className="grid max-w-2xl gap-5">
         <section className="grid gap-3 rounded-lg border p-4">
-          <h3 className="font-bold">Password change request</h3>
+          <h3 className="font-bold">Password reset request</h3>
           {user.passwordRequest ? <>
+            <p className="text-xs text-muted-foreground">{user.passwordRequest.source === 'email-verified-reset'
+              ? 'Submitted through a verified email recovery link.'
+              : 'Submitted from the public sign-in form or an older flow. Verify the requester’s identity before approving; an email address alone does not prove ownership.'}</p>
             <p className="text-sm">{user.passwordRequest.status} · requested {new Date(user.passwordRequest.requestedAt).toLocaleString()}</p>
             {user.passwordRequest.status === 'pending' && <div className="flex gap-2">
               <Button disabled={busy} onClick={() => review(user.passwordRequest!, true)}><ShieldCheck className="size-4" /> Approve password</Button>
               <Button variant="outline" disabled={busy} onClick={() => review(user.passwordRequest!, false)}>Reject</Button>
             </div>}
-          </> : <p className="text-sm text-muted-foreground">No password change request.</p>}
+          </> : <p className="text-sm text-muted-foreground">No password reset request.</p>}
           <p className="text-xs text-muted-foreground">Approval applies the requested password and signs out existing sessions. Requested passwords cannot be viewed.</p>
         </section>
         <form className="grid gap-3" onSubmit={e => { e.preventDefault(); if (password !== confirmPassword) { setError('Passwords do not match.'); return; } void run(async () => {

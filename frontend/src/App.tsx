@@ -3567,7 +3567,7 @@ function AcademySettingsView({
             </form>
           </details>
           <AccountSecurityPanel onChanged={onProfileSaved} />
-          <PasswordChangePanel />
+          <PasswordChangePanel hasPassword={authSession?.hasPassword !== false} onChanged={onProfileSaved} />
           <LegacyAcademyImportPanel onImported={refreshAfterLegacyAcademyImport} />
           <details className="group rounded-lg border bg-muted/20 p-3">
             <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-black text-foreground">

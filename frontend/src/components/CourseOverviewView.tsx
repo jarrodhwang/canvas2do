@@ -164,6 +164,7 @@ interface CourseOverviewRow {
   starred: boolean;
   status: string;
   htmlUrl?: string;
+  links?: ManualLecture['links'];
   manualLecture?: ManualLecture;
 }
 
@@ -615,6 +616,7 @@ function createCanvasRows(
       starred: Boolean(preference.starred),
       status: formatStatus(course.workflowState),
       htmlUrl: course.htmlUrl,
+      links: preference.links,
     };
   });
 }
@@ -679,6 +681,7 @@ function createStoredCanvasRows(
       starred: Boolean(preference.starred),
       status: formatStatus(preference.workflowState),
       htmlUrl: preference.htmlUrl,
+      links: preference.links,
     }));
 }
 
@@ -1522,6 +1525,8 @@ function getIntegratedResourceFromModuleItem(
 function getCanvasNavigationItems(
   content: CanvasCourseContent | null,
   dictionary: ReturnType<typeof useLanguage>['dictionary'],
+  links: ManualLecture['links'] = [],
+  canvasBaseUrl?: string,
 ): CourseNavigationItem[] {
   const fallbackItems: CourseNavigationItem[] = [
     { id: 'home', label: dictionary.courseDetailHome, section: 'home' },
@@ -1534,8 +1539,39 @@ function getCanvasNavigationItems(
     { id: 'grades', label: dictionary.courseDetailGrades, section: 'grades' },
   ];
 
+  const appendSavedLinks = (items: CourseNavigationItem[]) => {
+    const normalizeNavigationUrl = (url?: string) => (
+      getIntegratedCourseResourceFromLink(url, { baseUrl: canvasBaseUrl })?.url
+    );
+    const existingUrls = new Set([
+      normalizeNavigationUrl(canvasBaseUrl),
+      ...items.map((item) => normalizeNavigationUrl(item.htmlUrl)),
+    ].filter((url): url is string => Boolean(url)));
+    const savedLinkItems = links.flatMap((link, index) => {
+      const resource = getIntegratedCourseResourceFromLink(link.url, {
+        baseUrl: canvasBaseUrl,
+        label: link.label,
+      });
+
+      if (!resource || !/^https?:\/\//i.test(resource.url) || existingUrls.has(resource.url)) {
+        return [];
+      }
+
+      existingUrls.add(resource.url);
+
+      return [{
+        id: `saved-link:${link.id}:${index}`,
+        label: link.label.trim() || `Link ${index + 1}`,
+        section: 'external' as const,
+        htmlUrl: resource.url,
+      }];
+    });
+
+    return [...items, ...savedLinkItems];
+  };
+
   if (!content || content.tabs.length === 0) {
-    return fallbackItems;
+    return appendSavedLinks(fallbackItems);
   }
 
   const items = content.tabs
@@ -1559,9 +1595,9 @@ function getCanvasNavigationItems(
       : null,
   ].filter(Boolean) as CourseNavigationItem[];
 
-  return hasHome
+  return appendSavedLinks(hasHome
     ? enrichedItems
-    : [{ id: 'home', label: dictionary.courseDetailHome, section: 'home' }, ...enrichedItems];
+    : [{ id: 'home', label: dictionary.courseDetailHome, section: 'home' }, ...enrichedItems]);
 }
 
 function getManualNavigationItems(dictionary: ReturnType<typeof useLanguage>['dictionary']): CourseNavigationItem[] {
@@ -1648,7 +1684,7 @@ function CourseDetailView({
   const [phoneScreen, setPhoneScreen] = useState<'menu' | 'content'>(initialResourceUrl ? 'content' : 'menu');
   const phoneScreenRef = useRef<HTMLDivElement>(null);
   const navigationItems = row.source === 'canvas'
-    ? getCanvasNavigationItems(content, dictionary)
+    ? getCanvasNavigationItems(content, dictionary, row.links, content?.course.htmlUrl ?? row.htmlUrl)
     : getManualNavigationItems(dictionary);
   const activeSection = activeItem.section;
   const detailItems = getCourseDetailItems(row, dictionary);
@@ -4482,7 +4518,12 @@ export function CourseOverviewView({
     }
 
     const navigationItems = selectedCourseRow.source === 'canvas'
-      ? getCanvasNavigationItems(canvasCourseContent, dictionary)
+      ? getCanvasNavigationItems(
+          canvasCourseContent,
+          dictionary,
+          selectedCourseRow.links,
+          canvasCourseContent?.course.htmlUrl ?? selectedCourseRow.htmlUrl,
+        )
       : getManualNavigationItems(dictionary);
     const nextActiveItem = activeCourseItem && navigationItems.some((item) => item.id === activeCourseItem.id)
       ? activeCourseItem

@@ -7238,7 +7238,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
       </Dialog>
 
       <Dialog open={isCanvasSetupOpen} onOpenChange={(open) => { if (!open) closeCanvasSetup(); }}>
-        <DialogContent aria-describedby="canvas-token-setup-description" className="max-h-[92dvh] overflow-y-auto sm:max-w-5xl">
+        <DialogContent aria-describedby="canvas-token-setup-description" className="max-h-[94dvh] overflow-y-auto sm:max-w-[min(1600px,96vw)]">
           <DialogHeader>
             <DialogTitle>{language === 'ko' ? 'Canvas 연결' : 'Connect your Canvas'}</DialogTitle>
           </DialogHeader>

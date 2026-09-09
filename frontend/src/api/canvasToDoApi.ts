@@ -412,6 +412,11 @@ export interface UpdateAdminUserRequest {
 }
 
 
+export interface CanvasSchool {
+  name: string;
+  instanceUrl: string;
+}
+
 export interface CanvasTokenStatus {
   configured: boolean;
   connected: boolean;
@@ -425,6 +430,7 @@ export interface CanvasTokenStatus {
   oauthConfigured?: boolean;
   manualTokenEnabled?: boolean;
   connectUrl?: string;
+  schools?: CanvasSchool[];
 }
 
 export interface UpdateCanvasTokenRequest {

@@ -1,0 +1,42 @@
+{
+  "retrievedAt": "2026-09-09",
+  "note": "Unmodified school branding images from each school\u2019s public Canvas brand_variables endpoint. Used only to identify the institution. Source URLs omit temporary query signatures.",
+  "schools": [
+    {
+      "origin": "https://sfu.instructure.com",
+      "asset": "sfu.png",
+      "background": "#54585A",
+      "source": "https://instructure-uploads-yul.s3.ca-central-1.amazonaws.com/account_278920000000000001/attachments/4517/SFU_block_colour_rgb_1000px.png"
+    },
+    {
+      "origin": "https://canvas.ubc.ca",
+      "asset": "ubc.png",
+      "background": "#002145",
+      "source": "https://instructure-uploads.s3.amazonaws.com/account_112240000000000001/attachments/21/ubc_logo.png"
+    },
+    {
+      "origin": "https://canvas.usask.ca",
+      "asset": "usask.png",
+      "background": "#ffffff",
+      "source": "https://instructure-uploads-yul.s3.ca-central-1.amazonaws.com/account_154220000000000001/attachments/38323/usask_crest.png"
+    },
+    {
+      "origin": "https://canvas.uw.edu",
+      "asset": "uw.png",
+      "background": "#4b2e83",
+      "source": "https://instructure-uploads.s3.amazonaws.com/account_100000000083919/attachments/37312003/Canvas_Cobrand-Logo.png"
+    },
+    {
+      "origin": "https://canvas.stanford.edu",
+      "asset": "stanford.png",
+      "background": "#8c1515",
+      "source": "https://instructure-uploads.s3.amazonaws.com/account_35910000000000001/attachments/49271/Stanford_Canvas.png"
+    },
+    {
+      "origin": "https://canvas.harvard.edu",
+      "asset": "harvard.svg",
+      "background": "#293352",
+      "source": "https://instructure-uploads.s3.amazonaws.com/account_18750000000000001/attachments/2376197/global-nav-logo.svg"
+    }
+  ]
+}

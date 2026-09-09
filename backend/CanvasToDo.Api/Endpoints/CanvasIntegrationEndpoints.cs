@@ -1546,7 +1546,19 @@ public static partial class CanvasIntegrationEndpoints
             connection.UserName,
             oauthConfigured,
             IsCanvasManualTokenEnabled(configuration),
-            oauthConfigured ? connectUrl : null);
+            oauthConfigured ? connectUrl : null,
+            GetAllowedCanvasOrigins(configuration).Select(origin => new CanvasSchoolDto(
+                configuration?.GetSection("Authentication:Canvas:Schools").GetChildren()
+                    .FirstOrDefault(school => TryNormalizeCanvasOrigin(school["InstanceUrl"]) == origin)?["Name"]
+                ?? (origin switch {
+                    "https://sfu.instructure.com" => "Simon Fraser University",
+                    "https://canvas.ubc.ca" => "University of British Columbia",
+                    "https://canvas.usask.ca" => "University of Saskatchewan",
+                    "https://canvas.uw.edu" => "University of Washington",
+                    "https://canvas.stanford.edu" => "Stanford University",
+                    "https://canvas.harvard.edu" => "Harvard University",
+                    _ => new Uri(origin).Host,
+                }), origin)).OrderBy(school => school.Name).ToArray());
     }
 
     private static StoredCanvasToken? TryReadStoredCanvasToken(string settingJson)

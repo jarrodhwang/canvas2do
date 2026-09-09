@@ -60,7 +60,10 @@ public sealed record CanvasTokenStatusDto(
     string? UserName,
     [property: JsonPropertyName("oauthConfigured")] bool OAuthConfigured = false,
     bool ManualTokenEnabled = false,
-    string? ConnectUrl = null);
+    string? ConnectUrl = null,
+    IReadOnlyList<CanvasSchoolDto>? Schools = null);
+
+public sealed record CanvasSchoolDto(string Name, string InstanceUrl);
 
 public sealed record UpdateCanvasTokenRequest(
     string InstanceUrl,

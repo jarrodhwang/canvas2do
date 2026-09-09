@@ -232,3 +232,30 @@ arbitrary external fetches restricted without proxying external URLs through the
 Guide screenshots are bundled locally; attribution and source URLs are in
 `frontend/public/guide/canvas/README.md`. Verify onboarding logic with
 `npm run test:onboarding --prefix frontend`.
+
+The Canvas setup school dropdown is generated from the API's allowed instance URLs.
+SFU, UBC, Saskatchewan, Washington, Stanford, and Harvard are included in the bundled defaults. To add another institution, add
+its HTTPS Canvas origin to `Authentication:Canvas:AllowedInstanceUrls` (or the
+existing `AllowedOrigins` override). Optionally set entries under
+`Authentication:Canvas:Schools` with `Name` and `InstanceUrl` to provide a friendly
+school name; otherwise the dropdown displays the hostname. Advanced manual entry
+still uses the same server allowlist. The screenshot walkthrough presents one
+large image at a time, with navigation and a full-size image link.
+
+
+Verified Canvas school defaults (2026-09-09):
+
+| School | Canvas origin | Official reference |
+| --- | --- | --- |
+| Simon Fraser University | `https://sfu.instructure.com` | [SFU Canvas support](https://www.sfu.ca/canvas.html) |
+| University of British Columbia | `https://canvas.ubc.ca` | [UBC student Canvas guide](https://students.canvas.ubc.ca/) |
+| University of Saskatchewan | `https://canvas.usask.ca` | [USask Canvas](https://students.usask.ca/study/canvas.php) |
+| University of Washington | `https://canvas.uw.edu` | [UW Canvas access instructions](https://education.uw.edu/sites/default/files/Student_Directions_Accessing_Your_Canvas_Course.pdf) |
+| Stanford University | `https://canvas.stanford.edu` | [Stanford Canvas support](https://gocanvas.stanford.edu/contact-us) |
+| Harvard University | `https://canvas.harvard.edu` | [Harvard Canvas login](https://atg.fas.harvard.edu/login-canvas) |
+
+Each origin's Canvas profile API returned an authentication-required response without
+redirecting to another host during verification. Actual access still depends on the
+user's token and the institution's token permissions. Existing deployment overrides
+remain authoritative; update `CANVAS_ALLOWED_INSTANCE_URLS` or `AllowedOrigins` when
+expanding a deployment with an explicitly restricted school list.

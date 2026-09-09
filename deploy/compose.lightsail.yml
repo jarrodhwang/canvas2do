@@ -29,7 +29,7 @@ x-api-environment: &api-environment
   Email__Smtp__EnableSsl: ${SMTP_ENABLE_SSL:-true}
   Email__Smtp__TimeoutSeconds: ${SMTP_TIMEOUT_SECONDS:-15}
   Email__Development__ExposeTokens: "false"
-  Authentication__Canvas__AllowedInstanceUrls: ${CANVAS_ALLOWED_INSTANCE_URLS:-https://sfu.instructure.com}
+  Authentication__Canvas__AllowedInstanceUrls: ${CANVAS_ALLOWED_INSTANCE_URLS:-https://sfu.instructure.com,https://canvas.ubc.ca,https://canvas.usask.ca,https://canvas.uw.edu,https://canvas.stanford.edu,https://canvas.harvard.edu}
   Authentication__Canvas__OAuth__Enabled: ${CANVAS_OAUTH_ENABLED:-false}
   Authentication__Canvas__OAuth__ClientId: ${CANVAS_OAUTH_CLIENT_ID:-}
   Authentication__Canvas__OAuth__ClientSecret: ${CANVAS_OAUTH_CLIENT_SECRET:-}

@@ -34,6 +34,11 @@ public sealed class AuthDbContext(DbContextOptions<AuthDbContext> options)
             entity.Property(login => login.ProviderDisplayName).HasMaxLength(160);
         });
         builder.Entity<IdentityRoleClaim<Guid>>().ToTable("auth_role_claims");
-        builder.Entity<IdentityUserToken<Guid>>().ToTable("auth_user_tokens");
+        builder.Entity<IdentityUserToken<Guid>>(entity =>
+        {
+            entity.ToTable("auth_user_tokens");
+            entity.Property(token => token.LoginProvider).HasMaxLength(128);
+            entity.Property(token => token.Name).HasMaxLength(128);
+        });
     }
 }

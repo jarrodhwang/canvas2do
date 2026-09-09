@@ -3,6 +3,7 @@ import {
   Activity,
   BarChart3,
   CalendarPlus,
+  CalendarCheck2,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -23,6 +24,7 @@ import {
   Pencil,
   Plus,
   RotateCcw,
+  Settings,
   Star,
   Sun,
   Trash2,
@@ -39,7 +41,6 @@ import { Switch } from './components/ui/switch';
 import { PasswordChangePanel } from './components/PasswordChangePanel';
 import { CalendarShell } from './components/CalendarShell';
 import { DateTimeField } from './components/DateTimeField';
-import { LegacyAcademyImportPanel } from './components/LegacyAcademyImportPanel';
 import type {
   ManualLectureClassType,
   ManualLectureSchedule,
@@ -49,6 +50,7 @@ import type {
 import { LoginPage } from './components/LoginPage';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
+import { PhoneNavigation } from './components/PhoneNavigation';
 import { CalendarProgressIndicator } from './components/CalendarProgressIndicator';
 import {
   defaultCalendarProgressThresholds,
@@ -173,6 +175,7 @@ interface AcademyCalendarSettings {
   language: Language;
   nation: AcademyNation;
   calendarTodoStyle: CalendarTodoStyle;
+  mobileCalendarScope: 'month' | 'week';
   skipClassOnHolidays: boolean;
   showPastTermCalendarItems: boolean;
   progressDisplay: CalendarProgressDisplay;
@@ -679,6 +682,7 @@ const defaultAcademyCalendarSettings: AcademyCalendarSettings = {
   language: 'en',
   nation: 'ca',
   calendarTodoStyle: 'compact',
+  mobileCalendarScope: 'week',
   skipClassOnHolidays: true,
   showPastTermCalendarItems: false,
   progressDisplay: 'linear',
@@ -1247,6 +1251,9 @@ function normalizeAcademyCalendarSettings(
     language,
     nation,
     calendarTodoStyle,
+    mobileCalendarScope: settings.mobileCalendarScope === 'month' || settings.mobileCalendarScope === 'week'
+      ? settings.mobileCalendarScope
+      : fallback.mobileCalendarScope,
     skipClassOnHolidays,
     showPastTermCalendarItems,
     progressDisplay,
@@ -3328,13 +3335,6 @@ function AcademySettingsView({
       })
       .finally(() => setIsCanvasTokenLoading(false));
   }, [dictionary.canvasTokenStatusUnavailable]);
-  const refreshAfterLegacyAcademyImport = async () => {
-    loadCanvasTokenStatus();
-    const preferences = await canvasToDoApi.getAcademyPreferences();
-
-    applyAcademyPreferencesResponse(preferences);
-    dispatchAcademyPreferencesUpdated();
-  };
   const updateCanvasTokenDraft = (field: keyof typeof canvasTokenDraft, value: string) => {
     setCanvasTokenDraft((currentDraft) => ({
       ...currentDraft,
@@ -3435,11 +3435,12 @@ function AcademySettingsView({
   }, [focusSection, onFocusSectionConsumed]);
 
   return (
-    <div className="h-full min-h-0 overflow-hidden pb-3 pr-1">
+    <div className="h-full min-h-0 overflow-hidden pb-3 pr-1 max-[520px]:pr-0">
       <Card className="flex h-full min-h-0 flex-col rounded-xl bg-card shadow-none">
         <CardHeader className="shrink-0">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <CardTitle className="text-xl font-black">{dictionary.academySettingsTitle}</CardTitle>
+            <Settings aria-hidden="true" className="hidden size-5 shrink-0 text-muted-foreground max-[520px]:block" />
+            <CardTitle className="text-xl font-black max-[520px]:sr-only">{dictionary.academySettingsTitle}</CardTitle>
             <div className="flex flex-wrap items-center justify-end gap-2">
               {hasUnsavedChanges ? (
                 <span className="rounded-md border border-amber-500/35 bg-amber-500/10 px-2 py-1 text-[10px] font-black uppercase text-amber-700 dark:text-amber-200">
@@ -3462,23 +3463,27 @@ function AcademySettingsView({
                 </span>
               ) : null}
               <Button
-                className="h-8 rounded-md px-2.5 text-xs font-black"
+                aria-label={dictionary.academySettingsRevert}
+                title={dictionary.academySettingsRevert}
+                className="h-8 rounded-md px-2.5 text-xs font-black max-[520px]:size-11 max-[520px]:p-0"
                 disabled={!hasUnsavedChanges || settingsSaveStatus === 'saving'}
                 onClick={onRevertSettings}
                 type="button"
                 variant="outline"
               >
-                <RotateCcw className="mr-1.5 size-3.5" />
-                {dictionary.academySettingsRevert}
+                <RotateCcw className="mr-1.5 size-3.5 max-[520px]:mr-0 max-[520px]:size-5" />
+                <span className="max-[520px]:sr-only">{dictionary.academySettingsRevert}</span>
               </Button>
               <Button
-                className="h-8 rounded-md px-3 text-xs font-black"
+                aria-label={dictionary.academySettingsSave}
+                title={dictionary.academySettingsSave}
+                className="h-8 rounded-md px-3 text-xs font-black max-[520px]:size-11 max-[520px]:p-0"
                 disabled={!hasUnsavedChanges || settingsSaveStatus === 'saving'}
                 onClick={() => onSaveSettings(settings)}
                 type="button"
               >
-                <Check className="mr-1.5 size-3.5" />
-                {settingsSaveStatus === 'saving' ? dictionary.academySettingsSaving : dictionary.academySettingsSave}
+                <Check className="mr-1.5 size-3.5 max-[520px]:mr-0 max-[520px]:size-5" />
+                <span className="max-[520px]:sr-only">{settingsSaveStatus === 'saving' ? dictionary.academySettingsSaving : dictionary.academySettingsSave}</span>
               </Button>
             </div>
           </div>
@@ -3488,7 +3493,7 @@ function AcademySettingsView({
             </div>
           ) : null}
         </CardHeader>
-        <CardContent className="grid min-h-0 flex-1 gap-3 overflow-y-auto overscroll-contain pr-2">
+        <CardContent className="grid min-h-0 flex-1 gap-3 overflow-y-auto overscroll-contain pr-2 max-[520px]:grid-cols-[minmax(0,1fr)] max-[520px]:px-3">
           <details className="group rounded-lg border bg-muted/20 p-3" ref={profileDetailsRef}>
             <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-black text-foreground">
               <span className="flex min-w-0 items-center gap-2">
@@ -3565,10 +3570,11 @@ function AcademySettingsView({
                 </Button>
               </div>
             </form>
+            <div className="mt-3">
+              <PasswordChangePanel hasPassword={authSession?.hasPassword !== false} onChanged={onProfileSaved} />
+            </div>
           </details>
           <AccountSecurityPanel onChanged={onProfileSaved} />
-          <PasswordChangePanel hasPassword={authSession?.hasPassword !== false} onChanged={onProfileSaved} />
-          <LegacyAcademyImportPanel onImported={refreshAfterLegacyAcademyImport} />
           <details className="group rounded-lg border bg-muted/20 p-3">
             <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-black text-foreground">
               <span className="flex min-w-0 items-center gap-2">
@@ -3584,7 +3590,7 @@ function AcademySettingsView({
                 <span className="text-sm font-bold">
                   {language === 'ko' ? 'Canvas 토큰 연결 알림' : 'Canvas token reminders'}
                   <span className="mt-1 block text-xs font-normal text-muted-foreground">
-                    {language === 'ko' ? '연결할 때까지 로그인 시 알립니다. 수동 과목만 사용한다면 끄고 설정을 저장하세요.' : 'Remind me at sign-in until Canvas is connected. Turn off and save settings to use only manual courses.'}
+                    {language === 'ko' ? '로그인 시와 모바일 과목·성적 메뉴에서 Canvas 연결을 알립니다. 알림을 숨기려면 끄고 설정을 저장하세요.' : 'Show Canvas connection reminders at sign-in and in the mobile Courses and Grades menus. Turn off and save to hide these reminders.'}
                   </span>
                 </span>
                 <Switch checked={settings.canvasTokenPromptEnabled} onCheckedChange={(checked) => updateSettings({ canvasTokenPromptEnabled: checked })} />
@@ -5203,7 +5209,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
     const navigateToItem = () => {
       let nextView = currentView;
 
-      if (itemId === 'calendar') {
+      if (itemId === 'calendar' || (isPhoneAcademyMode && itemId === 'dashboard')) {
         nextView = 'month';
       }
 
@@ -6706,13 +6712,15 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
         variant === 'card' && 'mb-4',
         variant === 'mobile' && 'mb-3 border-0 bg-transparent px-1 py-0',
       )}>
-        <div className="flex min-w-0 items-start justify-between gap-3">
+        <div className={cn('flex min-w-0 items-start justify-between gap-3', variant === 'mobile' && 'items-center')}>
           <div className="min-w-0">
             <h2 className={cn(
               'min-w-0 truncate text-xl font-black leading-tight text-foreground',
-              variant === 'mobile' && 'text-base',
+              variant === 'mobile' && 'text-sm',
             )}>
-              {selectedDayHeading.primary}
+              {variant === 'mobile'
+                ? new Date(`${selectedCalendarDayIso}T12:00:00`).toLocaleDateString(language === 'ko' ? 'ko-KR' : 'en-US', { month: 'short', day: 'numeric', weekday: currentView === 'board' ? undefined : 'short' })
+                : selectedDayHeading.primary}
             </h2>
             {selectedDayHolidayItems.length > 0 ? (
               <div className="mt-1 flex max-w-full flex-wrap gap-1">
@@ -6733,21 +6741,35 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
               </div>
             ) : null}
           </div>
-          <div className="flex shrink-0 flex-col items-end gap-1">
-            <button
+          <div className={cn('flex shrink-0 flex-col items-end gap-1', variant === 'mobile' && 'flex-row items-center')}>
+            {variant === 'mobile' ? (
+              <>
+                <span aria-label={`${dictionary.calendarProgressLabel}: ${selectedDayProgressInfo.label}`} className="mr-1 inline-flex items-center gap-1 text-xs font-bold tabular-nums text-muted-foreground"><ClipboardCheck aria-hidden="true" className="size-3.5" />{selectedDayProgressInfo.label}</span>
+                {currentView === 'board' ? (
+                  <>
+                    <Button aria-label={language === 'ko' ? '이전 날짜' : 'Previous day'} className="size-11 rounded-xl" onClick={() => handleMoveSelectedAgendaDay(-1)} type="button" variant="ghost"><ChevronLeft className="size-4" /></Button>
+                    <Button aria-label={language === 'ko' ? '다음 날짜' : 'Next day'} className="size-11 rounded-xl" onClick={() => handleMoveSelectedAgendaDay(1)} type="button" variant="ghost"><ChevronRight className="size-4" /></Button>
+                  </>
+                ) : null}
+              </>
+            ) : null}
+            {variant !== 'mobile' || currentView === 'board' ? <button
               className={cn(
                 'rounded-md border px-2 py-0.5 text-xs font-black transition-colors',
+                variant === 'mobile' && 'grid size-11 place-items-center rounded-xl border-0 p-0',
                 isSelectedCalendarDayToday
                   ? 'bg-primary text-primary-foreground'
                   : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
               )}
+              aria-label={dictionary.itemLabels.today}
+              title={dictionary.itemLabels.today}
               disabled={isSelectedCalendarDayToday}
               onClick={handleMoveSelectedDayToToday}
               type="button"
             >
-              {dictionary.itemLabels.today}
-            </button>
-            {selectedDayRelativeBadge ? (
+              {variant === 'mobile' ? <CalendarCheck2 className="size-5" /> : dictionary.itemLabels.today}
+            </button> : null}
+            {selectedDayRelativeBadge && variant !== 'mobile' ? (
               <span className="rounded-md border bg-background px-2 py-0.5 text-xs font-black text-foreground">
                 {selectedDayRelativeBadge}
               </span>
@@ -6768,7 +6790,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
         variant === 'dialog' && 'max-h-[64vh]',
         variant === 'mobile' && 'max-h-none overflow-visible pr-0',
       )}>
-        {selectedDayGroups.length === 0 ? (
+        {(variant === 'mobile' ? selectedDayGroups.every((group) => group.items.length === 0) : selectedDayGroups.length === 0) ? (
           <div className={cn(
             'rounded-lg border border-dashed bg-muted/35 p-4 text-sm font-bold text-muted-foreground',
             variant === 'mobile' && 'mx-1 border-border/60 bg-muted/15 px-3 py-3 text-xs',
@@ -6776,10 +6798,10 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
             {dictionary.selectedDayTodoEmpty}
           </div>
         ) : (
-          <div className={cn('grid gap-4', variant === 'mobile' && 'gap-3')}>
-            {selectedDayGroups.map((group) => (
+          <div className={cn('grid gap-4', variant === 'mobile' && 'gap-1')}>
+            {selectedDayGroups.filter((group) => variant !== 'mobile' || group.items.length > 0).map((group) => (
               <section className="min-w-0" key={group.label}>
-                <div className={cn('mb-2 flex min-w-0 items-center gap-2', variant === 'mobile' && 'mb-1.5 px-1')}>
+                <div className={cn('mb-2 flex min-w-0 items-center gap-2', variant === 'mobile' && 'hidden')}>
                   <div
                     className={cn(
                       'inline-flex max-w-full rounded-md border px-2 py-1 text-xs font-black',
@@ -6794,7 +6816,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                       aria-label={`${dictionary.courseworkAdd} · ${group.label}`}
                       className={cn(
                         'grid size-7 shrink-0 place-items-center rounded-md border text-xs font-black transition hover:brightness-95',
-                        variant === 'mobile' && 'ml-auto rounded-full bg-muted/40',
+                        variant === 'mobile' && 'ml-auto size-11 rounded-xl bg-muted/40',
                         badgeColorClasses[group.color],
                       )}
                       onClick={() => handleQuickAddSelectedDayCoursework(group.label, group.color)}
@@ -6831,7 +6853,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                           !isClassSession && item.isCompleted && 'border-foreground/25 bg-muted/45',
                           variant === 'mobile' && (isClassSession
                             ? 'border-0 bg-transparent px-1 py-1'
-                            : 'border-0 bg-transparent px-1 py-1.5'),
+                            : 'min-h-16 border-0 bg-transparent py-1.5 pl-0 pr-12'),
                           item.isLocked ? 'cursor-default' : 'cursor-pointer hover:bg-muted/45',
                         )}
                         onKeyDown={(event) => {
@@ -6883,11 +6905,11 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                             aria-label={item.isLocked ? dictionary.selectedDayTodoLocked : item.title}
                             className={cn(
                               'mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border text-[11px] font-black leading-none transition-colors',
-                              variant === 'mobile' && 'size-6',
                               item.isCompleted
                                 ? getCourseDoneCheckClass(courseDisplay.color)
                                 : 'border-dashed border-muted-foreground/35 bg-background/70 text-muted-foreground hover:bg-muted',
                               item.isLocked && 'cursor-default opacity-90',
+                              variant === 'mobile' && 'mt-0 size-11 border-0 bg-transparent hover:bg-transparent',
                             )}
                             disabled={item.isLocked}
                             onClick={(event) => {
@@ -6899,7 +6921,11 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                             title={item.isLocked ? dictionary.selectedDayTodoLocked : item.title}
                             type="button"
                           >
-                            {item.isCompleted ? '✓' : ''}
+                            {variant === 'mobile' ? (
+                              <span className={cn('grid size-6 place-items-center rounded-full border', item.isCompleted ? getCourseDoneCheckClass(courseDisplay.color) : 'border-dashed border-muted-foreground/35 bg-background/70')}>
+                                {item.isCompleted ? <Check className="size-3.5" /> : null}
+                              </span>
+                            ) : item.isCompleted ? '✓' : ''}
                           </button>
                         )}
                         <span className="min-w-0">
@@ -6929,7 +6955,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                             <span
                               className={cn(
                                 'block truncate text-[15px] font-black leading-snug text-foreground',
-                                variant === 'mobile' && 'text-sm',
+                                variant === 'mobile' && 'line-clamp-2 whitespace-normal text-sm',
                                 isClassSession && 'text-[13px] font-semibold text-muted-foreground',
                                 isInactiveClassSession && !isCanceledForHoliday && 'text-muted-foreground line-through decoration-2',
                                 isCanceledForHoliday && 'text-foreground line-through decoration-2 decoration-red-500',
@@ -6962,10 +6988,13 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                                 {item.holidayName}
                               </span>
                             ) : null}
+                            {variant === 'mobile' ? (
+                              <span className={cn('max-w-24 truncate rounded-md px-1.5 py-0.5', badgeColorClasses[courseDisplay.color])} title={group.label}>{group.label}</span>
+                            ) : null}
                             {!isClassSession ? (
                               <span
                                 className={cn(
-                                  'max-w-28 truncate rounded-md border px-1.5 py-0.5',
+                                  'max-w-28 truncate rounded-md border px-1.5 py-0.5 max-[520px]:hidden',
                                   badgeColorClasses[courseDisplay.color],
                                 )}
                               >
@@ -6977,7 +7006,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                               <DropdownMenuTrigger asChild>
                                 <button
                                   aria-label={dictionary.moreActions}
-                                  className="grid size-7 shrink-0 place-items-center rounded-md border bg-background/80 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                                  className="grid size-7 shrink-0 place-items-center rounded-md border bg-background/80 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground max-[520px]:absolute max-[520px]:right-0 max-[520px]:top-1 max-[520px]:size-11 max-[520px]:rounded-xl"
                                   onClick={(event) => event.stopPropagation()}
                                   onPointerDown={(event) => event.stopPropagation()}
                                   title={dictionary.moreActions}
@@ -7134,7 +7163,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
         shouldUseAcademyFullHeightLayout &&
           (!isMainOnlyView || isAcademySettingsView) &&
           'h-screen overflow-hidden',
-        isAcademySettingsView && 'h-screen overflow-hidden',
+        isAcademySettingsView && 'h-screen overflow-hidden max-[520px]:h-dvh',
       )}
       style={
         {
@@ -7148,6 +7177,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
           academyLogoSrc={visibleAcademyLogoSrc}
           authSession={authSession}
           isTopBarCollapsed={effectiveTopBarCollapsed}
+          isPhone={isPhoneAcademyMode}
           onOpenAddItem={openAcademyCourseworkDialog}
           onOpenProfile={() => {
             setAcademySettingsFocusSection('profile');
@@ -7267,13 +7297,15 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
               ? 'min-h-[calc(100vh_-_var(--top-bar-height))] overflow-visible'
               : 'h-[calc(100vh_-_var(--top-bar-height))] grid-rows-1 items-stretch overflow-hidden'),
           isAcademySettingsView &&
-            'h-[calc(100vh_-_var(--top-bar-height))] grid-rows-1 items-stretch overflow-hidden',
+            'h-[calc(100vh_-_var(--top-bar-height))] grid-rows-1 items-stretch overflow-hidden max-[520px]:h-[calc(100dvh_-_var(--top-bar-height))]',
           shouldShowAcademyBottomNav && 'pb-20 max-[520px]:pb-24',
-          'max-[520px]:px-2 max-[520px]:pb-24 max-[520px]:pt-2',
+          'max-[520px]:px-3 max-[520px]:pb-[calc(6rem+env(safe-area-inset-bottom))] max-[520px]:pt-2',
           mainGridColumnsClass,
         )}
         style={{
-          '--top-bar-height': shouldHideCompactAcademyTopBar
+          '--top-bar-height': isPhoneAcademyMode
+            ? 'calc(56px + env(safe-area-inset-top))'
+            : shouldHideCompactAcademyTopBar
             ? '0px'
             : effectiveTopBarCollapsed
               ? '42px'
@@ -7337,12 +7369,14 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
               <AdminUsersView />
             ) : isCoursesView ? (
               <CourseOverviewView
+                canvasTokenRemindersEnabled={hasLoadedAcademyPreferences && academyCalendarSettings.canvasTokenPromptEnabled}
+                isPhone={isPhoneAcademyMode}
                 initialResourceUrl={selectedCourseOverviewResourceUrl}
                 initialSelectedCourseRowId={selectedCourseOverviewRowId}
                 selectedSemester={selectedAcademySemester}
               />
             ) : isGradesView ? (
-              <AcademyGradesView selectedSemester={selectedAcademySemester} />
+              <AcademyGradesView canvasTokenRemindersEnabled={hasLoadedAcademyPreferences && academyCalendarSettings.canvasTokenPromptEnabled} isPhone={isPhoneAcademyMode} selectedSemester={selectedAcademySemester} />
             ) : isInboxView ? (
               <CanvasInboxView
                 onOpenIntegration={openAcademyCourseResource}
@@ -7362,6 +7396,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                   )}
                 >
                   <DashboardCards
+                    isPhone={isPhoneAcademyMode}
                     academyAutoRefreshIntervalMs={academyAutoRefreshIntervalMs}
                     compactAcademySummary={shouldUseCompactDashboardMonth}
                     courseworkHideSettings={{
@@ -7381,11 +7416,11 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
               {currentView === 'board' ? (
                 <div
                   className={cn(
-                    'min-h-[calc(100dvh_-_var(--top-bar-height)_-_6.5rem)] flex-col overflow-hidden rounded-xl bg-card p-3 shadow-none',
+                    'flex-col rounded-xl bg-card p-3 shadow-none',
                     isPhoneAcademyMode ? 'flex' : 'hidden',
                   )}
                 >
-                  {renderDayTodoContent()}
+                  {renderDayTodoContent('mobile')}
                 </div>
               ) : null}
               <div
@@ -7399,6 +7434,14 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                 )}
               >
                 <CalendarShell
+                  isPhone={isPhoneAcademyMode}
+                  mobileCalendarScope={academyCalendarSettings.mobileCalendarScope}
+                  onMobileCalendarScopeChange={hasLoadedAcademyPreferences ? (mobileCalendarScope) => {
+                    handleSaveAcademyCalendarSettings({ ...academyCalendarSettingsRef.current, mobileCalendarScope });
+                  } : undefined}
+                  selectedDateIso={selectedCalendarDayIso}
+                  onNextWeek={() => handleMoveSelectedAgendaDay(7)}
+                  onPreviousWeek={() => handleMoveSelectedAgendaDay(-7)}
                   agendaDateLabel={selectedDayHeading.year
                     ? `${selectedDayHeading.primary} ${selectedDayHeading.year}`
                     : selectedDayHeading.primary}
@@ -7456,7 +7499,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
 
                     navigateWorkspace({
                       modeId: activeMode.id,
-                      sidebarItemId: view === 'board' ? view : 'calendar',
+                      sidebarItemId: isPhoneAcademyMode ? 'dashboard' : view === 'board' ? view : 'calendar',
                       view,
                     });
                   }}
@@ -7528,7 +7571,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
         className={cn(
           'fixed inset-x-0 bottom-0 z-50 gap-2 border-t bg-card/95 py-1.5 pb-[calc(env(safe-area-inset-bottom)+0.375rem)] shadow-[0_-12px_32px_hsl(var(--background)/0.75)] backdrop-blur-xl',
           shouldShowAcademyBottomNav ? 'grid' : 'hidden',
-          isPhoneAcademyMode ? 'flex overflow-x-auto px-2' : 'px-4',
+          isPhoneAcademyMode ? 'grid auto-cols-fr grid-flow-col gap-1 px-3' : 'px-4',
         )}
         aria-label="Academy navigation"
         style={isPhoneAcademyMode
@@ -7541,33 +7584,23 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
             }}
       >
         {isPhoneAcademyMode ? (
-          <>
-            {filteredActiveMode.sidebar.flatMap((section) => section.items).map((item) => (
-              <div className="min-w-12 flex-1" key={item.id}>
-                <AcademyBottomNavigationButton
-                  active={activeSidebarItem === item.id && currentView !== 'board'}
-                  icon={item.icon}
-                  isPhone
-                  label={translateItemLabel(item.id, item.label)}
-                  onClick={() => handleSelectSidebarItem(item.id)}
-                />
-              </div>
-            ))}
-            <AcademyBottomNavigationButton
-              active={isDashboardWorkspaceView && currentView === 'board'}
-              icon="list-checks"
-              isPhone
-              label={language === 'ko' ? '할 일' : 'To Do'}
-              onClick={() => {
+          <PhoneNavigation
+            activeItemId={activeSidebarItem}
+            isTodoActive={isDashboardWorkspaceView && currentView === 'board'}
+            items={filteredActiveMode.sidebar.flatMap((section) => section.items)}
+            onSelectItem={handleSelectSidebarItem}
+            onSelectTodo={() => {
+              const navigateToTodo = () => {
                 handleMoveSelectedDayToToday();
-                navigateWorkspace({
-                  modeId: activeMode.id,
-                  sidebarItemId: 'calendar',
-                  view: 'board',
-                });
-              }}
-            />
-          </>
+                navigateWorkspace({ modeId: activeMode.id, sidebarItemId: 'dashboard', view: 'board' });
+              };
+              if (isAcademySettingsView && hasUnsavedAcademySettingsRef.current) {
+                requestSettingsNavigation(navigateToTodo);
+                return;
+              }
+              navigateToTodo();
+            }}
+          />
         ) : filteredActiveMode.sidebar.flatMap((section) => section.items).map((item) => (
           <AcademyBottomNavigationButton
             active={activeSidebarItem === item.id}

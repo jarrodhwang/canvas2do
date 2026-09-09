@@ -19,7 +19,7 @@ export function FilterPanel({ className, courseOptions, onToggleCourseOption }: 
   return (
     <div aria-label="Course filters" className={cn('min-w-56 space-y-2 p-2', className)}>
       {courseOptions.map((option) => (
-        <Label className="flex items-center gap-2 text-sm font-bold text-muted-foreground" key={option.id}>
+        <Label className="flex items-center gap-2 text-sm font-bold text-muted-foreground max-[520px]:min-h-11 max-[520px]:gap-3" key={option.id}>
           <Checkbox
             checked={option.checked}
             onCheckedChange={() => onToggleCourseOption?.(option.id)}

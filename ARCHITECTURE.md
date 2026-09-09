@@ -163,16 +163,6 @@ and unverified identities never claim data by email. The source row remains for
 rollback/support, so deletion should happen only after a separately verified
 migration.
 
-The Settings import panel is the explicit bridge for retired Academy-ID accounts.
-Its authenticated, per-user rate-limited endpoint verifies the old active account's
-strictly bounded PBKDF2 credential behind a small process-wide CPU/database admission
-gate, then transactionally records a one-to-one legacy
-account GUID binding in `auth_user_tokens`. It copies only exact `canvas.token` and
-`academy.preferences` rows to `user:{guid}`. Existing destination values win, the
-source remains unchanged, and no contact email, profile property, or role is inferred
-from the legacy account. A filtered database-unique index plus a transaction advisory
-lock enforce the one-legacy-account/one-new-account invariant.
-
 Browser-only Academy values from older builds are deliberately left untouched:
 without a server-verifiable identity binding, silently uploading them to whichever
 public account signs in next could disclose one user's data to another. Theme and

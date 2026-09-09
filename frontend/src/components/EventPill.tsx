@@ -1,10 +1,11 @@
+import type { ReactNode } from 'react';
 import type { ColorToken } from '../modes/types';
 import { Badge } from './ui/badge';
 import { badgeColorClasses } from '@/lib/colorStyles';
 import { cn } from '@/lib/utils';
 
 interface EventPillProps {
-  label: string;
+  label: ReactNode;
   color?: ColorToken;
   compact?: boolean;
   className?: string;

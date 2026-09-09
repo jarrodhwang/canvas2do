@@ -150,22 +150,6 @@ Keep `CANVAS_ALLOWED_INSTANCE_URLS` restricted to trusted HTTPS Canvas origins.
 Paths, query strings, embedded credentials, redirects to another origin, oversized
 responses, and excessive pagination are rejected or bounded by the API.
 
-## Legacy Academy data import
-
-Users of the retired Academy-ID sign-in can open Settings and enter that old ID and
-password once to import eligible server-side data. The authenticated endpoint is
-limited to five attempts per user every 15 minutes, and expensive legacy password
-checks have a small process-wide concurrency gate. It accepts only the exact bounded
-legacy PBKDF2 format, requires the old account to be active, and never stores or logs
-the submitted ID or password.
-
-After verification, one old account is transactionally bound to one new Identity
-GUID through `auth_user_tokens`. Only exact `canvas.token` and
-`academy.preferences` rows are copied to `user:{guid}`. A destination value is never
-overwritten, the source rows stay intact for rollback/support, and legacy contact
-email, profile, and role fields are not imported. Old browser-only Academy data is
-deliberately untouched because it cannot be safely attributed to a public account.
-
 ## Run locally
 
 Create a local environment file and fill only the services you intend to use:

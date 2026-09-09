@@ -359,17 +359,6 @@ export interface UpdateAcademyProfileRequest {
   newPassword?: string;
 }
 
-export interface LegacyAcademyImportRequest {
-  loginId: string;
-  password: string;
-}
-
-export interface LegacyAcademyImportResult {
-  alreadyLinked: boolean;
-  importedSettingKeys: Array<'canvas.token' | 'academy.preferences'>;
-  message: string;
-}
-
 export interface AdminUser {
   id: string;
   email: string;
@@ -1025,22 +1014,6 @@ export const canvasToDoApi = {
     }
 
     return response.json();
-  },
-
-  async importLegacyAcademyData(request: LegacyAcademyImportRequest) {
-    const response = await apiFetch(`${apiBaseUrl}/auth/legacy-academy/import`, {
-      body: JSON.stringify(request),
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      method: 'POST',
-    });
-
-    if (!response.ok) {
-      const { message } = await readErrorResponse(response, 'Unable to import legacy Academy data.');
-      throw new ApiError(message, response.status);
-    }
-
-    return response.json() as Promise<LegacyAcademyImportResult>;
   },
 
   async getAdminUsers(options: { page?: number; pageSize?: number; search?: string } = {}) {

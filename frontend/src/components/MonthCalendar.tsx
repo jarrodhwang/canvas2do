@@ -22,6 +22,7 @@ interface MonthCalendarProps {
   isCompact?: boolean;
   isExpanded?: boolean;
   mobileScope?: 'month' | 'week';
+  selectedDateIso?: string;
   onAddCourseworkForDay?: (day: CalendarDay) => void;
   onSelectItem: (day: CalendarDay) => void;
   progressDisplay: CalendarProgressDisplay;
@@ -36,6 +37,7 @@ export function MonthCalendar({
   isCompact = false,
   isExpanded = false,
   mobileScope = 'month',
+  selectedDateIso,
   onAddCourseworkForDay,
   onSelectItem,
   progressDisplay,
@@ -45,12 +47,14 @@ export function MonthCalendar({
   const { dictionary, language } = useLanguage();
   const weekdays = getWeekdayLabels(language);
   const [selectedDayId, setSelectedDayId] = useState<string | null>(null);
-  const selectedDayIndex = Math.max(
-    days.findIndex((day) => day.id === selectedDayId),
-    days.findIndex((day) => day.isToday),
-    days.findIndex((day) => !day.outsideMonth),
-    0,
-  );
+  const effectiveSelectedDayId = selectedDateIso
+    ? days.find((day) => day.dateIso === selectedDateIso)?.id
+    : selectedDayId;
+  const selectedIndex = days.findIndex((day) => day.id === effectiveSelectedDayId);
+  const todayIndex = days.findIndex((day) => day.isToday);
+  const selectedDayIndex = selectedIndex >= 0 ? selectedIndex
+    : todayIndex >= 0 ? todayIndex
+      : Math.max(days.findIndex((day) => !day.outsideMonth), 0);
   const selectedWeekStartIndex = Math.floor(selectedDayIndex / 7) * 7;
   const visibleDays = mobileScope === 'week'
     ? days.slice(selectedWeekStartIndex, selectedWeekStartIndex + 7)
@@ -62,7 +66,7 @@ export function MonthCalendar({
       holidayNations={holidayNations}
       isCompact={isCompact}
       isExpanded={isExpanded}
-      isSelected={day.id === selectedDayId}
+      isSelected={day.id === effectiveSelectedDayId}
       key={day.id}
       onSelect={() => {
         setSelectedDayId(day.id);

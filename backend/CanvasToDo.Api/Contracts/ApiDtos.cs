@@ -22,15 +22,6 @@ public sealed record SaveAcademyPreferencesRequest(
     JsonElement CanvasAssessmentPreferences,
     JsonElement CalendarSettings);
 
-public sealed record LegacyAcademyImportRequest(
-    string? LoginId,
-    string? Password);
-
-public sealed record LegacyAcademyImportDto(
-    bool AlreadyLinked,
-    string[] ImportedSettingKeys,
-    string Message);
-
 public sealed record CanvasIntegrationStatusDto(
     string Provider,
     string Label,

@@ -27,6 +27,8 @@ import {
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent, type TouchEvent } from 'react';
 
 import { canvasToDoApi } from '../api/canvasToDoApi';
+import { isCanvasConnectionError } from '../lib/canvasOnboarding';
+import { CanvasNoticeDialog } from './CanvasNoticeDialog';
 import type {
   AcademyPreferences,
   CanvasCalendarItem,
@@ -775,12 +777,12 @@ function CourseSkeletonRow() {
         <div className="h-5 w-28 rounded-md bg-muted" />
         <div className="h-4 w-3/4 rounded-md bg-muted" />
       </div>
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-3 gap-2 max-[520px]:hidden">
         <div className="h-12 rounded-md bg-muted" />
         <div className="h-12 rounded-md bg-muted" />
         <div className="h-12 rounded-md bg-muted" />
       </div>
-      <div className="h-12 rounded-md bg-muted" />
+      <div className="h-12 rounded-md bg-muted max-[520px]:hidden" />
     </div>
   );
 }
@@ -1624,6 +1626,7 @@ function CourseDetailView({
   dictionary,
   gradeProgressThresholds,
   initialResourceUrl,
+  isPhone,
   onBack,
   onSelectItem,
   onUpdateManualLectureAssessments,
@@ -1635,11 +1638,15 @@ function CourseDetailView({
   dictionary: ReturnType<typeof useLanguage>['dictionary'];
   gradeProgressThresholds: GradeProgressColorThresholds;
   initialResourceUrl?: string | null;
+  isPhone: boolean;
   onBack: () => void;
   onSelectItem: (item: CourseNavigationItem) => void;
   onUpdateManualLectureAssessments?: (lectureId: string, assessments: ManualLecture['assessments']) => void;
   row: CourseOverviewRow;
 }) {
+  const { language } = useLanguage();
+  const [phoneScreen, setPhoneScreen] = useState<'menu' | 'content'>(initialResourceUrl ? 'content' : 'menu');
+  const phoneScreenRef = useRef<HTMLDivElement>(null);
   const navigationItems = row.source === 'canvas'
     ? getCanvasNavigationItems(content, dictionary)
     : getManualNavigationItems(dictionary);
@@ -1687,6 +1694,13 @@ function CourseDetailView({
   const integratedRequestRef = useRef(0);
   const initialResourceKeyRef = useRef('');
   const coursePeopleRequestKeyRef = useRef('');
+
+  useEffect(() => {
+    if (isPhone) {
+      phoneScreenRef.current?.focus({ preventScroll: true });
+      phoneScreenRef.current?.scrollIntoView({ block: 'start' });
+    }
+  }, [isPhone, phoneScreen, activeIntegratedResource?.url]);
 
   const resetIntegratedResource = () => {
     integratedRequestRef.current += 1;
@@ -1978,6 +1992,7 @@ function CourseDetailView({
     });
 
     if (resource) {
+      setPhoneScreen('content');
       openIntegratedResource(resource);
     }
   }, [activeItem.label, canvasBaseUrl, initialResourceUrl, row.canvasCourseId, row.id]);
@@ -3225,9 +3240,10 @@ function CourseDetailView({
   };
 
   return (
-    <div className="grid h-full min-h-0 gap-3 overflow-hidden lg:grid-cols-[220px_minmax(0,1fr)]">
-      <aside className="rounded-xl border bg-card p-3 lg:sticky lg:top-0 lg:h-full lg:min-h-0 lg:self-start lg:overflow-y-auto">
-        <Button className="mb-3 h-8 w-full justify-start rounded-md" onClick={onBack} size="sm" variant="ghost">
+    <div ref={phoneScreenRef} tabIndex={isPhone ? -1 : undefined} className="grid h-full min-h-0 gap-3 overflow-hidden outline-none lg:grid-cols-[220px_minmax(0,1fr)] max-[520px]:h-auto max-[520px]:overflow-visible max-[520px]:scroll-mt-[calc(var(--top-bar-height)+0.5rem)]">
+      {!isPhone || phoneScreen === 'menu' ? (
+      <aside className="rounded-xl border bg-card p-3 lg:sticky lg:top-0 lg:h-full lg:min-h-0 lg:self-start lg:overflow-y-auto max-[520px]:border-0 max-[520px]:bg-transparent max-[520px]:p-0">
+        <Button className="mb-3 h-8 w-full justify-start rounded-md max-[520px]:h-11" onClick={onBack} size="sm" variant="ghost">
           <ArrowLeft className="size-4" />
           {dictionary.courseDetailBack}
         </Button>
@@ -3254,12 +3270,14 @@ function CourseDetailView({
               <button
                 className={cn(
                   'flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground',
-                  isActive && 'bg-muted text-foreground',
+                  isActive && !isPhone && 'bg-muted text-foreground',
+                  'max-[520px]:min-h-12 max-[520px]:rounded-xl max-[520px]:border max-[520px]:bg-background max-[520px]:px-3 max-[520px]:text-foreground',
                 )}
                 key={item.id}
                 onClick={() => {
                   resetIntegratedResource();
                   onSelectItem(item);
+                  setPhoneScreen('content');
                   if (item.section === 'external' && item.htmlUrl) {
                     const integratedResource = getIntegratedCourseResourceFromLink(item.htmlUrl, {
                       baseUrl: canvasBaseUrl,
@@ -3278,17 +3296,46 @@ function CourseDetailView({
               >
                 <Icon className="size-4 shrink-0" />
                 <span className="truncate">{item.label}</span>
+                {isPhone ? <ChevronRight aria-hidden="true" className="ml-auto size-4 shrink-0 text-muted-foreground" /> : null}
               </button>
             );
           })}
         </nav>
       </aside>
+      ) : null}
 
+      {!isPhone || phoneScreen === 'content' ? (
       <section
-        className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border bg-card"
+        className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border bg-card max-[520px]:overflow-visible max-[520px]:border-0 max-[520px]:bg-transparent"
         onAuxClick={handleIntegratedContentAuxClick}
       >
-        <div className="shrink-0 flex min-w-0 items-start justify-between gap-3 border-b p-4">
+        {isPhone ? (
+          <div className="mb-3 flex min-w-0 items-center gap-2 border-b pb-2">
+            <Button
+              aria-label={activeIntegratedResource ? `${dictionary.courseDetailPrevious}: ${activeItem.label}` : language === 'ko' ? '과목 메뉴로 돌아가기' : 'Back to course menu'}
+              className="size-11 shrink-0"
+              onClick={() => {
+                if (canGoBackInIntegratedContent) navigateIntegratedHistory(integratedHistoryIndex - 1);
+                else if (activeIntegratedResource) resetIntegratedResource();
+                else setPhoneScreen('menu');
+              }}
+              type="button"
+              variant="ghost"
+            >
+              <ArrowLeft aria-hidden="true" className="size-5" />
+            </Button>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-xs text-muted-foreground">{row.courseCode}</div>
+              <h1 className="truncate text-base font-semibold" title={activeTitle}>{activeTitle}</h1>
+            </div>
+            {activeCanvasUrl ? (
+              <Button asChild className="size-11 shrink-0" variant="ghost">
+                <a aria-label={dictionary.courseOverviewOpenCanvas} href={activeCanvasUrl} rel="noreferrer" target="_blank"><ExternalLink aria-hidden="true" className="size-5" /></a>
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+        <div className="shrink-0 flex min-w-0 items-start justify-between gap-3 border-b p-4 max-[520px]:hidden">
           <div className="min-w-0">
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <Badge className="rounded-md" variant="outline">
@@ -3341,23 +3388,28 @@ function CourseDetailView({
             ) : null}
           </div>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        <div className="min-h-0 flex-1 overflow-y-auto p-4 max-[520px]:overflow-visible max-[520px]:p-0">
           {isCanvasLoading || integratedResourceStatus === 'loading' ? (
             <CanvasLoadingBanner className="mb-3 lg:hidden" label={dictionary.courseDetailLoading} size="compact" />
           ) : null}
           {renderActiveSection()}
         </div>
       </section>
+      ) : null}
     </div>
   );
 }
 
 export function CourseOverviewView({
+  canvasTokenRemindersEnabled = true,
   initialResourceUrl,
+  isPhone = false,
   initialSelectedCourseRowId,
   selectedSemester: selectedSemesterProp,
 }: {
+  canvasTokenRemindersEnabled?: boolean;
   initialResourceUrl?: string | null;
+  isPhone?: boolean;
   initialSelectedCourseRowId?: string | null;
   selectedSemester?: string;
 } = {}) {
@@ -3365,6 +3417,8 @@ export function CourseOverviewView({
   const [canvasCourses, setCanvasCourses] = useState<CanvasCourse[]>([]);
   const [canvasLecturePreferences, setCanvasLecturePreferences] = useState<CanvasLecturePreferences>(() => getStoredCanvasLecturePreferences());
   const [courseLoadStatus, setCourseLoadStatus] = useState<LoadStatus>('idle');
+  const [connectionWarning, setConnectionWarning] = useState('');
+  const [dismissedConnectionWarning, setDismissedConnectionWarning] = useState('');
   const [academyPreferencesLoadStatus, setAcademyPreferencesLoadStatus] = useState<LoadStatus>('idle');
   const [hasLoadedAcademyPreferences, setHasLoadedAcademyPreferences] = useState(false);
   const [manualLectures, setManualLectures] = useState<ManualLecture[]>(() => getStoredManualLectures());
@@ -3485,6 +3539,7 @@ export function CourseOverviewView({
     let isCancelled = false;
 
     setCourseLoadStatus('loading');
+    setConnectionWarning('');
     setAcademyPreferencesLoadStatus('loading');
 
     canvasToDoApi
@@ -3531,11 +3586,12 @@ export function CourseOverviewView({
         setCourseLoadStatus('loaded');
         return courses;
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (isCancelled) {
           return [];
         }
 
+        if (isCanvasConnectionError(error)) setConnectionWarning(error.message);
         setCanvasCourses([]);
         setCourseLoadStatus('failed');
         return [];
@@ -4074,7 +4130,7 @@ export function CourseOverviewView({
       <DropdownMenuTrigger asChild>
         <Button
           aria-label={dictionary.gmailMoreActions}
-          className="size-7 rounded-md"
+          className="size-7 rounded-md max-[520px]:size-11"
           data-course-row-action
           onClick={stopCourseActionPropagation}
           onMouseDown={stopCourseActionPropagation}
@@ -4435,9 +4491,21 @@ export function CourseOverviewView({
     setActiveCourseItem(nextActiveItem);
   }, [activeCourseItem, canvasCourseContent, dictionary, selectedCourseRow]);
 
+  const connectionReminder = isPhone ? (
+    <CanvasNoticeDialog
+      message={connectionWarning}
+      open={Boolean(canvasTokenRemindersEnabled && connectionWarning && connectionWarning !== dismissedConnectionWarning)}
+      onClose={() => setDismissedConnectionWarning(connectionWarning)}
+    />
+  ) : null;
+
   if (selectedCourseRow && activeCourseItem) {
     return (
+      <>
+      {connectionReminder}
       <CourseDetailView
+        key={selectedCourseRow.id}
+        isPhone={isPhone}
         activeItem={activeCourseItem}
         content={canvasCourseContent}
         contentLoadStatus={canvasCourseContentStatus}
@@ -4452,26 +4520,28 @@ export function CourseOverviewView({
         onUpdateManualLectureAssessments={handleUpdateManualLectureAssessments}
         row={selectedCourseRow}
       />
+      </>
     );
   }
 
   return (
     <>
-    <Card className="flex h-full min-h-0 flex-col rounded-xl shadow-none max-[520px]:min-h-0 max-[520px]:rounded-none max-[520px]:border-0 max-[520px]:bg-transparent max-[520px]:py-0" size="sm">
-      <CardHeader className="shrink-0 border-b max-[520px]:grid-cols-[minmax(0,1fr)_auto] max-[520px]:gap-2 max-[520px]:rounded-none max-[520px]:border-b max-[520px]:px-3 max-[520px]:py-3">
+    {connectionReminder}
+    <Card className="phone-course-list flex h-full min-h-0 flex-col rounded-xl shadow-none max-[520px]:h-auto max-[520px]:min-h-0 max-[520px]:rounded-none max-[520px]:border-0 max-[520px]:bg-transparent max-[520px]:py-0" size="sm">
+      <CardHeader className="shrink-0 border-b max-[520px]:grid-cols-[auto_minmax(0,1fr)] max-[520px]:gap-2 max-[520px]:rounded-none max-[520px]:border-b max-[520px]:px-1 max-[520px]:py-1">
         <div className="flex min-w-0 items-center gap-2 text-xs font-semibold uppercase text-muted-foreground">
-          <BookOpen aria-hidden="true" size={15} strokeWidth={2.3} />
-          <span>{dictionary.courseOverviewEyebrow}</span>
+          <BookOpen aria-hidden="true" className="max-[520px]:m-3 max-[520px]:size-5" size={15} strokeWidth={2.3} />
+          <span className="max-[520px]:sr-only">{dictionary.courseOverviewEyebrow}</span>
         </div>
-        <CardTitle className="text-2xl font-semibold tracking-normal max-[520px]:text-lg max-[520px]:font-black">
+        <CardTitle className="text-2xl font-semibold tracking-normal max-[520px]:sr-only">
           {dictionary.courseOverviewTitle}
         </CardTitle>
         <CardDescription className="max-w-2xl font-medium max-[520px]:hidden">
           {dictionary.courseOverviewSubtitle}
         </CardDescription>
-        <CardAction className="flex flex-wrap items-center justify-end gap-2 max-[520px]:col-start-2 max-[520px]:row-span-2 max-[520px]:row-start-1 max-[520px]:gap-1.5">
+        <CardAction className="flex flex-wrap items-center justify-end gap-2 max-[520px]:col-start-2 max-[520px]:row-span-1 max-[520px]:row-start-1 max-[520px]:gap-1.5">
           <Select onValueChange={handleSelectSemester} value={normalizeSemesterName(selectedSemester)}>
-            <SelectTrigger className="h-8 w-[150px] rounded-md text-xs font-semibold max-[520px]:w-[124px] max-[520px]:text-[11px]">
+            <SelectTrigger aria-label={dictionary.courseOverviewSemester} className="h-8 w-[150px] rounded-md text-xs font-semibold max-[520px]:h-11 max-[520px]:w-[138px] max-[520px]:text-xs">
               <SelectValue aria-label={dictionary.courseOverviewSemester} />
             </SelectTrigger>
             <SelectContent align="end">
@@ -4489,12 +4559,12 @@ export function CourseOverviewView({
             </Badge>
           ) : null}
           <Badge variant="secondary">
-            {rows.length} {dictionary.courseOverviewCountLabel}
+            <span>{rows.length}<span className="max-[520px]:sr-only"> {dictionary.courseOverviewCountLabel}</span></span>
           </Badge>
         </CardAction>
       </CardHeader>
 
-      <CardContent className="min-h-0 flex-1 space-y-2 overflow-y-auto max-[520px]:px-3 max-[520px]:py-3">
+      <CardContent className="min-h-0 flex-1 space-y-2 overflow-y-auto max-[520px]:overflow-visible max-[520px]:px-0 max-[520px]:py-1">
         {courseLoadStatus === 'loading' ? (
           <CanvasLoadingBanner label={dictionary.canvasCoursesLoading} size="compact" />
         ) : null}
@@ -4518,16 +4588,13 @@ export function CourseOverviewView({
             {rows.map((row) => {
               const detailItems = getCourseDetailItems(row, dictionary);
               const summaryLabel = row.grade !== '--' ? row.grade : row.semester;
-              const mobileDetailItems = detailItems
-                .filter(([, value]) => value && value !== '--')
-                .slice(0, 2);
 
               const rowElement = (
                 <article
                   className={cn(
                     'grid min-w-0 cursor-pointer gap-3 rounded-lg border bg-background px-3 py-3 transition-colors hover:bg-muted/35',
                     'lg:grid-cols-[minmax(0,1fr)_minmax(280px,420px)_132px]',
-                    'max-[520px]:block max-[520px]:rounded-xl max-[520px]:px-3 max-[520px]:py-3',
+                    'max-[520px]:grid max-[520px]:grid-cols-[minmax(0,1fr)_auto] max-[520px]:items-center max-[520px]:gap-1 max-[520px]:rounded-xl max-[520px]:px-3 max-[520px]:py-2',
                     row.hidden && 'border-dashed bg-muted/15 opacity-35 grayscale hover:bg-muted/20',
                   )}
                   onClick={(event) => handleCourseRowOpen(event, row)}
@@ -4541,13 +4608,13 @@ export function CourseOverviewView({
                       <div className="flex min-w-0 flex-wrap items-center gap-2">
                         <span
                           className={cn(
-                            'inline-flex max-w-full items-center rounded-md border px-2 py-1 text-xs font-semibold max-[520px]:h-6 max-[520px]:px-2 max-[520px]:py-0 max-[520px]:text-[11px]',
+                            'inline-flex max-w-full items-center rounded-md border px-2 py-1 text-xs font-semibold max-[520px]:h-auto max-[520px]:border-0 max-[520px]:bg-transparent max-[520px]:px-0 max-[520px]:py-0 max-[520px]:text-sm',
                             badgeColorClasses[row.color],
                           )}
                         >
                           <span className="truncate">{row.courseCode}</span>
                         </span>
-                        <Badge className="h-5 rounded-md px-1.5 text-[10px] uppercase max-[520px]:h-5 max-[520px]:text-[9px]" variant="outline">
+                        <Badge className="h-5 rounded-md px-1.5 text-[10px] uppercase max-[520px]:hidden" variant="outline">
                           {row.source === 'canvas' ? dictionary.courseOverviewCanvas : dictionary.courseOverviewManual}
                         </Badge>
                         <Badge className="h-5 rounded-md px-1.5 text-[10px] max-[520px]:hidden" variant="secondary">
@@ -4561,11 +4628,11 @@ export function CourseOverviewView({
                         {row.starred ? (
                           <Badge className="h-5 gap-1 rounded-md px-1.5 text-[10px] uppercase" variant="secondary">
                             <Star aria-hidden="true" className="size-3 fill-amber-400 text-amber-500" />
-                            {dictionary.manualLectureStar}
+                            <span className="max-[520px]:sr-only">{dictionary.manualLectureStar}</span>
                           </Badge>
                         ) : null}
                       </div>
-                      <h3 className="mt-2 truncate text-base font-semibold text-foreground max-[520px]:whitespace-normal max-[520px]:text-[15px] max-[520px]:font-black max-[520px]:leading-snug">
+                      <h3 className="mt-2 truncate text-base font-semibold text-foreground max-[520px]:mt-1 max-[520px]:text-xs max-[520px]:font-medium max-[520px]:leading-snug max-[520px]:text-muted-foreground">
                         {row.name}
                       </h3>
                     </div>
@@ -4579,18 +4646,7 @@ export function CourseOverviewView({
                       </div>
                     ))}
                   </div>
-                  {mobileDetailItems.length > 0 ? (
-                    <div className="mt-3 hidden grid-cols-2 gap-2 max-[520px]:grid">
-                      {mobileDetailItems.map(([label, value]) => (
-                        <div className="min-w-0 rounded-lg border bg-muted/15 px-2.5 py-2" key={`${row.id}-mobile-${label}`}>
-                          <div className="text-[9px] font-black uppercase text-muted-foreground">{label}</div>
-                          <div className="mt-1 truncate text-sm font-black text-foreground">{value}</div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-
-                  <div className="flex items-center justify-between gap-2 max-[520px]:mt-3 lg:flex-col lg:items-end">
+                  <div className="flex items-center justify-between gap-2 max-[520px]:col-start-2 max-[520px]:row-start-1 lg:flex-col lg:items-end">
                     <div className="min-w-0 text-left max-[520px]:hidden lg:text-right">
                       <div className="text-[10px] font-semibold uppercase text-muted-foreground">
                         {row.grade !== '--' ? dictionary.courseOverviewGrade : dictionary.courseOverviewSemester}
@@ -4598,14 +4654,14 @@ export function CourseOverviewView({
                       <div className="mt-1 truncate text-sm font-semibold text-foreground">{summaryLabel}</div>
                     </div>
                     <div className="flex items-center gap-1.5 max-[520px]:ml-auto">
-                      <Badge className="h-7 gap-1 rounded-md px-2" variant={row.notificationCount > 0 ? 'default' : 'outline'}>
+                      <Badge className={cn("h-7 gap-1 rounded-md px-2", row.notificationCount === 0 && "max-[520px]:hidden")} variant={row.notificationCount > 0 ? 'default' : 'outline'}>
                         <Megaphone aria-hidden="true" size={13} strokeWidth={2.4} />
                         <span>{row.notificationCount}</span>
                       </Badge>
                       {row.htmlUrl ? (
                         <Button
                           asChild
-                          className="size-7 rounded-md"
+                          className="size-7 rounded-md max-[520px]:hidden"
                           size="icon-sm"
                           title={dictionary.courseOverviewOpenCanvas}
                           type="button"

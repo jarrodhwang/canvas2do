@@ -486,27 +486,27 @@ export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: Canva
   }, [hasLoadedAcademyPreferences]);
 
   return (
-    <Card className="min-h-[620px] rounded-xl bg-card p-0 shadow-none xl:h-[calc(100vh_-_var(--top-bar-height)_-_1.5rem)] xl:min-h-0">
+    <Card className="min-h-[620px] rounded-xl bg-card p-0 shadow-none max-[520px]:min-h-0 max-[520px]:gap-0 xl:h-[calc(100vh_-_var(--top-bar-height)_-_1.5rem)] xl:min-h-0">
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div className="shrink-0 border-b p-4">
-          <div className="flex items-start justify-between gap-3">
+        <div className="shrink-0 border-b p-4 max-[520px]:p-2">
+          <div className="flex items-start justify-between gap-3 max-[520px]:items-center">
             <div className="min-w-0">
-              <div className="flex items-center gap-2 text-xs font-black uppercase text-muted-foreground">
+              <div className="flex items-center gap-2 text-xs font-black uppercase text-muted-foreground max-[520px]:size-11 max-[520px]:justify-center max-[520px]:[&>svg]:size-5">
                 <Users aria-hidden="true" size={15} strokeWidth={2.4} />
-                <span>{dictionary.academyPeopleEyebrow}</span>
+                <span className="max-[520px]:sr-only">{dictionary.academyPeopleEyebrow}</span>
               </div>
-              <h2 className="mt-1 text-2xl font-black leading-tight text-foreground">
+              <h2 className="mt-1 text-2xl font-black leading-tight text-foreground max-[520px]:sr-only">
                 {dictionary.academyPeopleTitle}
               </h2>
-              <p className="mt-1 max-w-2xl text-sm font-semibold text-muted-foreground">
+              <p className="mt-1 max-w-2xl text-sm font-semibold text-muted-foreground max-[520px]:hidden">
                 {dictionary.academyPeopleSubtitle}
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              <EventPill color="blue" label={`${totalPeopleCount} ${dictionary.academyPeopleCountLabel}`} />
+              <EventPill color="blue" label={<><span>{totalPeopleCount}</span><span className="max-[520px]:sr-only"> {dictionary.academyPeopleCountLabel}</span></>} />
               <Button
                 aria-label={dictionary.canvasInboxRefresh}
-                className="size-9"
+                className="size-9 max-[520px]:size-11"
                 disabled={isLoading}
                 onClick={loadPeople}
                 title={dictionary.canvasInboxRefresh}
@@ -518,10 +518,11 @@ export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: Canva
             </div>
           </div>
 
-          <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,360px)_1fr]">
+          <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,360px)_1fr] max-[520px]:mt-1">
             <label className="relative block min-w-0">
               <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
+                aria-label={dictionary.academyPeopleSearch}
                 className="pl-9"
                 onChange={(event) => setSearchQuery(event.target.value)}
                 placeholder={dictionary.academyPeopleSearch}

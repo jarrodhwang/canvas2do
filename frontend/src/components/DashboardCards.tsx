@@ -17,7 +17,7 @@ import {
   Star,
   Trash2,
 } from 'lucide-react';
-import { useEffect, useEffectEvent, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type ReactElement, type TouchEvent } from 'react';
+import { useEffect, useEffectEvent, useMemo, useRef, useState, type FormEvent, type MouseEvent, type PointerEvent, type ReactElement, type TouchEvent } from 'react';
 
 import { canvasToDoApi, type AcademyPreferences, type CanvasCalendarItem, type CanvasCourse, type SaveAcademyPreferencesRequest } from '../api/canvasToDoApi';
 import { useLanguage } from '../context/LanguageContext';
@@ -29,6 +29,7 @@ import { cn } from '../lib/utils';
 import { dotColorClasses } from '../lib/colorStyles';
 import { DateTimeField } from './DateTimeField';
 import { EventPill } from './EventPill';
+import { PhoneCourseworkForm } from './PhoneCourseworkForm';
 import {
   ManualLectureDialog,
   type ManualLecture,
@@ -3188,6 +3189,7 @@ interface CourseworkDialogProps {
   selectedSemester: string;
   initialCoursework?: ManualCourseworkItem;
   isCanvasCoursework?: boolean;
+  isPhone?: boolean;
   onOpenChange: (open: boolean) => void;
   onSave: (coursework: ManualCourseworkItem) => void;
   open: boolean;
@@ -3223,6 +3225,7 @@ function CourseworkDialog({
   courseOptions,
   initialCoursework,
   isCanvasCoursework = false,
+  isPhone = false,
   onOpenChange,
   onSave,
   open,
@@ -3232,7 +3235,10 @@ function CourseworkDialog({
 }: CourseworkDialogProps) {
   const { dictionary } = useLanguage();
   const [draft, setDraft] = useState<ManualCourseworkItem>(() => (
-    initialCoursework ?? createEmptyCoursework(selectedSemester)
+    initialCoursework ?? {
+      ...createEmptyCoursework(selectedSemester),
+      ...(isPhone ? { dueAt: getDefaultCourseworkDueAt() } : {}),
+    }
   ));
   const lockedCanvasFieldClassName = isCanvasCoursework ? 'opacity-70' : '';
   const selectedCourseValue = courseOptions.some((option) => option.value === draft.courseCode)
@@ -3241,8 +3247,38 @@ function CourseworkDialog({
       ? `current:${draft.courseCode}`
       : undefined;
 
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    onSave({
+      ...draft,
+      courseCode: draft.courseCode.trim(),
+      courseworkType: draft.courseworkType || 'study',
+      dueAt: toIsoFromDateInput(draft.dueAt) || draft.dueAt,
+      endAt: draft.endAt ? toIsoFromDateInput(draft.endAt) || draft.endAt : '',
+      semester: normalizeSemesterName(draft.semester, selectedSemester),
+      startAt: draft.startAt ? toIsoFromDateInput(draft.startAt) || draft.startAt : '',
+      submissionType: draft.submissionType.trim(),
+      title: draft.title.trim(),
+    });
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
+      {isPhone ? (open ? (
+        <PhoneCourseworkForm
+          courseOptions={courseOptions}
+          disabled={isCanvasCoursework}
+          draft={{ ...draft, dueAt: formatDateInputValue(draft.dueAt), startAt: formatDateInputValue(draft.startAt), endAt: formatDateInputValue(draft.endAt) }}
+          onChange={(changes) => setDraft((current) => ({ ...current, ...changes }))}
+          onClose={() => onOpenChange(false)}
+          onSubmit={handleSubmit}
+          submissionOptions={submissionTypes.map((value) => ({ value, label: formatSubmissionType(value) }))}
+          submitLabel={submitLabel ?? dictionary.courseworkSave}
+          title={title ?? dictionary.courseworkDialogTitle}
+          typeOptions={courseworkTypes.map((value) => ({ value, label: formatCourseworkType(value) }))}
+        />
+      ) : null) : (
       <DialogContent className="rounded-xl p-5 sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="text-2xl font-black">
@@ -3253,21 +3289,7 @@ function CourseworkDialog({
 
         <form
           className="grid gap-4"
-          onSubmit={(event) => {
-            event.preventDefault();
-
-            onSave({
-              ...draft,
-              courseCode: draft.courseCode.trim(),
-              courseworkType: draft.courseworkType || 'study',
-              dueAt: toIsoFromDateInput(draft.dueAt) || draft.dueAt,
-              endAt: draft.endAt ? toIsoFromDateInput(draft.endAt) || draft.endAt : '',
-              semester: normalizeSemesterName(draft.semester, selectedSemester),
-              startAt: draft.startAt ? toIsoFromDateInput(draft.startAt) || draft.startAt : '',
-              submissionType: draft.submissionType.trim(),
-              title: draft.title.trim(),
-            });
-          }}
+          onSubmit={handleSubmit}
         >
           <div className="grid gap-4 sm:grid-cols-2">
             {isCanvasCoursework ? (
@@ -3420,6 +3442,7 @@ function CourseworkDialog({
           </DialogFooter>
         </form>
       </DialogContent>
+      )}
     </Dialog>
   );
 }
@@ -3641,6 +3664,7 @@ function AssessmentDialog({
 }
 
 interface DashboardCardsProps {
+  isPhone?: boolean;
   academyAutoRefreshIntervalMs?: number;
   compactAcademySummary?: boolean;
   courseworkHideSettings?: CourseworkHideSettings;
@@ -3654,6 +3678,7 @@ interface DashboardCardsProps {
 }
 
 export function DashboardCards({
+  isPhone = false,
   academyAutoRefreshIntervalMs = defaultAcademyAutoRefreshIntervalMs,
   compactAcademySummary = false,
   courseworkHideSettings = defaultCourseworkHideSettings,
@@ -6570,7 +6595,7 @@ export function DashboardCards({
       <Button
         aria-label={`${dictionary.academyDashboardRefresh} · ${dashboardRefreshAgeLabel}`}
         className={cn(
-          'fixed bottom-5 right-5 z-40 size-12 rounded-full shadow-lg backdrop-blur max-lg:bottom-24 max-[520px]:bottom-20',
+          'fixed bottom-5 right-5 z-40 size-12 rounded-full shadow-lg backdrop-blur max-lg:bottom-24 max-[520px]:bottom-[calc(5rem+env(safe-area-inset-bottom))]',
           dashboardRefreshAgeClasses[dashboardRefreshAge],
         )}
         disabled={isAcademyDashboardRefreshing}
@@ -6595,6 +6620,7 @@ export function DashboardCards({
         semesterOptions={courseSemesterOptions}
       />
       <CourseworkDialog
+        isPhone={isPhone}
         courseOptions={courseworkCourseOptions}
         initialCoursework={initialManualCourseworkDraft}
         key={
@@ -6613,6 +6639,7 @@ export function DashboardCards({
         selectedSemester={activeCourseSemester}
       />
       <CourseworkDialog
+        isPhone={isPhone}
         courseOptions={courseworkCourseOptions}
         initialCoursework={selectedManualCoursework}
         key={selectedManualCoursework?.id ?? 'manual-coursework-closed'}
@@ -6628,6 +6655,7 @@ export function DashboardCards({
         title={dictionary.courseworkEditTitle}
       />
       <CourseworkDialog
+        isPhone={isPhone}
         courseOptions={courseworkCourseOptions}
         initialCoursework={selectedCanvasCourseworkEditable}
         isCanvasCoursework={Boolean(selectedCanvasCoursework)}

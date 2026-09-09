@@ -141,18 +141,20 @@ export function AdminUsersView() {
 
   return (
     <Card className="rounded-xl bg-card shadow-none">
-      <CardHeader className="gap-3 border-b md:flex-row md:items-center md:justify-between">
+      <CardHeader className="gap-3 border-b md:flex-row md:items-center md:justify-between max-[520px]:flex max-[520px]:flex-row max-[520px]:items-center max-[520px]:gap-2 max-[520px]:px-3">
         <div>
-          <CardTitle className="text-xl font-black">User management</CardTitle>
-          <p className="mt-1 text-sm font-semibold text-muted-foreground">
+          <ShieldCheck aria-hidden="true" className="hidden size-5 text-muted-foreground max-[520px]:block" />
+          <CardTitle className="text-xl font-black max-[520px]:sr-only">User management</CardTitle>
+          <p className="mt-1 text-sm font-semibold text-muted-foreground max-[520px]:hidden">
             Manage profiles, account settings, Canvas connections, and password approvals.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <label className="relative min-w-0">
+        <div className="flex items-center gap-2 max-[520px]:min-w-0 max-[520px]:flex-1">
+          <label className="relative min-w-0 max-[520px]:flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
-              className="w-[240px] max-w-[55vw] pl-9"
+              aria-label="Search users"
+              className="w-[240px] max-w-[55vw] pl-9 max-[520px]:h-11 max-[520px]:w-full max-[520px]:max-w-full"
               onChange={(event) => {
                 setPage(1);
                 setQuery(event.target.value);
@@ -161,7 +163,7 @@ export function AdminUsersView() {
               value={query}
             />
           </label>
-          <Button aria-label="Refresh users" disabled={isLoading} onClick={() => void refresh()} size="icon" variant="outline">
+          <Button aria-label="Refresh users" className="max-[520px]:size-11" disabled={isLoading} onClick={() => void refresh()} size="icon" variant="outline">
             <RefreshCw className={cn('size-4', isLoading && 'animate-spin')} />
           </Button>
         </div>

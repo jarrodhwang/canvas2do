@@ -1,5 +1,5 @@
 /* eslint-disable react-hooks/set-state-in-effect -- This restored integration view synchronizes selection and request state in effects. */
-import { BarChart3, ChevronDown, LoaderCircle, RefreshCw, TrendingUp } from 'lucide-react';
+import { ArrowLeft, BarChart3, ChevronDown, ChevronRight, LoaderCircle, RefreshCw, TrendingUp } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import { canvasToDoApi } from '../api/canvasToDoApi';
@@ -20,6 +20,8 @@ import { calculateManualGradeSummary, ManualGradeEditor } from './ManualGradeEdi
 import type { ManualLecture } from './ManualLectureDialog';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
+import { CanvasNoticeDialog } from './CanvasNoticeDialog';
+import { isCanvasConnectionError } from '../lib/canvasOnboarding';
 import {
   Card,
   CardAction,
@@ -845,7 +847,7 @@ function formatScore(row: GradeCourseRow) {
   return '--';
 }
 
-export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { selectedSemester?: string } = {}) {
+export function AcademyGradesView({ selectedSemester: selectedSemesterProp, isPhone = false, canvasTokenRemindersEnabled = true }: { selectedSemester?: string; isPhone?: boolean; canvasTokenRemindersEnabled?: boolean } = {}) {
   const { dictionary, language } = useLanguage();
   const academyGradesCanvasCoursesMovedToManual = dictionary.academyGradesCanvasCoursesMovedToManual;
   const locale = language === 'ko' ? 'ko-KR' : 'en-CA';
@@ -853,11 +855,15 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
   const [loadStatus, setLoadStatus] = useState<LoadStatus>('idle');
   const [loadError, setLoadError] = useState('');
   const [canvasWarning, setCanvasWarning] = useState('');
+  const [isConnectionWarning, setIsConnectionWarning] = useState(false);
+  const [dismissedCanvasWarning, setDismissedCanvasWarning] = useState('');
   const [academyPreferences, setAcademyPreferences] = useState<AcademyPreferences | null>(null);
   const [selectedSemester, setSelectedSemester] = useState(defaultAcademySemester);
   const [gradeProgressThresholds, setGradeProgressThresholds] =
     useState<GradeProgressColorThresholds>(defaultGradeProgressColorThresholds);
   const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(() => new Set());
+  const [phoneSelectedRowId, setPhoneSelectedRowId] = useState<string | null>(null);
+  const phoneScreenRef = useRef<HTMLDivElement>(null);
   const [courseDetails, setCourseDetails] = useState<Record<string, CourseDetailState>>({});
   const isMountedRef = useRef(true);
   const courseDetailsRef = useRef(courseDetails);
@@ -867,12 +873,20 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
     ? normalizeSemesterName(selectedSemesterProp)
     : undefined;
 
+  useEffect(() => {
+    if (isPhone) {
+      phoneScreenRef.current?.focus({ preventScroll: true });
+      phoneScreenRef.current?.scrollIntoView({ block: 'start' });
+    }
+  }, [isPhone, phoneSelectedRowId]);
+
   const loadGrades = useCallback(async () => {
     const loadSequence = ++loadGradesSequenceRef.current;
 
     setLoadStatus('loading');
     setLoadError('');
     setCanvasWarning('');
+    setIsConnectionWarning(false);
 
     const [preferencesResult, coursesResult] = await Promise.allSettled([
       canvasToDoApi.getAcademyPreferences(),
@@ -934,6 +948,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
     )));
 
     if (coursesResult.status === 'rejected') {
+      setIsConnectionWarning(isCanvasConnectionError(coursesResult.reason));
       setCanvasWarning(coursesResult.reason instanceof Error
         ? coursesResult.reason.message
         : dictionary.academyGradesCanvasUnavailable);
@@ -1191,6 +1206,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
       setAcademyPreferences(savedPreferences);
       void loadGrades();
     }).catch((error: unknown) => {
+      setIsConnectionWarning(false);
       setCanvasWarning(error instanceof Error ? error.message : dictionary.academyGradesUnavailable);
     });
   };
@@ -1262,6 +1278,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
 
       setAcademyPreferences(savedPreferences);
     }).catch((error: unknown) => {
+      setIsConnectionWarning(false);
       setCanvasWarning(error instanceof Error ? error.message : dictionary.academyGradesUnavailable);
     });
   };
@@ -1295,7 +1312,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
           <div className="border-b px-3 py-2 text-[11px] font-semibold uppercase text-muted-foreground">
             {dictionary.academyGradesAssignmentGrades}
           </div>
-          <div className="max-h-[22rem] space-y-2 overflow-y-auto p-2">
+          <div className="max-h-[22rem] space-y-2 overflow-y-auto p-2 max-[520px]:max-h-none max-[520px]:overflow-visible">
             {assignments.map((assignment) => {
               const percent = getScorePercentage(assignment.score, assignment.pointsPossible);
               const visual = getGradeVisual(percent, gradeProgressThresholds);
@@ -1306,7 +1323,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
                 <div className="rounded-lg border bg-card p-3 text-sm" key={assignment.id}>
                   <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
                     <div className="min-w-0">
-                      <div className="truncate font-semibold text-foreground">{assignment.name}</div>
+                      <div className="truncate font-semibold text-foreground max-[520px]:whitespace-normal max-[520px]:break-words">{assignment.name}</div>
                       <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
                         {rawScore ? <Badge className="rounded-md" variant="secondary">{rawScore}</Badge> : null}
                         {assignment.dueAt ? (
@@ -1368,12 +1385,45 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
     );
   };
 
+  const canvasWarningAlert = (
+    <CanvasNoticeDialog
+      message={canvasWarning}
+      open={Boolean(canvasWarning && canvasWarning !== dismissedCanvasWarning && (!isConnectionWarning || canvasTokenRemindersEnabled))}
+      onClose={() => setDismissedCanvasWarning(canvasWarning)}
+    />
+  );
+  const phoneSelectedRow = isPhone ? visibleRows.find((row) => row.id === phoneSelectedRowId) : undefined;
+  if (phoneSelectedRow) {
+    const visual = getGradeVisual(phoneSelectedRow.score, gradeProgressThresholds);
+    return (
+      <div ref={phoneScreenRef} tabIndex={-1} className="grid min-w-0 gap-3 pb-6 outline-none scroll-mt-[calc(var(--top-bar-height)+0.5rem)]">
+        <div className="rounded-xl border bg-background p-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <Button aria-label={language === 'ko' ? '성적 목록으로 돌아가기' : 'Back to grades'} className="-ml-2 size-11 shrink-0" onClick={() => setPhoneSelectedRowId(null)} type="button" variant="ghost">
+              <ArrowLeft aria-hidden="true" className="size-5" />
+            </Button>
+            <h1 className="min-w-0 break-words text-sm font-semibold">{phoneSelectedRow.name}</h1>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs text-muted-foreground">{phoneSelectedRow.semester}</span>
+            <span aria-label={`${dictionary.academyGradesExpectedLetter}: ${formatScore(phoneSelectedRow)}`} className="text-lg font-semibold tabular-nums">{formatScore(phoneSelectedRow)}</span>
+          </div>
+          <div aria-hidden="true" className="mt-2 h-1 overflow-hidden rounded-full bg-muted">
+            <div className="h-full rounded-full" style={{ backgroundColor: visual.color, width: `${visual.normalizedScore}%` }} />
+          </div>
+        </div>
+        <div className="min-w-0 overflow-x-auto">{renderCourseDetails(phoneSelectedRow)}</div>
+        {canvasWarningAlert}
+      </div>
+    );
+  }
+
   return (
-    <div className="grid min-h-0 gap-4 pb-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex min-w-0 flex-wrap items-center gap-3">
+    <div ref={phoneScreenRef} tabIndex={isPhone ? -1 : undefined} className="grid min-h-0 gap-4 pb-6 outline-none max-[520px]:gap-2 max-[520px]:scroll-mt-[calc(var(--top-bar-height)+0.5rem)]">
+      <div className="flex flex-wrap items-center justify-between gap-3 max-[520px]:flex-nowrap max-[520px]:gap-1.5 max-[520px]:px-1 max-[520px]:pt-1 max-[520px]:pb-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-3 max-[520px]:contents">
           <Select onValueChange={handleSelectSemester} value={normalizeSemesterName(selectedSemester)}>
-            <SelectTrigger className="h-9 w-[164px] rounded-md text-sm font-semibold">
+            <SelectTrigger aria-label={dictionary.courseOverviewSemester} className="h-9 w-[164px] rounded-md text-sm font-semibold max-[520px]:order-2 max-[520px]:h-11 max-[520px]:w-[138px] max-[520px]:text-xs">
               <SelectValue />
             </SelectTrigger>
             <SelectContent align="start">
@@ -1384,22 +1434,22 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
               ))}
             </SelectContent>
           </Select>
-          <div className="flex min-w-0 items-center gap-2">
-            <BarChart3 className="size-4 shrink-0 text-muted-foreground" />
-            <h1 className="truncate text-xl font-black text-foreground">{dictionary.academyGradesTitle}</h1>
-            <Badge className="rounded-md" variant="secondary">
-              {visibleRows.length} {courseCountLabel}
+          <div className="flex min-w-0 items-center gap-2 max-[520px]:contents">
+            <BarChart3 aria-hidden="true" className="size-4 shrink-0 text-muted-foreground max-[520px]:order-1 max-[520px]:ml-3 max-[520px]:mr-auto max-[520px]:my-3 max-[520px]:size-5" />
+            <h1 className="truncate text-xl font-black text-foreground max-[520px]:sr-only">{dictionary.academyGradesTitle}</h1>
+            <Badge className="rounded-md max-[520px]:order-3" variant="secondary">
+              <span>{visibleRows.length}<span className="max-[520px]:sr-only"> {courseCountLabel}</span></span>
             </Badge>
           </div>
         </div>
-        <Button disabled={isLoading} onClick={() => void loadGrades()} size="sm" type="button" variant="outline">
+        <Button aria-label={dictionary.academyGradesRefresh} title={dictionary.academyGradesRefresh} className="max-[520px]:order-4 max-[520px]:size-11 max-[520px]:shrink-0 max-[520px]:p-0" disabled={isLoading} onClick={() => void loadGrades()} size="sm" type="button" variant="outline">
           <RefreshCw className={cn('size-4', isLoading && 'animate-spin')} />
-          {dictionary.academyGradesRefresh}
+          <span className="max-[520px]:sr-only">{dictionary.academyGradesRefresh}</span>
         </Button>
       </div>
 
-      {canvasWarning ? (
-        <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-200">
+      {isPhone ? canvasWarningAlert : canvasWarning ? (
+        <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm max-[520px]:px-3 max-[520px]:py-2 max-[520px]:text-xs text-amber-700 dark:text-amber-200">
           {canvasWarning}
         </div>
       ) : null}
@@ -1409,8 +1459,8 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
           <CardContent className="py-6 text-sm text-destructive">{loadError || dictionary.academyGradesUnavailable}</CardContent>
         </Card>
       ) : isLoading ? (
-        <Card className="shadow-none">
-          <CardContent className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+        <Card className="shadow-none max-[520px]:py-0">
+          <CardContent className="flex items-center gap-2 py-8 text-sm text-muted-foreground max-[520px]:min-h-14 max-[520px]:py-3 max-[520px]:text-xs">
             <LoaderCircle className="size-4 animate-spin" />
             {dictionary.academyGradesLoading}
           </CardContent>
@@ -1424,13 +1474,38 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
             } satisfies CSSProperties;
 
             return (
-              <Card className="self-start gap-0 overflow-hidden shadow-none" key={row.id}>
+              <Card className="self-start gap-0 overflow-hidden shadow-none max-[520px]:border max-[520px]:bg-background max-[520px]:py-0 max-[520px]:ring-0" key={row.id}>
                 <button
-                  className="w-full text-left transition hover:bg-muted/25"
-                  onClick={() => toggleExpandedRow(row.id)}
+                  aria-expanded={isPhone ? undefined : isExpanded}
+                  className="w-full text-left outline-none transition hover:bg-muted/25 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring max-[520px]:hover:bg-muted/35"
+                  onClick={() => {
+                    if (isPhone) {
+                      setExpandedRowIds((current) => new Set(current).add(row.id));
+                      setPhoneSelectedRowId(row.id);
+                    } else toggleExpandedRow(row.id);
+                  }}
                   type="button"
                 >
-                  <CardHeader className="grid-cols-[1fr_auto] items-center gap-4">
+                  <div className="hidden min-w-0 grid-cols-[minmax(0,1fr)_auto_16px] items-center gap-x-3 gap-y-2 px-3 py-2 max-[520px]:grid">
+                    <div className="flex min-w-0 gap-2">
+                      <span aria-hidden="true" className={cn('mt-1 size-2 shrink-0 rounded-full', dotColorClasses[row.color])} />
+                      <div className="min-w-0 flex-1">
+                        <span
+                          className={cn('inline-flex max-w-full items-center rounded-md border-0 text-sm font-semibold max-[520px]:bg-transparent', badgeColorClasses[row.color])}
+                          title={row.courseCode}
+                        >
+                          <span className="truncate">{row.courseCode}</span>
+                        </span>
+                        <div className="mt-1 truncate text-xs font-medium leading-snug text-muted-foreground" title={row.name}>{row.name}</div>
+                      </div>
+                    </div>
+                    <span aria-label={`${dictionary.academyGradesExpectedLetter}: ${formatScore(row)}`} className="whitespace-nowrap text-sm font-semibold tabular-nums">{formatScore(row)}</span>
+                    <ChevronRight aria-hidden="true" className="size-4 text-muted-foreground" />
+                    <div aria-hidden="true" className="col-span-3 h-1 overflow-hidden rounded-full bg-muted">
+                      <div className="h-full rounded-full" style={{ backgroundColor: visual.color, width: `${visual.normalizedScore}%` }} />
+                    </div>
+                  </div>
+                  <CardHeader className="grid-cols-[1fr_auto] items-center gap-4 max-[520px]:hidden">
                     <div className="flex min-w-0 items-center gap-4">
                       <div className="grid size-16 shrink-0 place-items-center rounded-full p-1" style={ringStyle}>
                         <div className="grid size-full place-items-center rounded-full bg-card">
@@ -1463,7 +1538,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
                       <ChevronDown className={cn('size-4 text-muted-foreground transition', isExpanded && 'rotate-180')} />
                     </CardAction>
                   </CardHeader>
-                  <CardContent className="pb-4">
+                  <CardContent className="pb-4 max-[520px]:hidden">
                     <div className="h-2 overflow-hidden rounded-full bg-muted">
                       <div
                         className="h-full rounded-full"
@@ -1475,8 +1550,14 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
                     </div>
                   </CardContent>
                 </button>
-                {isExpanded ? (
-                  <div className="border-t bg-muted/20 px-4 py-4">
+                {isExpanded && !isPhone ? (
+                  <div className="border-t bg-muted/20 px-4 py-4 max-[520px]:overflow-x-auto max-[520px]:px-3 max-[520px]:py-3">
+                    <div className="mb-3 hidden flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground max-[520px]:flex">
+                      <span>{row.source === 'canvas' ? dictionary.academyGradesCanvas : dictionary.academyGradesManual}</span>
+                      <span>{row.semester}</span>
+                      {row.status ? <span>{row.status}</span> : null}
+                      {row.credits ? <span>{row.credits} {dictionary.courseOverviewCredits}</span> : null}
+                    </div>
                     <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground">
                       <TrendingUp className="size-4" />
                       {dictionary.academyGradesDetails}
@@ -1495,7 +1576,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
 
         return (
           <>
-            <div className="grid gap-3 xl:hidden">
+            <div className="grid gap-3 max-[520px]:gap-2.5 xl:hidden">
               {visibleRows.map(renderGradeCard)}
             </div>
             <div className="hidden items-start gap-3 xl:grid xl:grid-cols-2">
@@ -1509,8 +1590,8 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
         );
       })()
       : (
-        <Card className="shadow-none">
-          <CardContent className="py-8 text-sm text-muted-foreground">{dictionary.academyGradesEmpty}</CardContent>
+        <Card className="shadow-none max-[520px]:py-0">
+          <CardContent className="py-8 text-sm text-muted-foreground max-[520px]:py-3 max-[520px]:text-xs">{dictionary.academyGradesEmpty}</CardContent>
         </Card>
       )}
     </div>

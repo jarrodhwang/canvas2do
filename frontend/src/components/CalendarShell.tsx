@@ -1,5 +1,5 @@
 import type { WorkspaceModeMockData } from '../data/mockWorkspaceData';
-import { AlertTriangle, ChevronLeft, ChevronRight, LoaderCircle, Maximize2, Minimize2 } from 'lucide-react';
+import { AlertTriangle, CalendarCheck2, CalendarDays, CalendarRange, ChevronLeft, ChevronRight, ListChecks, LoaderCircle, Maximize2, Minimize2, SlidersHorizontal } from 'lucide-react';
 import { useRef, useState, type WheelEvent } from 'react';
 import { useLanguage } from '../context/LanguageContext';
 import { formatMonthHeading, getViewLabel, type AcademyNation } from '../i18n';
@@ -51,8 +51,14 @@ interface CalendarShellProps {
   isExpanded?: boolean;
   isSelectedDateToday?: boolean;
   isLoading?: boolean;
+  isPhone?: boolean;
+  mobileCalendarScope?: 'month' | 'week';
+  onMobileCalendarScopeChange?: (scope: 'month' | 'week') => void;
+  selectedDateIso?: string;
   view: WorkspaceView;
   onNextMonth?: () => void;
+  onNextWeek?: () => void;
+  onPreviousWeek?: () => void;
   onFinishTodoTitleEdit?: () => void;
   onOpenAddItem?: (column: WorkspaceModeConfig['board']['columns'][number]) => void;
   onOpenTodo?: (item: CalendarActionItem) => void;
@@ -95,8 +101,14 @@ export function CalendarShell({
   isExpanded = false,
   isSelectedDateToday = false,
   isLoading = false,
+  isPhone = false,
+  mobileCalendarScope = 'week',
+  onMobileCalendarScopeChange,
+  selectedDateIso,
   view,
   onNextMonth,
+  onNextWeek,
+  onPreviousWeek,
   onFinishTodoTitleEdit,
   onOpenAddItem,
   onOpenTodo,
@@ -125,25 +137,39 @@ export function CalendarShell({
   const { dictionary, language } = useLanguage();
   const monthWheelLockRef = useRef(0);
   const [monthTransitionDirection, setMonthTransitionDirection] = useState<'next' | 'previous'>('next');
-  const [mobileCalendarScope, setMobileCalendarScope] = useState<'month' | 'week'>('month');
   const monthHeading = formatMonthHeading(language, data.monthLabel);
   const hasFilters = Boolean(courseFilterOptions?.length);
   const hasMonthControls = Boolean(onPreviousMonth && onNextMonth);
   const hasMonthControlsForView = view === 'month' && hasMonthControls;
   const hasDayControls = (view === 'agenda' || view === 'board') && Boolean(onPreviousAgendaDay && onNextAgendaDay);
+  const hasWeekControls = isPhone && view === 'month' && mobileCalendarScope === 'week' && Boolean(onPreviousWeek && onNextWeek);
   const showCalendarLoading = isLoading;
   const previousMonthLabel = language === 'ko' ? '이전 달' : 'Previous month';
   const nextMonthLabel = language === 'ko' ? '다음 달' : 'Next month';
   const previousDayLabel = language === 'ko' ? '이전 날짜' : 'Previous day';
   const nextDayLabel = language === 'ko' ? '다음 날짜' : 'Next day';
   const todayLabel = language === 'ko' ? '오늘' : 'Today';
+  const phoneCalendarScopeLabel = view === 'month'
+    ? mobileCalendarScope === 'week'
+      ? (language === 'ko' ? '월간 보기로 전환' : 'Switch to month view')
+      : (language === 'ko' ? '주간 보기로 전환' : 'Switch to week view')
+    : mobileCalendarScope === 'week'
+      ? (language === 'ko' ? '주간 보기' : 'Week view')
+      : (language === 'ko' ? '월간 보기' : 'Month view');
+  const isPhoneTodayDisabled = isSelectedDateToday && (
+    view !== 'month' || data.days.some((day) => !day.outsideMonth && (day.isToday || day.dateIso === todayIso))
+  );
   const headingLabel = hasDayControls && agendaDateLabel
     ? { primary: agendaDateLabel, secondary: '' }
     : monthHeading;
-  const previousLabel = hasDayControls ? previousDayLabel : previousMonthLabel;
-  const nextLabel = hasDayControls ? nextDayLabel : nextMonthLabel;
+  const previousLabel = hasWeekControls ? (language === 'ko' ? '이전 주' : 'Previous week') : hasDayControls ? previousDayLabel : previousMonthLabel;
+  const nextLabel = hasWeekControls ? (language === 'ko' ? '다음 주' : 'Next week') : hasDayControls ? nextDayLabel : nextMonthLabel;
   const showDateControls = hasMonthControlsForView || hasDayControls;
   const handlePreviousPeriod = () => {
+    if (hasWeekControls) {
+      onPreviousWeek?.();
+      return;
+    }
     if (hasDayControls) {
       onPreviousAgendaDay?.();
       return;
@@ -152,6 +178,10 @@ export function CalendarShell({
     handlePreviousMonth();
   };
   const handleNextPeriod = () => {
+    if (hasWeekControls) {
+      onNextWeek?.();
+      return;
+    }
     if (hasDayControls) {
       onNextAgendaDay?.();
       return;
@@ -241,13 +271,13 @@ export function CalendarShell({
           </span>
         </button>
       ) : null}
-      <CardHeader className="flex flex-row items-start justify-between gap-3 px-3 pb-2 pt-1 max-md:flex-col max-[520px]:flex-row max-[520px]:items-center max-[520px]:gap-2 max-[520px]:px-1 max-[520px]:pb-1 max-[520px]:pt-0">
+      <CardHeader className="flex flex-row items-start justify-between gap-3 px-3 pb-2 pt-1 max-md:flex-col max-[520px]:flex-row max-[520px]:items-center max-[520px]:gap-1 max-[520px]:px-1 max-[520px]:pb-1 max-[520px]:pt-0">
         <div className="min-w-0 max-[520px]:w-full">
           <div className="flex min-w-0 items-center gap-2 max-[520px]:w-full max-[520px]:justify-between">
             {showDateControls ? (
               <Button
                 aria-label={previousLabel}
-                className="size-9 shrink-0 rounded-lg border bg-muted text-muted-foreground hover:text-foreground max-[520px]:order-4 max-[520px]:size-8 max-[520px]:rounded-full"
+                className="size-9 shrink-0 rounded-lg border bg-muted text-muted-foreground hover:text-foreground max-[520px]:order-4 max-[520px]:size-11 max-[520px]:rounded-xl"
                 onClick={handlePreviousPeriod}
                 title={previousLabel}
                 type="button"
@@ -256,10 +286,10 @@ export function CalendarShell({
                 <ChevronLeft aria-hidden="true" size={16} strokeWidth={2.4} />
               </Button>
             ) : null}
-            <h2 className="flex min-w-0 items-end gap-2 text-3xl font-black leading-none max-[520px]:order-1 max-[520px]:mr-auto max-[520px]:text-lg">
-              <span className="truncate">{headingLabel.primary}</span>
+            <h2 className="flex min-w-0 items-end gap-2 text-3xl font-black leading-none max-[520px]:order-1 max-[520px]:mr-auto max-[520px]:text-base">
+              <span className="truncate">{isPhone ? headingLabel.primary.replace(/,$/, '') : headingLabel.primary}</span>
               {headingLabel.secondary ? (
-                <span className="shrink-0 pb-0.5 text-base font-black text-muted-foreground">
+                <span className="shrink-0 pb-0.5 text-base font-black text-muted-foreground max-[520px]:text-xs">
                   {headingLabel.secondary}
                 </span>
               ) : null}
@@ -267,7 +297,7 @@ export function CalendarShell({
             {showDateControls ? (
               <Button
                 aria-label={nextLabel}
-                className="size-9 shrink-0 rounded-lg border bg-muted text-muted-foreground hover:text-foreground max-[520px]:order-5 max-[520px]:size-8 max-[520px]:rounded-full"
+                className="size-9 shrink-0 rounded-lg border bg-muted text-muted-foreground hover:text-foreground max-[520px]:order-5 max-[520px]:size-11 max-[520px]:rounded-xl"
                 onClick={handleNextPeriod}
                 title={nextLabel}
                 type="button"
@@ -276,39 +306,10 @@ export function CalendarShell({
                 <ChevronRight aria-hidden="true" size={16} strokeWidth={2.4} />
               </Button>
             ) : null}
-            {!hasDayControls && view === 'month' && onToday ? (
-              <Button
-                className={cn(
-                  'hidden h-8 shrink-0 rounded-full border px-2.5 text-xs font-black disabled:opacity-100 max-[520px]:order-2 max-[520px]:inline-flex',
-                  isSelectedDateToday
-                    ? 'bg-primary text-primary-foreground hover:bg-primary/90'
-                    : 'bg-muted text-muted-foreground hover:text-foreground',
-                )}
-                disabled={isSelectedDateToday}
-                onClick={onToday}
-                title={todayLabel}
-                type="button"
-                variant="outline"
-              >
-                {todayLabel}
-              </Button>
-            ) : null}
-            {!hasDayControls && view === 'month' ? (
-              <Button
-                aria-label={mobileCalendarScope === 'week' ? 'Month view' : 'Week view'}
-                className="hidden size-8 shrink-0 rounded-full border bg-muted text-xs font-black text-muted-foreground hover:text-foreground max-[520px]:order-3 max-[520px]:inline-flex"
-                onClick={() => setMobileCalendarScope((currentScope) => currentScope === 'week' ? 'month' : 'week')}
-                title={mobileCalendarScope === 'week' ? 'Month view' : 'Week view'}
-                type="button"
-                variant="outline"
-              >
-                {mobileCalendarScope === 'week' ? 'M' : 'W'}
-              </Button>
-            ) : null}
             {hasDayControls && onToday ? (
               <Button
                 className={cn(
-                  'h-8 shrink-0 rounded-md border px-2.5 text-xs font-black disabled:opacity-100',
+                  'h-8 shrink-0 rounded-md border px-2.5 text-xs font-black disabled:opacity-100 max-[520px]:hidden',
                   isSelectedDateToday
                     ? 'bg-primary text-primary-foreground hover:bg-primary/90'
                     : 'bg-muted text-muted-foreground hover:text-foreground',
@@ -366,6 +367,63 @@ export function CalendarShell({
           </Tabs>
         </div>
       </CardHeader>
+
+      <div aria-label={language === 'ko' ? '캘린더 도구' : 'Calendar tools'} className="mb-2 hidden items-center justify-between gap-2 rounded-xl border bg-card/80 p-1 max-[520px]:flex" role="group">
+        <div className="flex items-center gap-1">
+          {mode.views.includes('month') ? (
+            <Button
+              aria-label={phoneCalendarScopeLabel}
+              aria-pressed={view === 'month'}
+              className="size-11 rounded-lg text-muted-foreground aria-pressed:bg-primary/15 aria-pressed:text-primary"
+              disabled={!onMobileCalendarScopeChange}
+              onClick={() => {
+                if (view === 'month') {
+                  onMobileCalendarScopeChange?.(mobileCalendarScope === 'week' ? 'month' : 'week');
+                }
+                onViewChange('month');
+              }}
+              title={phoneCalendarScopeLabel}
+              type="button"
+              variant="ghost"
+            >
+              {mobileCalendarScope === 'week' ? <CalendarRange aria-hidden="true" className="size-5" /> : <CalendarDays aria-hidden="true" className="size-5" />}
+            </Button>
+          ) : null}
+          {mode.views.includes('agenda') ? (
+            <Button
+              aria-label={getViewLabel(language, 'agenda')}
+              aria-pressed={view === 'agenda'}
+              className="size-11 rounded-lg text-muted-foreground aria-pressed:bg-primary/15 aria-pressed:text-primary"
+              onClick={() => onViewChange('agenda')}
+              title={getViewLabel(language, 'agenda')}
+              type="button"
+              variant="ghost"
+            >
+              <ListChecks aria-hidden="true" className="size-5" />
+            </Button>
+          ) : null}
+        </div>
+        <div className="flex items-center gap-1">
+          {onToday ? (
+            <Button aria-label={todayLabel} className="size-11 rounded-lg" disabled={isPhoneTodayDisabled} onClick={onToday} title={todayLabel} type="button" variant="ghost">
+              <CalendarCheck2 className="size-5" />
+            </Button>
+          ) : null}
+          {hasFilters ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button aria-label={dictionary.boardCourseMenu} className="relative size-11 rounded-lg" title={dictionary.boardCourseMenu} type="button" variant="ghost">
+                  <SlidersHorizontal className="size-5" />
+                  {courseFilterOptions?.some((option) => !option.checked) ? <span className="absolute right-2 top-2 size-1.5 rounded-full bg-primary" /> : null}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-72 max-w-[calc(100vw-2rem)] p-2">
+                <FilterPanel courseOptions={courseFilterOptions ?? []} onToggleCourseOption={onToggleCourseFilter} />
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+        </div>
+      </div>
 
       <CardContent
         className={cn(
@@ -429,7 +487,8 @@ export function CalendarShell({
                   holidayNations={holidayNations}
                   isCompact={isCompactMonth}
                   isExpanded={isExpanded}
-                  mobileScope={mobileCalendarScope}
+                  mobileScope={isPhone ? mobileCalendarScope : 'month'}
+                  selectedDateIso={isPhone ? selectedDateIso : undefined}
                   onAddCourseworkForDay={onAddCourseworkForDay}
                   onSelectItem={onSelectItem}
                   progressDisplay={progressDisplay}

@@ -740,21 +740,21 @@ export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasI
 
   return (
     <Card
-      className="min-h-[620px] rounded-xl bg-card p-0 shadow-none xl:h-[calc(100vh_-_var(--top-bar-height)_-_1.5rem)] xl:min-h-0"
+      className="min-h-[620px] rounded-xl bg-card p-0 shadow-none max-[520px]:min-h-0 max-[520px]:gap-0 xl:h-[calc(100vh_-_var(--top-bar-height)_-_1.5rem)] xl:min-h-0"
       onAuxClick={handleInboxAuxClick}
     >
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div className="shrink-0 border-b p-4">
-          <div className="flex items-start justify-between gap-3">
+        <div className="shrink-0 border-b p-4 max-[520px]:p-2">
+          <div className="flex items-start justify-between gap-3 max-[520px]:items-center">
             <div className="min-w-0">
-              <div className="flex items-center gap-2 text-xs font-black uppercase text-muted-foreground">
+              <div className="flex items-center gap-2 text-xs font-black uppercase text-muted-foreground max-[520px]:size-11 max-[520px]:justify-center max-[520px]:[&>svg]:size-5">
                 <Inbox aria-hidden="true" size={15} strokeWidth={2.4} />
-                <span>{dictionary.canvasInboxEyebrow}</span>
+                <span className="max-[520px]:sr-only">{dictionary.canvasInboxEyebrow}</span>
               </div>
-              <h2 className="mt-1 text-2xl font-black leading-tight text-foreground">
+              <h2 className="mt-1 text-2xl font-black leading-tight text-foreground max-[520px]:sr-only">
                 {dictionary.canvasInboxTitle}
               </h2>
-              <p className="mt-1 max-w-2xl text-sm font-semibold text-muted-foreground">
+              <p className="mt-1 max-w-2xl text-sm font-semibold text-muted-foreground max-[520px]:hidden">
                 {dictionary.canvasInboxSubtitle}
               </p>
             </div>
@@ -762,7 +762,7 @@ export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasI
               <EventPill color="blue" label={`${sortedItems.length}`} />
               <Button
                 aria-label={dictionary.canvasInboxRefresh}
-                className="size-9"
+                className="size-9 max-[520px]:size-11"
                 disabled={isLoading}
                 onClick={loadInboxCourses}
                 title={dictionary.canvasInboxRefresh}

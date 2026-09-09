@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { GraduationCap, Languages, LogOut, Maximize2, Minimize2, Moon, Pencil, Plus, Sun } from 'lucide-react';
+import { Check, GraduationCap, Languages, LogOut, Maximize2, Minimize2, Moon, Pencil, Plus, Sun } from 'lucide-react';
 
 import type { AuthSession } from '../api/canvasToDoApi';
 import { useLanguage } from '../context/LanguageContext';
@@ -25,6 +25,7 @@ import {
 interface TopBarProps {
   academyLogoSrc?: string;
   authSession?: AuthSession | null;
+  isPhone?: boolean;
   isTopBarCollapsed?: boolean;
   onOpenAddItem: () => void;
   onOpenProfile?: () => void;
@@ -62,6 +63,7 @@ function AccountMenu({
           className={cn(
             'flex max-w-[250px] items-center gap-2 rounded-lg border bg-muted/60 px-2 text-left outline-none transition hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50',
             compact ? 'h-8' : 'h-11',
+            'max-[520px]:size-11 max-[520px]:justify-center max-[520px]:rounded-xl max-[520px]:px-0',
           )}
           type="button"
         >
@@ -95,6 +97,7 @@ function AccountMenu({
 export function TopBar({
   academyLogoSrc,
   authSession,
+  isPhone = false,
   isTopBarCollapsed = true,
   onOpenAddItem,
   onOpenProfile,
@@ -104,6 +107,39 @@ export function TopBar({
   theme,
 }: TopBarProps) {
   const { dictionary, language, setLanguage } = useLanguage();
+
+  if (isPhone) {
+    return (
+      <header className="sticky top-0 z-40 flex h-[calc(56px+env(safe-area-inset-top))] items-center gap-1 border-b bg-card/95 px-3 pt-[env(safe-area-inset-top)] backdrop-blur-xl">
+        <div className="mr-auto flex min-w-0 items-center" aria-label="Canvas To Do">
+          <SchoolLogo src={academyLogoSrc ?? ''} compact />
+          <h1 className="sr-only">Canvas To Do</h1>
+        </div>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button aria-label={dictionary.language} className="size-11 rounded-xl" title={dictionary.language} type="button" variant="ghost">
+              <Languages className="size-5" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {languageOptions.map((option) => (
+              <DropdownMenuItem className="min-h-11" key={option.value} onSelect={() => setLanguage(option.value)}>
+                {option.label}
+                {option.value === language ? <Check className="ml-auto size-4" /> : null}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <Button aria-label={theme === 'dark' ? 'Use light theme' : 'Use dark theme'} className="size-11 rounded-xl" onClick={() => onThemeChange(theme === 'dark' ? 'light' : 'dark')} type="button" variant="ghost">
+          {theme === 'dark' ? <Moon className="size-5" /> : <Sun className="size-5" />}
+        </Button>
+        <Button aria-label={dictionary.add} className="size-11 rounded-xl" onClick={onOpenAddItem} title={dictionary.add} type="button">
+          <Plus className="size-5" />
+        </Button>
+        <AccountMenu authSession={authSession} compact onOpenProfile={onOpenProfile} onSignOut={onSignOut} />
+      </header>
+    );
+  }
 
   if (isTopBarCollapsed) {
     return (

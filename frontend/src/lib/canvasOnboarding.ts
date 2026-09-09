@@ -1,4 +1,9 @@
-import type { CanvasTokenStatus } from '../api/canvasToDoApi';
+import { ApiError, type CanvasTokenStatus } from '../api/canvasToDoApi';
+
+export function isCanvasConnectionError(error: unknown): error is ApiError {
+  // Canvas endpoints use 409 for missing, expired, pending, or invalid connections.
+  return error instanceof ApiError && error.status === 409;
+}
 
 export function shouldPromptForCanvasToken(status: CanvasTokenStatus | null, enabled: boolean, dismissed: boolean) {
   return enabled && !dismissed && status !== null && !status.connected &&

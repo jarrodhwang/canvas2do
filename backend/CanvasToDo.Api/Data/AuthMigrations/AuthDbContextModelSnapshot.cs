@@ -241,11 +241,6 @@ namespace CanvasToDo.Api.Data.AuthMigrations
 
                     b.HasKey("UserId", "LoginProvider", "Name");
 
-                    b.HasIndex("LoginProvider", "Name", "Value")
-                        .IsUnique()
-                        .HasDatabaseName("UX_auth_user_tokens_LegacyAcademyAccount")
-                        .HasFilter("\"LoginProvider\" = 'CanvasToDo.LegacyAcademyImport' AND \"Name\" = 'LegacyAcademyAccountId' AND \"Value\" IS NOT NULL");
-
                     b.ToTable("auth_user_tokens", (string)null);
                 });
 

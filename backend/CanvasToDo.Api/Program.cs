@@ -74,7 +74,6 @@ builder.Services.AddMemoryCache(options =>
 });
 builder.Services.Configure<AccountEmailOptions>(builder.Configuration.GetSection("Email"));
 builder.Services.AddSingleton<IAccountEmailSender, SmtpAccountEmailSender>();
-builder.Services.AddScoped<LegacyAcademyImportService>();
 builder.Services.AddScoped<PasswordChangeService>();
 
 // Keep the legacy discriminator until existing encrypted Canvas tokens have been re-protected.
@@ -260,15 +259,6 @@ builder.Services.AddRateLimiter(options =>
             QueueLimit = 0,
             AutoReplenishment = true,
         }));
-    options.AddPolicy("legacy-academy-import", context => RateLimitPartition.GetFixedWindowLimiter(
-        GetLegacyAcademyImportRateLimitPartitionKey(context),
-        _ => new FixedWindowRateLimiterOptions
-        {
-            PermitLimit = 5,
-            Window = TimeSpan.FromMinutes(15),
-            QueueLimit = 0,
-            AutoReplenishment = true,
-        }));
     options.AddPolicy("admin-write", context => RateLimitPartition.GetFixedWindowLimiter(
         GetAdminRateLimitPartitionKey(context),
         _ => new FixedWindowRateLimiterOptions
@@ -401,7 +391,6 @@ app.UseAuthorization();
 app.Use(EnforceApplicationAccessAsync);
 
 app.MapAuthEndpoints();
-app.MapLegacyAcademyImportEndpoints();
 app.MapAdminAuthEndpoints();
 app.MapCanvasIntegrationEndpoints();
 app.MapAcademyPreferenceEndpoints();
@@ -582,13 +571,6 @@ static string GetRateLimitPartitionKey(HttpContext context) =>
     context.User.FindFirstValue(ClaimTypes.NameIdentifier) is { Length: > 0 } userId
         ? $"user:{userId}"
         : $"ip:{context.Connection.RemoteIpAddress?.ToString() ?? "unknown-client"}";
-
-static string GetLegacyAcademyImportRateLimitPartitionKey(HttpContext context)
-{
-    var userId = context.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "unauthenticated";
-
-    return $"legacy-academy-import:user:{userId}";
-}
 
 static string GetAdminRateLimitPartitionKey(HttpContext context) =>
     GetRateLimitPartitionKey(context);

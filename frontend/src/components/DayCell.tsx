@@ -139,12 +139,6 @@ export const DayCell = forwardRef<HTMLButtonElement, DayCellProps>(function DayC
     : getDesktopVisibleEventCount(cellHeight, isExpanded);
   const desktopEvents = day.events.slice(0, desktopVisibleEventCount);
   const hiddenDesktopEventCount = Math.max(day.events.length - desktopEvents.length, 0);
-  const mobileClusterPositions = [
-    'left-0 top-0',
-    'right-0 top-0',
-    'left-0 bottom-0',
-    'right-0 bottom-0',
-  ];
 
   return (
     <button
@@ -165,51 +159,30 @@ export const DayCell = forwardRef<HTMLButtonElement, DayCellProps>(function DayC
       onClick={onSelect}
       type="button"
     >
-      <div className="hidden h-full min-h-0 flex-col items-center justify-start px-0.5 py-0.5 max-[520px]:flex">
-        <div className="mb-0.5 flex h-5 min-w-0 items-center justify-center">
-          {mobileEvents.length > 0 ? (
-            <span className="relative block size-6" title={mobileEvents.map((event) => event.title).join(', ')}>
-              {mobileEvents.map((event, index) => (
-                <span
-                  aria-label={event.title}
-                  className={cn(
-                    'absolute size-[15px] rounded-[6px] shadow-sm',
-                    mobileClusterPositions[index],
-                    event.isCanceledForHoliday ? 'bg-red-500' : dotColorClasses[event.color],
-                    mobileEvents.length === 1 && 'left-1/2 top-1/2 size-5 -translate-x-1/2 -translate-y-1/2 rounded-[7px]',
-                  )}
-                  key={event.id}
-                  title={event.title}
-                />
-              ))}
-              {day.progress >= 100 ? (
-                <span className="absolute inset-0 grid place-items-center text-[10px] font-black leading-none text-white drop-shadow-sm">
-                  ✓
-                </span>
-              ) : null}
-              {hiddenMobileEventCount > 0 ? (
-                <span className="absolute -bottom-1 -right-1 grid size-[16px] place-items-center rounded-full bg-muted text-[8px] font-black text-foreground shadow-sm">
-                  {hiddenMobileEventCount}
-                </span>
-              ) : null}
-            </span>
-          ) : (
-            <span className="size-5 rounded-[7px] bg-muted-foreground/20" aria-hidden="true" />
-          )}
-        </div>
+      <div className="hidden h-full min-h-0 flex-col items-center justify-center gap-1 px-0.5 max-[520px]:flex">
         <span
           className={cn(
-            'grid size-[18px] place-items-center rounded-full text-xs font-black leading-none',
+            'grid size-8 place-items-center rounded-full text-xs font-bold leading-none',
             isRedDate && 'text-red-500',
-            !isRedDate && !day.outsideMonth && 'text-foreground',
             day.outsideMonth && 'text-muted-foreground',
-            isToday && 'bg-primary text-primary-foreground shadow-sm max-[520px]:bg-foreground max-[520px]:text-background',
-            isSelected && !isToday && 'bg-muted text-foreground max-[520px]:bg-primary max-[520px]:text-primary-foreground max-[520px]:shadow-sm',
-            isSelected && isToday && 'max-[520px]:ring-2 max-[520px]:ring-primary/70 max-[520px]:ring-offset-1 max-[520px]:ring-offset-background',
+            isToday && 'ring-1 ring-inset ring-primary',
+            isSelected && 'bg-primary text-primary-foreground',
           )}
           title={holiday ? `${isToday ? `${todayLabel} · ` : ''}${holidayTitle}` : isToday ? todayLabel : undefined}
         >
           {day.dateNumber}
+        </span>
+        <span className="flex h-2 items-center justify-center gap-0.5">
+          {mobileEvents.map((event) => (
+            <span
+              aria-label={event.title}
+              className={cn('size-1 rounded-full', event.isCanceledForHoliday ? 'bg-red-500' : dotColorClasses[event.color])}
+              key={event.id}
+              title={event.title}
+            />
+          ))}
+          {hiddenMobileEventCount > 0 ? <span className="text-[8px] font-bold leading-none">+{hiddenMobileEventCount}</span> : null}
+          {mobileEvents.length > 0 && day.progress >= 100 ? <span className="text-[9px] leading-none text-muted-foreground">✓</span> : null}
         </span>
       </div>
 

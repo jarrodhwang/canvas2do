@@ -133,6 +133,36 @@
   font-family: inherit;
 }
 
+@media (max-width: 520px) {
+  /* Avoid automatic input zoom on iOS without changing larger layouts. */
+  input,
+  select,
+  textarea {
+    font-size: max(16px, 1em);
+  }
+
+  /* Card size variants otherwise retain their desktop padding and grid rows. */
+  .phone-course-list {
+    gap: 0;
+    padding: 0;
+    overflow: visible;
+    box-shadow: none;
+  }
+
+  .phone-course-list > [data-slot="card-header"] {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    border: 0;
+    padding: 0 0 8px;
+  }
+
+  .phone-course-list > [data-slot="card-content"] {
+    padding: 0;
+  }
+}
+
 @theme inline {
   --font-heading: var(--font-sans);
   --font-sans: 'Inter Variable', sans-serif;
@@ -279,6 +309,35 @@
   }
 
   @media (max-width: 520px) {
+    html {
+      scrollbar-gutter: auto;
+    }
+
+    body {
+      overflow-y: auto;
+    }
+
+    [data-slot="dropdown-menu-item"],
+    [data-slot="select-trigger"],
+    [data-slot="select-item"],
+    [data-slot="dialog-close"] {
+      min-height: 44px;
+    }
+
+    [data-slot="dialog-close"] {
+      min-width: 44px;
+    }
+
+    [data-slot="dialog-content"] {
+      max-height: calc(100dvh - 2rem);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
+    .calendar-month-transition {
+      animation: none;
+    }
+
     .month-calendar-grid-fill,
     .month-calendar-grid-expanded {
       grid-template-rows: repeat(6, 48px);

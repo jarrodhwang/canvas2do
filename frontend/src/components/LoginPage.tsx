@@ -60,6 +60,7 @@ const emptyConfig: AuthConfig = {
   facebookConfigured: false,
   googleConfigured: false,
   passwordLoginConfigured: true,
+  registrationApprovalRequired: true,
   twoFactorAvailable: true,
 };
 
@@ -325,14 +326,6 @@ export function LoginPage({
     setFeedback(null);
     setDevelopmentLink(null);
 
-    if (!config.emailDeliveryConfigured) {
-      setFeedback({
-        message: 'Account creation is unavailable until the site operator configures email delivery.',
-        tone: 'error',
-      });
-      return;
-    }
-
     if (signupPassword !== signupConfirmPassword) {
       setFeedback({ message: 'The passwords do not match.', tone: 'error' });
       return;
@@ -357,7 +350,7 @@ export function LoginPage({
       setSignupConfirmPassword('');
       setAuthView('login');
       setFeedback({
-        message: `${result.message} Confirm your email before signing in.`,
+        message: result.message,
         tone: 'success',
       });
       setDevelopmentLink(getDevelopmentLink(result, 'confirm-email'));
@@ -805,14 +798,14 @@ export function LoginPage({
             </div>
           </div>
           <p className="text-xs font-semibold leading-5 text-muted-foreground" id="signup-password-requirements">{passwordHelp}</p>
-          {!isConfigLoading && !config.emailDeliveryConfigured ? (
+          {!isConfigLoading && config.registrationApprovalRequired ? (
             <div className="rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-sm font-semibold text-amber-800 dark:text-amber-200" role="status">
-              Account creation is unavailable until the site operator configures email delivery.
+              New accounts require administrator approval before they can sign in.
             </div>
           ) : null}
           <Button
             className="h-11 font-black"
-            disabled={isSubmitting || isConfigLoading || !config.emailDeliveryConfigured}
+            disabled={isSubmitting || isConfigLoading}
             type="submit"
           >
             {isSubmitting ? <Loader2 className="size-4 animate-spin" /> : <GraduationCap className="size-4" />}

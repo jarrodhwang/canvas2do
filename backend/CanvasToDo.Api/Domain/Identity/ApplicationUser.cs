@@ -19,10 +19,12 @@ public static class UserStatuses
 {
     public const string Active = "active";
     public const string Inactive = "inactive";
+    public const string Pending = "pending";
 
     public static bool IsValid(string? status) =>
         string.Equals(status, Active, StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(status, Inactive, StringComparison.OrdinalIgnoreCase);
+        string.Equals(status, Inactive, StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(status, Pending, StringComparison.OrdinalIgnoreCase);
 
     public static string Normalize(string status) => status.Trim().ToLowerInvariant();
 }

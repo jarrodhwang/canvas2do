@@ -110,6 +110,7 @@ public static class AuthEndpoints
             passwordLoginConfigured = true,
             twoFactorAvailable = true,
             emailDeliveryConfigured = emailSender.Availability.IsAvailable,
+            registrationApprovalRequired = true,
         };
 
     private static async Task<IResult> GetSessionAsync(
@@ -141,9 +142,7 @@ public static class AuthEndpoints
         SignUpRequest request,
         HttpContext context,
         UserManager<ApplicationUser> userManager,
-        IAccountEmailSender emailSender,
-        ILoggerFactory loggerFactory,
-        CancellationToken cancellationToken)
+        ILoggerFactory loggerFactory)
     {
         context.Response.Headers.CacheControl = "no-store";
         var email = NormalizeEmail(request.Email);
@@ -180,29 +179,11 @@ public static class AuthEndpoints
             return IdentityValidationProblem(passwordValidation);
         }
 
-        if (!emailSender.Availability.IsAvailable)
-        {
-            return EmailDeliveryUnavailable(emailSender.Availability);
-        }
-
         var existingUser = await userManager.FindByEmailAsync(email);
 
         if (existingUser is not null)
         {
-            AccountEmailSendResult? resendResult = null;
-
-            if (!existingUser.EmailConfirmed &&
-                string.Equals(existingUser.Status, UserStatuses.Active, StringComparison.OrdinalIgnoreCase))
-            {
-                resendResult = await SendConfirmationEmailAsync(
-                    existingUser,
-                    userManager,
-                    emailSender,
-                    loggerFactory,
-                    cancellationToken);
-            }
-
-            return GenericConfirmationAccepted(resendResult);
+            return RegistrationPendingAccepted();
         }
 
         var now = DateTimeOffset.UtcNow;
@@ -212,7 +193,7 @@ public static class AuthEndpoints
             UserName = email,
             Email = email,
             DisplayName = displayName,
-            Status = UserStatuses.Active,
+            Status = UserStatuses.Pending,
             CreatedAt = now,
             UpdatedAt = now,
             LastLoginAt = null,
@@ -232,22 +213,11 @@ public static class AuthEndpoints
             return IdentityValidationProblem(roleResult);
         }
 
-        var emailResult = await SendConfirmationEmailAsync(
-            user,
-            userManager,
-            emailSender,
-            loggerFactory,
-            cancellationToken);
+        loggerFactory.CreateLogger("RegistrationAudit").LogInformation(
+            "User {UserId} registered and is awaiting administrator approval.",
+            user.Id);
 
-        if (!emailResult.Succeeded)
-        {
-            return Results.Problem(
-                title: "Confirmation email unavailable.",
-                detail: "Your account was created, but the confirmation message could not be delivered. Try resending it later or contact the site operator.",
-                statusCode: StatusCodes.Status503ServiceUnavailable);
-        }
-
-        return GenericConfirmationAccepted(emailResult);
+        return RegistrationPendingAccepted();
     }
 
     private static async Task<IResult> ConfirmEmailAsync(
@@ -438,6 +408,11 @@ public static class AuthEndpoints
                 return InvalidCredentials();
             }
 
+            if (string.Equals(user.Status, UserStatuses.Pending, StringComparison.OrdinalIgnoreCase))
+            {
+                return AccountApprovalRequired();
+            }
+
             if (!string.Equals(user.Status, UserStatuses.Active, StringComparison.OrdinalIgnoreCase))
             {
                 return Results.Problem(
@@ -473,10 +448,12 @@ public static class AuthEndpoints
         if (!string.Equals(user.Status, UserStatuses.Active, StringComparison.OrdinalIgnoreCase))
         {
             await signInManager.SignOutAsync();
-            return Results.Problem(
-                title: "Account inactive.",
-                detail: "Contact an administrator to restore this account.",
-                statusCode: StatusCodes.Status403Forbidden);
+            return string.Equals(user.Status, UserStatuses.Pending, StringComparison.OrdinalIgnoreCase)
+                ? AccountApprovalRequired()
+                : Results.Problem(
+                    title: "Account inactive.",
+                    detail: "Contact an administrator to restore this account.",
+                    statusCode: StatusCodes.Status403Forbidden);
         }
 
         if (result.RequiresTwoFactor)
@@ -549,7 +526,11 @@ public static class AuthEndpoints
             if (!string.Equals(existingUser.Status, UserStatuses.Active, StringComparison.OrdinalIgnoreCase))
             {
                 await context.SignOutAsync(IdentityConstants.ExternalScheme);
-                return ExternalFailure(safeReturnUrl, "This account is inactive.");
+                return ExternalFailure(
+                    safeReturnUrl,
+                    string.Equals(existingUser.Status, UserStatuses.Pending, StringComparison.OrdinalIgnoreCase)
+                        ? "Your account is awaiting administrator approval."
+                        : "This account is inactive.");
             }
 
             var providerEmail = NormalizeEmail(info.Principal.FindFirstValue(ClaimTypes.Email));
@@ -636,14 +617,6 @@ public static class AuthEndpoints
 
         var providerEmailVerified = IsProviderEmailVerified(info);
 
-        if (!providerEmailVerified && !emailSender.Availability.IsAvailable)
-        {
-            await context.SignOutAsync(IdentityConstants.ExternalScheme);
-            return ExternalFailure(
-                safeReturnUrl,
-                "The provider did not verify this email, and email confirmation delivery is unavailable. Contact the site operator.");
-        }
-
         // Email equality is not proof that two provider accounts have the same owner.
         if (await userManager.FindByEmailAsync(email) is not null)
         {
@@ -669,10 +642,10 @@ public static class AuthEndpoints
             Email = email,
             EmailConfirmed = providerEmailVerified,
             DisplayName = providerDisplayName,
-            Status = UserStatuses.Active,
+            Status = UserStatuses.Pending,
             CreatedAt = now,
             UpdatedAt = now,
-            LastLoginAt = providerEmailVerified ? now : null,
+            LastLoginAt = null,
         };
         var createResult = await userManager.CreateAsync(user);
 
@@ -694,28 +667,13 @@ public static class AuthEndpoints
             return ExternalFailure(safeReturnUrl, FirstIdentityError(loginResult));
         }
 
-        if (!providerEmailVerified)
-        {
-            var sendResult = await SendConfirmationEmailAsync(
-                user,
-                userManager,
-                emailSender,
-                loggerFactory,
-                cancellationToken);
-            await context.SignOutAsync(IdentityConstants.ExternalScheme);
-
-            return ExternalFailure(
-                safeReturnUrl,
-                sendResult.Succeeded
-                    ? "Check your email and confirm the address before signing in."
-                    : "Email confirmation delivery is unavailable. Try again later or contact the site operator.");
-        }
-
-        await signInManager.SignInAsync(user, isPersistent, info.LoginProvider);
         await context.SignOutAsync(IdentityConstants.ExternalScheme);
-        await CopyVerifiedLegacyDataAsync(info, user, applicationDb, loggerFactory, cancellationToken);
+        loggerFactory.CreateLogger("RegistrationAudit").LogInformation(
+            "External user {UserId} registered with {Provider} and is awaiting administrator approval.",
+            user.Id,
+            info.LoginProvider);
 
-        return Results.Redirect(safeReturnUrl);
+        return ExternalFailure(safeReturnUrl, "Your account was created and is awaiting administrator approval.");
     }
 
     private static async Task<IResult> GetProfileAsync(
@@ -1175,6 +1133,15 @@ public static class AuthEndpoints
             ["emailConfirmationRequired"] = true,
         });
 
+    private static IResult AccountApprovalRequired() => Results.Problem(
+        title: "Administrator approval required.",
+        detail: "Your account is awaiting administrator approval.",
+        statusCode: StatusCodes.Status403Forbidden,
+        extensions: new Dictionary<string, object?>
+        {
+            ["adminApprovalRequired"] = true,
+        });
+
     private static IResult InvalidEmailConfirmation() => Results.Problem(
         title: "Email confirmation failed.",
         detail: "This confirmation link is invalid or has expired. Request a new confirmation message.",
@@ -1205,6 +1172,11 @@ public static class AuthEndpoints
             {
                 message = "If this address belongs to an eligible account, a confirmation message has been sent.",
             });
+
+    private static IResult RegistrationPendingAccepted() => Results.Accepted(value: new
+    {
+        message = "Your account was created and is awaiting administrator approval.",
+    });
 
     private static IResult GenericPasswordResetAccepted(AccountEmailSendResult? result) =>
         result?.Status == AccountEmailSendStatus.DevelopmentDisclosure

@@ -22,6 +22,7 @@ import {
 const statusStyles: Record<AdminUserStatus, string> = {
   active: 'border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200',
   inactive: 'border-zinc-500/35 bg-zinc-500/10 text-zinc-700 dark:text-zinc-200',
+  pending: 'border-amber-500/35 bg-amber-500/10 text-amber-700 dark:text-amber-200',
 };
 
 function formatDate(value?: string) {
@@ -214,10 +215,21 @@ export function AdminUsersView() {
                   <SelectTrigger aria-label={`Status for ${user.displayName}`}><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="active">Active</SelectItem>
+                    <SelectItem value="pending">Pending approval</SelectItem>
                     <SelectItem value="inactive">Inactive</SelectItem>
                   </SelectContent>
                 </Select>
                 <div className="flex items-center justify-end gap-2">
+                  {user.status === 'pending' ? (
+                    <Button
+                      disabled={busy}
+                      onClick={() => void updateUser(user, { status: 'active' })}
+                      size="sm"
+                      type="button"
+                    >
+                      <ShieldCheck className="size-4" /> Approve
+                    </Button>
+                  ) : null}
                   <Badge className={statusStyles[user.status]} variant="outline">{user.status}</Badge>
                   <Button
                     aria-label={`Revoke sessions for ${user.displayName}`}

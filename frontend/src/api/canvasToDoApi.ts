@@ -292,7 +292,7 @@ async function mutateCanvasScopedJson<T>(
   return result;
 }
 
-export type AdminUserStatus = 'active' | 'inactive';
+export type AdminUserStatus = 'active' | 'inactive' | 'pending';
 
 export interface AuthSession {
   access?: string[];
@@ -310,6 +310,7 @@ export interface AuthConfig {
   facebookConfigured: boolean;
   googleConfigured: boolean;
   passwordLoginConfigured: boolean;
+  registrationApprovalRequired: boolean;
   twoFactorAvailable: boolean;
 }
 
@@ -784,6 +785,7 @@ export const canvasToDoApi = {
         facebookConfigured: false,
         googleConfigured: false,
         passwordLoginConfigured: true,
+        registrationApprovalRequired: true,
         twoFactorAvailable: true,
       } satisfies AuthConfig;
     }

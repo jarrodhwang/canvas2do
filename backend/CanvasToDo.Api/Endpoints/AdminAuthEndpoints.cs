@@ -47,7 +47,8 @@ public static class AdminAuthEndpoints
 
         var total = await query.CountAsync(cancellationToken);
         var users = await query
-            .OrderBy(user => user.Email)
+            .OrderBy(user => user.Status == UserStatuses.Pending ? 0 : 1)
+            .ThenBy(user => user.Email)
             .Skip((currentPage - 1) * currentPageSize)
             .Take(currentPageSize)
             .Select(user => new
@@ -139,7 +140,7 @@ public static class AdminAuthEndpoints
         {
             return Results.ValidationProblem(new Dictionary<string, string[]>
             {
-                ["status"] = ["Status must be active or inactive."],
+                ["status"] = ["Status must be active, inactive, or pending."],
             });
         }
 
@@ -206,9 +207,18 @@ public static class AdminAuthEndpoints
             target.DisplayName = displayName;
         }
 
+        var approvingUnconfirmedUser =
+            !target.EmailConfirmed &&
+            string.Equals(requestedStatus, UserStatuses.Active, StringComparison.OrdinalIgnoreCase);
         var securityChanged =
             !string.Equals(target.Status, requestedStatus, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(currentRole, requestedRole, StringComparison.OrdinalIgnoreCase);
+        if (approvingUnconfirmedUser)
+        {
+            // Administrator approval is the deployment's identity-verification gate
+            // when SMTP delivery is unavailable.
+            target.EmailConfirmed = true;
+        }
         target.Status = requestedStatus;
         target.UpdatedAt = DateTimeOffset.UtcNow;
         var updateResult = await userManager.UpdateAsync(target);

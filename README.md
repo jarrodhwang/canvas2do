@@ -19,18 +19,19 @@ Canvas token storage, OAuth exchanges, and provider calls stay server-side.
 
 ASP.NET Core Identity provides:
 
-- public email/password registration and sign-in;
+- public email/password registration with administrator approval and sign-in;
 - email confirmation, resend, forgot-password, and password-reset flows;
 - optional Google and Facebook identity sign-in;
 - optional authenticator-app two-step verification and recovery codes;
 - lockout, secure cookie sessions, and immediate session revocation; and
 - `User` and `Admin` roles.
 
-Password registration creates no login session until the email address is
-confirmed. Google/Facebook request identity scopes only; no Gmail, Drive, Calendar,
-Chat, organization-directory, or hosted-domain access is requested. Provider tokens
-are not retained as integration credentials. If a provider does not return a
-trustworthy verified-email claim, Canvas To Do sends its own confirmation message.
+Password and social registration create pending standard-user accounts and no login
+session. An administrator must approve a pending account in User Management before
+it can sign in; approval also confirms the submitted email for deployments without
+SMTP. Google/Facebook request identity scopes only; no Gmail, Drive, Calendar, Chat,
+organization-directory, or hosted-domain access is requested. Provider tokens are
+not retained as integration credentials.
 
 Administrators can search users, change display name/role/status, and revoke active
 sessions. Standard users can access only their own Academy calendar, course and
@@ -52,7 +53,8 @@ instead of running initialization concurrently.
 
 ## Account email
 
-Public password registration and recovery require SMTP. Configure:
+Registration does not require SMTP. Confirmation resend and password recovery do;
+configure them with:
 
 ```text
 PUBLIC_FRONTEND_BASE_URL=https://your-host.example/canvas-to-do
@@ -65,9 +67,9 @@ SMTP_ENABLE_SSL=true
 ```
 
 The frontend base URL must be HTTPS outside Development and may include the
-`/canvas-to-do` path. If email is unavailable, the API remains healthy so existing
-and verified social accounts can sign in, while email-dependent actions return an
-actionable `503` response.
+`/canvas-to-do` path. If email is unavailable, the API remains healthy so
+registration, administrator approval, and sign-in continue to work, while recovery
+actions return an actionable `503` response.
 
 For local testing only, explicitly set
 `EMAIL_DEVELOPMENT_EXPOSE_TOKENS=true`. Development then returns a one-time action

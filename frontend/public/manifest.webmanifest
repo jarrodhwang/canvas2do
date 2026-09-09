@@ -10,9 +10,9 @@
   "theme_color": "#08285c",
   "icons": [
     {
-      "src": "brand/canvas-to-do-icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
+      "src": "brand/canvas-to-do-icon.png",
+      "sizes": "1254x1254",
+      "type": "image/png",
       "purpose": "any maskable"
     }
   ]

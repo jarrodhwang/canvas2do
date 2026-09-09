@@ -553,7 +553,7 @@ const academyFontFamilyCss = Object.fromEntries(
 const academyFontSizeOptions = [85, 95, 100, 110, 120];
 const defaultAcademySemester = getDateBasedAcademySemester();
 const defaultCanvasTermSemester = 'Default Term';
-const defaultAcademyTabIconSrc = appPath('/brand/canvas-to-do-icon.svg');
+const defaultAcademyTabIconSrc = appPath('/brand/canvas-to-do-icon.png');
 const academyAccentColors: ColorToken[] = [
   'gold',
   'butter',

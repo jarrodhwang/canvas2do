@@ -1,4 +1,5 @@
-import { ChevronLeft, ChevronRight, RefreshCw, Search, ShieldCheck, UserRound, UserX } from 'lucide-react';
+import { ChevronLeft, ChevronRight, RefreshCw, Search, ShieldCheck, UserRound, UserX, Eye, Settings } from 'lucide-react';
+import { AdminUserDetails } from './AdminUserDetails';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
@@ -41,6 +42,7 @@ function initials(name: string) {
 }
 
 export function AdminUsersView() {
+  const [selectedUser, setSelectedUser] = useState<{ id: string; preview: boolean } | null>(null);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(1);
@@ -134,13 +136,16 @@ export function AdminUsersView() {
     }
   };
 
+  if (selectedUser) return <AdminUserDetails key={selectedUser.id} userId={selectedUser.id} preview={selectedUser.preview}
+    onClose={() => { setSelectedUser(null); void refresh(); }} onSaved={() => void refresh()} />;
+
   return (
     <Card className="rounded-xl bg-card shadow-none">
       <CardHeader className="gap-3 border-b md:flex-row md:items-center md:justify-between">
         <div>
           <CardTitle className="text-xl font-black">User management</CardTitle>
           <p className="mt-1 text-sm font-semibold text-muted-foreground">
-            Manage access and administrator roles for Canvas To Do.
+            Manage profiles, account settings, Canvas connections, and password approvals.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -179,7 +184,7 @@ export function AdminUsersView() {
             const role = user.role?.toLowerCase() === 'admin' ? 'Admin' : 'User';
 
             return (
-              <div className="grid gap-4 p-4 lg:grid-cols-[minmax(220px,1fr)_150px_150px_auto] lg:items-center" key={user.id}>
+              <div className="grid gap-4 p-4 lg:grid-cols-[minmax(220px,1fr)_150px_150px] lg:items-center" key={user.id}>
                 <div className="flex min-w-0 items-center gap-3">
                   <span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-full bg-primary/10 text-sm font-black text-primary">
                     {initials(user.displayName)}
@@ -190,6 +195,7 @@ export function AdminUsersView() {
                       {user.twoFactorEnabled ? <ShieldCheck aria-label="Two-step verification enabled" className="size-4 shrink-0 text-emerald-600" /> : null}
                     </div>
                     <div className="truncate text-xs font-semibold text-muted-foreground">{user.email}</div>
+                    {user.passwordRequest?.status === 'pending' && <div className="text-xs font-bold text-amber-700 dark:text-amber-200">Password change awaiting approval</div>}
                     {!user.emailConfirmed ? (
                       <div className="mt-0.5 text-[11px] font-bold text-amber-700 dark:text-amber-200">Email not confirmed</div>
                     ) : null}
@@ -219,7 +225,9 @@ export function AdminUsersView() {
                     <SelectItem value="inactive">Inactive</SelectItem>
                   </SelectContent>
                 </Select>
-                <div className="flex items-center justify-end gap-2">
+                <div className="flex flex-wrap items-center justify-end gap-2 lg:col-span-3">
+                  <Button size="sm" variant="outline" onClick={() => setSelectedUser({ id: user.id, preview: false })}><Settings className="size-4" /> Details</Button>
+                  <Button size="sm" variant="outline" onClick={() => setSelectedUser({ id: user.id, preview: true })}><Eye className="size-4" /> Preview</Button>
                   {user.status === 'pending' ? (
                     <Button
                       disabled={busy}

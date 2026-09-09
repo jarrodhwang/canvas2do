@@ -13,6 +13,7 @@ import {
   normalizeGradeProgressColorThresholds,
   type GradeProgressColorThresholds,
 } from '../lib/gradeProgress';
+import { compareSemestersNewestFirst } from '../lib/semesterSort';
 import { cn } from '../lib/utils';
 import type { ColorToken } from '../modes/types';
 import { calculateManualGradeSummary, ManualGradeEditor } from './ManualGradeEditor';
@@ -1128,13 +1129,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp }: { 
     semesters.add(normalizeSemesterName(selectedSemester));
     semesters.add(defaultAcademySemester);
 
-    return Array.from(semesters.values()).sort((firstSemester, secondSemester) => (
-      firstSemester === defaultAcademySemester
-        ? -1
-        : secondSemester === defaultAcademySemester
-          ? 1
-          : firstSemester.localeCompare(secondSemester)
-    ));
+    return Array.from(semesters.values()).sort(compareSemestersNewestFirst);
   }, [rows, selectedSemester]);
 
   const hasLoadedAcademyPreferences = Boolean(academyPreferences);

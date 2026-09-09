@@ -328,6 +328,7 @@ export interface ResetPasswordRequest {
   email: string;
   code: string;
   newPassword: string;
+  confirmPassword: string;
 }
 
 export interface LoginResult {
@@ -378,6 +379,19 @@ export interface AdminUser {
   status: AdminUserStatus;
   lastLoginAt?: string;
   twoFactorEnabled?: boolean;
+  phoneNumber?: string;
+  createdAt?: string;
+  lockedUntil?: string;
+  hasPassword?: boolean;
+  passwordRequest?: PasswordChangeStatus | null;
+}
+
+export interface PasswordChangeStatus {
+  id: string;
+  status: 'pending' | 'approved' | 'rejected' | 'expired';
+  requestedAt: string;
+  expiresAt: string;
+  reviewedAt?: string;
 }
 
 export interface AdminUsersResponse {
@@ -392,6 +406,8 @@ export interface UpdateAdminUserRequest {
   displayName?: string;
   role?: string;
   status?: AdminUserStatus;
+  email?: string;
+  phoneNumber?: string;
 }
 
 
@@ -724,6 +740,18 @@ export interface SaveAcademyPreferencesRequest {
 
 
 export const canvasToDoApi = {
+  async accountRequest<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
+    const response = await apiFetch(`${apiBaseUrl}${path}`, {
+      method, credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const { message } = await readErrorResponse(response, 'Unable to complete the account request.');
+      throw new ApiError(message, response.status);
+    }
+    return response.json() as Promise<T>;
+  },
   getAcademyPreferenceRequestScope,
 
   setAcademyPreferenceOwnerKey,
@@ -1104,6 +1132,7 @@ export const canvasToDoApi = {
 
     const result = await response.json() as CanvasTokenStatus;
     assertCurrentAcademyPreferenceScope(scope);
+    window.dispatchEvent(new Event('canvas-token-updated'));
     return result;
   },
 
@@ -1124,6 +1153,7 @@ export const canvasToDoApi = {
 
     const result = await response.json() as CanvasTokenStatus;
     assertCurrentAcademyPreferenceScope(scope);
+    window.dispatchEvent(new Event('canvas-token-updated'));
     return result;
   },
 

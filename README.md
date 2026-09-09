@@ -33,8 +33,27 @@ SMTP. Google/Facebook request identity scopes only; no Gmail, Drive, Calendar, C
 organization-directory, or hosted-domain access is requested. Provider tokens are
 not retained as integration credentials.
 
-Administrators can search users, change display name/role/status, and revoke active
-sessions. Standard users can access only their own Academy calendar, course and
+Administrators can search users, open **Details** to edit name, email, phone,
+account settings and Canvas connection, change roles/status, and revoke sessions.
+**Preview** shows a read-only snapshot of the selected user's saved Academy data,
+with an optional live Canvas course/calendar read. It never signs in as that user
+or copies their data into the administrator's local Academy storage. Existing
+Canvas credentials are never returned; administrators can validate/replace or
+disconnect them using the same institution allowlist as users.
+
+Users submit a new password and confirmation under **Settings → Request a password
+change**. The old password remains valid until an administrator approves the request
+under **User Management → Details → Password & requests**. Requests expire after
+seven days, are replaced on resubmission, and become invalid if the account's
+security stamp changes. Approval revokes existing sessions and clears lockout.
+Administrators can also directly set a replacement password. Email recovery also
+submits for approval; changing the bootstrap environment password does not reset
+an existing account. Password requests store only an Identity password hash in the
+existing `auth_user_tokens` table; no schema migration is required. Approval/rejection
+removes the stored pending hash and records the actor and time. Account, credential,
+and scoped data actions are audited without logging passwords or Canvas tokens.
+
+Standard users can access only their own Academy calendar, course and
 grade summaries, Canvas inbox and course rosters, Canvas connection, preferences,
 and account security. Canvas writes are limited to explicit user actions for
 supported text/URL assignment submissions, discussion replies, and starting quiz
@@ -195,6 +214,7 @@ Useful checks:
 
 ```bash
 dotnet build CanvasToDo.slnx
+python3 scripts/test-admin-accounts.py backend/CanvasToDo.Api/bin/Debug/net10.0/CanvasToDo.Api.dll
 dotnet list backend/CanvasToDo.Api/CanvasToDo.Api.csproj package --vulnerable --include-transitive
 POSTGRES_PASSWORD=validation-only docker compose --env-file .env.example config --quiet
 docker compose --env-file .env.example -f docker-compose.dev.yml config --quiet

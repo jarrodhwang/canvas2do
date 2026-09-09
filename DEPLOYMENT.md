@@ -209,3 +209,26 @@ run `docker compose down -v`; the explicit volume names are
 - [Official PostgreSQL image and PostgreSQL 18 volume layout](https://hub.docker.com/_/postgres)
 - [Cloudflare Full (strict) TLS](https://developers.cloudflare.com/ssl/origin-configuration/ssl-modes/full-strict/)
 - [Cloudflare origin IP ranges](https://developers.cloudflare.com/fundamentals/concepts/cloudflare-ip-addresses/)
+
+### Canvas onboarding and school branding
+
+Canvas token reminders default to enabled and wait for the signed-in user's saved
+preferences and token status. Users can dismiss a reminder for the current session,
+or disable **Canvas token reminders** in Settings → Canvas connection and save.
+The same section opens the screenshot guide and token entry form at any time.
+Existing explicit title-bar expansion preferences are preserved; new accounts
+start collapsed. **Show school logo** defaults to enabled and can be saved off.
+
+Automatic school logos come from Canvas's public `/api/v1/brand_variables` endpoint,
+only after a Canvas connection exists. These requests omit credentials and never
+include the access token. Failed branding/image loads leave the app icon visible.
+The bundled nginx policies allow connections to Instructure and CloudFront, and
+HTTPS school images. When enabling a Canvas instance on a custom domain, add its
+exact origin (and its branding JSON redirect origin, if different) to `connect-src`
+in both `frontend/nginx.conf` and `deploy/nginx/frontend.conf`. That institution
+must also permit cross-origin access to its public branding JSON. This keeps
+arbitrary external fetches restricted without proxying external URLs through the API.
+
+Guide screenshots are bundled locally; attribution and source URLs are in
+`frontend/public/guide/canvas/README.md`. Verify onboarding logic with
+`npm run test:onboarding --prefix frontend`.

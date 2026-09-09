@@ -52,7 +52,7 @@ public static class AcademyPreferenceEndpoints
             """,
             cancellationToken);
 
-    private static async Task<IResult> GetAsync(
+    internal static async Task<IResult> GetAsync(
         HttpContext context,
         CanvasToDoDbContext db,
         CancellationToken cancellationToken)
@@ -75,7 +75,7 @@ public static class AcademyPreferenceEndpoints
         return Results.Ok(ToDto(setting?.SettingJson, setting is not null));
     }
 
-    private static async Task<IResult> SaveAsync(
+    internal static async Task<IResult> SaveAsync(
         SaveAcademyPreferencesRequest request,
         HttpContext context,
         CanvasToDoDbContext db,

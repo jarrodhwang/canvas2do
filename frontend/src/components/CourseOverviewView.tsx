@@ -51,6 +51,7 @@ import {
   normalizeGradeProgressColorThresholds,
   type GradeProgressColorThresholds,
 } from '../lib/gradeProgress';
+import { compareSemestersNewestFirst } from '../lib/semesterSort';
 import { cn } from '../lib/utils';
 import type { ColorToken } from '../modes/types';
 import { ManualGradeEditor } from './ManualGradeEditor';
@@ -3699,7 +3700,7 @@ export function CourseOverviewView({
     semesters.add(normalizeSemesterName(selectedSemester));
     semesters.add(defaultAcademySemester);
 
-    return Array.from(semesters.values());
+    return Array.from(semesters.values()).sort(compareSemestersNewestFirst);
   }, [allRows, selectedSemester]);
   const rows = useMemo(
     () => allRows.filter((row) => normalizeSemesterName(row.semester) === normalizeSemesterName(selectedSemester)),

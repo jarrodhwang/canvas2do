@@ -194,7 +194,7 @@ public static partial class CanvasIntegrationEndpoints
             manualTokenEnabled));
     }
 
-    private static async Task<IResult> GetCanvasTokenStatusAsync(
+    internal static async Task<IResult> GetCanvasTokenStatusAsync(
         HttpContext context,
         CanvasToDoDbContext db,
         IConfiguration configuration,
@@ -219,7 +219,7 @@ public static partial class CanvasIntegrationEndpoints
             BuildCanvasOAuthConnectUrl(context)));
     }
 
-    private static async Task<IResult> UpdateCanvasTokenAsync(
+    internal static async Task<IResult> UpdateCanvasTokenAsync(
         HttpContext context,
         IHttpClientFactory httpClientFactory,
         CanvasToDoDbContext db,
@@ -255,7 +255,7 @@ public static partial class CanvasIntegrationEndpoints
             configuration);
     }
 
-    private static async Task<IResult> DeleteCanvasTokenAsync(
+    internal static async Task<IResult> DeleteCanvasTokenAsync(
         HttpContext context,
         CanvasToDoDbContext db,
         IConfiguration configuration,
@@ -463,7 +463,7 @@ public static partial class CanvasIntegrationEndpoints
         }
     }
 
-    private static async Task<IResult> GetCanvasCoursesAsync(
+    internal static async Task<IResult> GetCanvasCoursesAsync(
         IHttpClientFactory httpClientFactory,
         HttpContext context,
         CanvasToDoDbContext db,
@@ -910,7 +910,7 @@ public static partial class CanvasIntegrationEndpoints
         }
     }
 
-    private static async Task<IResult> GetCanvasCalendarItemsAsync(
+    internal static async Task<IResult> GetCanvasCalendarItemsAsync(
         IHttpClientFactory httpClientFactory,
         HttpContext context,
         CanvasToDoDbContext db,

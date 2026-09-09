@@ -24,6 +24,7 @@ import { useLanguage } from '../context/LanguageContext';
 import { useWorkspaceMode } from '../context/WorkspaceModeContext';
 import { shouldConvertCanvasCourseToManual } from '../lib/canvasCourseMigration';
 import type { ColorToken, DashboardCardConfig } from '../modes/types';
+import { compareSemestersNewestFirst } from '../lib/semesterSort';
 import { cn } from '../lib/utils';
 import { dotColorClasses } from '../lib/colorStyles';
 import { DateTimeField } from './DateTimeField';
@@ -3951,7 +3952,7 @@ export function DashboardCards({
     }
     addSemester(defaultAcademySemester);
 
-    return Array.from(semesterSet.values());
+    return Array.from(semesterSet.values()).sort(compareSemestersNewestFirst);
   }, [
     canvasAssessmentPreferences,
     canvasCourses,

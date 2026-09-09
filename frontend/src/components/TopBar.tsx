@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { GraduationCap, Languages, LogOut, Maximize2, Minimize2, Moon, Pencil, Plus, Sun } from 'lucide-react';
 
 import type { AuthSession } from '../api/canvasToDoApi';
@@ -31,6 +32,12 @@ interface TopBarProps {
   onToggleTopBarCollapsed?: () => void;
   onThemeChange: (theme: AppTheme) => void;
   theme: AppTheme;
+}
+
+function SchoolLogo({ src, compact = false }: { src: string; compact?: boolean }) {
+  const [failedSrc, setFailedSrc] = useState('');
+  if (!src || src === 'none' || failedSrc === src) return <GraduationCap className={compact ? 'size-5 text-primary' : 'size-6 text-primary'} />;
+  return <img alt="School logo" className={cn('w-auto max-w-[120px] shrink-0 object-contain', compact ? 'h-7 max-[520px]:max-w-14' : 'h-11')} src={src} referrerPolicy="no-referrer" onError={() => setFailedSrc(src)} />;
 }
 
 function getInitials(label: string) {
@@ -88,7 +95,7 @@ function AccountMenu({
 export function TopBar({
   academyLogoSrc,
   authSession,
-  isTopBarCollapsed = false,
+  isTopBarCollapsed = true,
   onOpenAddItem,
   onOpenProfile,
   onSignOut,
@@ -97,13 +104,12 @@ export function TopBar({
   theme,
 }: TopBarProps) {
   const { dictionary, language, setLanguage } = useLanguage();
-  const showCustomLogo = Boolean(academyLogoSrc && academyLogoSrc !== 'none');
 
   if (isTopBarCollapsed) {
     return (
       <header className="sticky top-0 z-20 flex min-h-[42px] items-center gap-3 border-b bg-card/90 px-4 py-1 backdrop-blur-xl">
         <div className="flex min-w-0 items-center gap-2">
-          {showCustomLogo ? <img alt="Canvas To Do" className="h-7 w-auto object-contain" src={academyLogoSrc} /> : <GraduationCap className="size-5 text-primary" />}
+          <SchoolLogo src={academyLogoSrc ?? ''} compact />
           <span className="truncate text-sm font-black">Canvas To Do</span>
         </div>
         <button
@@ -124,13 +130,7 @@ export function TopBar({
   return (
     <header className="sticky top-0 z-20 relative flex min-h-[74px] items-center justify-between gap-3 border-b bg-card/90 px-4 py-2 backdrop-blur-xl xl:px-5">
       <div className="flex min-w-0 items-center gap-3">
-        {showCustomLogo ? (
-          <img alt="Canvas To Do" className="h-11 max-w-[200px] shrink-0 object-contain" src={academyLogoSrc} />
-        ) : (
-          <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground">
-            <GraduationCap className="size-6" />
-          </span>
-        )}
+        <SchoolLogo src={academyLogoSrc ?? ''} />
         <div className="min-w-0">
           <h1 className="truncate text-base font-black leading-tight">Canvas To Do</h1>
           <p className="truncate text-xs font-semibold text-muted-foreground max-[640px]:hidden">Your academic calendar</p>

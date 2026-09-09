@@ -425,6 +425,7 @@ export function LoginPage({
         code: emailAction.code,
         email: emailAction.email,
         newPassword: resetPassword,
+        confirmPassword: resetConfirmPassword,
       });
       setEmail(emailAction.email);
       setResetPassword('');
@@ -513,11 +514,11 @@ export function LoginPage({
             )}
             <div>
               <h2 className="text-sm font-black" id="email-action-title">
-                {resetSucceeded ? 'Password reset complete' : 'Password-reset link invalid'}
+                {resetSucceeded ? 'Password request submitted' : 'Password-reset link invalid'}
               </h2>
               <p className="mt-1 text-xs font-semibold leading-relaxed text-muted-foreground">
                 {resetSucceeded
-                  ? 'You can now sign in with your new password.'
+                  ? 'Wait for administrator approval before signing in with your new password.'
                   : 'Request a fresh password-reset message to continue.'}
               </p>
             </div>
@@ -536,7 +537,7 @@ export function LoginPage({
           <div>
             <h2 className="text-sm font-black" id="email-action-title">Choose a new password</h2>
             <p className="mt-1 text-xs font-semibold leading-relaxed text-muted-foreground">
-              Enter and confirm the new password for your Canvas To Do account.
+              Enter and confirm your desired password. An administrator must approve the change before it takes effect.
             </p>
           </div>
         </div>
@@ -572,7 +573,7 @@ export function LoginPage({
         <p className="text-xs font-semibold leading-5 text-muted-foreground" id="reset-password-requirements">{passwordHelp}</p>
         <Button className="h-11 font-black" disabled={isSubmitting} type="submit">
           {isSubmitting ? <Loader2 className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
-          Reset password
+          Request password approval
         </Button>
       </form>
     );

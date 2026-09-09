@@ -32,6 +32,11 @@ import {
 import { ApiError, authenticationRequiredEvent, canvasToDoApi } from './api/canvasToDoApi';
 import type { AcademyPreferences, AuthSession, CanvasCalendarItem, CanvasTokenStatus } from './api/canvasToDoApi';
 import { AccountSecurityPanel } from './components/AccountSecurityPanel';
+import { CanvasTokenSetupPage } from './components/CanvasTokenSetupPage';
+import { useCanvasSchoolLogo } from './lib/useCanvasSchoolLogo';
+import { shouldPromptForCanvasToken } from './lib/canvasOnboarding';
+import { Switch } from './components/ui/switch';
+import { PasswordChangePanel } from './components/PasswordChangePanel';
 import { CalendarShell } from './components/CalendarShell';
 import { DateTimeField } from './components/DateTimeField';
 import { LegacyAcademyImportPanel } from './components/LegacyAcademyImportPanel';
@@ -152,6 +157,8 @@ interface AcademyResponsiveState {
 interface AcademyCalendarSettings {
   accentColor: ColorToken;
   academyLogoSrc: string;
+  canvasTokenPromptEnabled: boolean;
+  showSchoolLogo: boolean;
   autoRefreshIntervalMs: number;
   refocusRefreshThrottleMs: number;
   courseworkHideCompletedAfterHours: number;
@@ -657,6 +664,8 @@ const academyAccentThemeVariables: Record<ColorToken, {
 const defaultAcademyCalendarSettings: AcademyCalendarSettings = {
   accentColor: 'gold',
   academyLogoSrc: '',
+  canvasTokenPromptEnabled: true,
+  showSchoolLogo: true,
   autoRefreshIntervalMs: defaultAcademyAutoRefreshIntervalMs,
   refocusRefreshThrottleMs: defaultAcademyRefocusRefreshThrottleMs,
   courseworkHideCompletedAfterHours: 12,
@@ -680,7 +689,7 @@ const defaultAcademyCalendarSettings: AcademyCalendarSettings = {
   themeTimerEnd: '18:00',
   themeTimerMode: 'light',
   themeTimerStart: '08:00',
-  topBarDefaultCollapsed: false,
+  topBarDefaultCollapsed: true,
 };
 const calendarAutoExpandMaxWidth = 1279;
 const calendarAutoExpandMaxHeight = 860;
@@ -1220,6 +1229,10 @@ function normalizeAcademyCalendarSettings(
   return {
     accentColor,
     academyLogoSrc,
+    canvasTokenPromptEnabled: typeof settings.canvasTokenPromptEnabled === 'boolean'
+      ? settings.canvasTokenPromptEnabled : fallback.canvasTokenPromptEnabled,
+    showSchoolLogo: typeof settings.showSchoolLogo === 'boolean'
+      ? settings.showSchoolLogo : fallback.showSchoolLogo,
     autoRefreshIntervalMs,
     refocusRefreshThrottleMs,
     courseworkHideCompletedAfterHours,
@@ -3096,6 +3109,8 @@ function CalendarTodoDetailsDialog({
 
 function AcademySettingsView({
   authSession,
+  schoolLogoSrc,
+  onOpenCanvasSetup,
   focusSection,
   onFocusSectionConsumed,
   hasUnsavedChanges,
@@ -3109,6 +3124,8 @@ function AcademySettingsView({
   settingsSaveStatus,
 }: {
   authSession: AuthSession | null;
+  schoolLogoSrc: string;
+  onOpenCanvasSetup: () => void;
   focusSection?: 'profile' | null;
   onFocusSectionConsumed?: () => void;
   hasUnsavedChanges: boolean;
@@ -3127,10 +3144,7 @@ function AcademySettingsView({
   const [profileError, setProfileError] = useState('');
   const [profileMessage, setProfileMessage] = useState('');
   const [profileDraft, setProfileDraft] = useState(() => ({
-    confirmPassword: '',
-    currentPassword: '',
     displayName: authSession?.displayName ?? '',
-    newPassword: '',
   }));
   const [canvasTokenStatus, setCanvasTokenStatus] = useState<CanvasTokenStatus | null>(null);
   const [isCanvasTokenLoading, setIsCanvasTokenLoading] = useState(true);
@@ -3150,13 +3164,12 @@ function AcademySettingsView({
   const dateLocale = language === 'ko' ? 'ko-KR' : 'en-CA';
   const selectedFontFamilyOption = academyFontFamilyOptions.find((option) => option.value === settings.fontFamily) ??
     academyFontFamilyOptions[0];
-  const defaultAcademyLogoSrc = appPath('/brand/SFU_block_colour_rgb.png');
-  const isAcademyLogoHidden = settings.academyLogoSrc === 'none';
+  const defaultAcademyLogoSrc = schoolLogoSrc;
+  const isAcademyLogoHidden = !settings.showSchoolLogo || settings.academyLogoSrc === 'none';
   const academyLogoPreviewSrc = isAcademyLogoHidden
     ? ''
     : settings.academyLogoSrc || defaultAcademyLogoSrc;
-  const hasPassword = authSession?.hasPassword !== false;
-  const updateProfileDraft = (field: keyof typeof profileDraft, value: string | boolean) => {
+  const updateProfileDraft = (field: keyof typeof profileDraft, value: string) => {
     setProfileDraft((currentDraft) => ({
       ...currentDraft,
       [field]: value,
@@ -3235,34 +3248,14 @@ function AcademySettingsView({
     setProfileError('');
     setProfileMessage('');
 
-    if (hasPassword && (profileDraft.newPassword || profileDraft.confirmPassword || profileDraft.currentPassword)) {
-      if (profileDraft.newPassword !== profileDraft.confirmPassword) {
-        setProfileError(dictionary.academyProfilePasswordMismatch);
-        return;
-      }
-
-      if (profileDraft.newPassword.length < 10 || !profileDraft.currentPassword) {
-        setProfileError(dictionary.academyProfilePasswordInvalid);
-        return;
-      }
-    }
-
     setIsProfileSaving(true);
 
     canvasToDoApi
       .updateAcademyProfile({
         displayName: profileDraft.displayName,
-        currentPassword: profileDraft.currentPassword || undefined,
-        newPassword: profileDraft.newPassword || undefined,
       })
       .then(async () => {
         await onProfileSaved();
-        setProfileDraft((currentDraft) => ({
-          ...currentDraft,
-          confirmPassword: '',
-          currentPassword: '',
-          newPassword: '',
-        }));
         setProfileMessage(dictionary.academyProfileSaved);
       })
       .catch((error: unknown) => {
@@ -3416,8 +3409,11 @@ function AcademySettingsView({
 
   useEffect(() => {
     const timeoutId = window.setTimeout(loadCanvasTokenStatus, 0);
-
-    return () => window.clearTimeout(timeoutId);
+    window.addEventListener('canvas-token-updated', loadCanvasTokenStatus);
+    return () => {
+      window.clearTimeout(timeoutId);
+      window.removeEventListener('canvas-token-updated', loadCanvasTokenStatus);
+    };
   }, [loadCanvasTokenStatus]);
 
   useEffect(() => {
@@ -3527,45 +3523,7 @@ function AcademySettingsView({
                         value={authSession?.email ?? ''}
                       />
                     </label>
-                    {hasPassword ? (
-                      <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground md:col-span-2">
-                        <span>Current password (only needed when changing password)</span>
-                        <Input
-                          autoComplete="current-password"
-                          disabled={isProfileSaving}
-                          onChange={(event) => updateProfileDraft('currentPassword', event.target.value)}
-                          type="password"
-                          value={profileDraft.currentPassword}
-                        />
-                      </label>
-                    ) : (
-                      <div className="rounded-md border border-primary/25 bg-primary/5 px-3 py-2 text-xs font-semibold text-muted-foreground md:col-span-2">
-                        {dictionary.academyProfileExternalPasswordNote}
-                      </div>
-                    )}
                   </div>
-                  {hasPassword ? <div className="grid gap-3 md:grid-cols-2">
-                    <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
-                      <span>{dictionary.academyProfileNewPassword}</span>
-                      <Input
-                        autoComplete="new-password"
-                        disabled={isProfileSaving}
-                        onChange={(event) => updateProfileDraft('newPassword', event.target.value)}
-                        type="password"
-                        value={profileDraft.newPassword}
-                      />
-                    </label>
-                    <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
-                      <span>{dictionary.academyConfirmPassword}</span>
-                      <Input
-                        autoComplete="new-password"
-                        disabled={isProfileSaving}
-                        onChange={(event) => updateProfileDraft('confirmPassword', event.target.value)}
-                        type="password"
-                        value={profileDraft.confirmPassword}
-                      />
-                    </label>
-                  </div> : null}
                   <div className="grid gap-2 rounded-md border bg-muted/25 px-3 py-2 text-xs font-semibold text-muted-foreground">
                     <div className="flex min-w-0 justify-between gap-3">
                       <span>{dictionary.accountMenu}</span>
@@ -3609,6 +3567,7 @@ function AcademySettingsView({
             </form>
           </details>
           <AccountSecurityPanel onChanged={onProfileSaved} />
+          <PasswordChangePanel />
           <LegacyAcademyImportPanel onImported={refreshAfterLegacyAcademyImport} />
           <details className="group rounded-lg border bg-muted/20 p-3">
             <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-black text-foreground">
@@ -3621,6 +3580,18 @@ function AcademySettingsView({
               <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
             </summary>
             <div className="mt-3 grid gap-3">
+              <label className="flex items-center justify-between gap-4 rounded-lg border bg-card p-3">
+                <span className="text-sm font-bold">
+                  {language === 'ko' ? 'Canvas 토큰 연결 알림' : 'Canvas token reminders'}
+                  <span className="mt-1 block text-xs font-normal text-muted-foreground">
+                    {language === 'ko' ? '연결할 때까지 로그인 시 알립니다. 수동 과목만 사용한다면 끄고 설정을 저장하세요.' : 'Remind me at sign-in until Canvas is connected. Turn off and save settings to use only manual courses.'}
+                  </span>
+                </span>
+                <Switch checked={settings.canvasTokenPromptEnabled} onCheckedChange={(checked) => updateSettings({ canvasTokenPromptEnabled: checked })} />
+              </label>
+              <Button onClick={onOpenCanvasSetup} type="button" variant="outline">
+                {language === 'ko' ? 'Canvas 연결 · 이미지로 토큰 발급 안내' : 'Connect Canvas · token setup guide'}
+              </Button>
               {canvasTokenStatus?.oauthConfigured && canvasTokenStatus.connectUrl ? (
                 <div className="flex flex-col gap-3 rounded-lg border border-primary/25 bg-primary/5 p-4 sm:flex-row sm:items-center sm:justify-between">
                   <div className="min-w-0">
@@ -4182,9 +4153,14 @@ function AcademySettingsView({
               <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
             </summary>
             <div className="mt-3 grid gap-3">
+              <label className="flex items-center justify-between gap-4 rounded-lg border bg-card p-3 text-sm font-bold">
+                {language === 'ko' ? '학교 로고 표시' : 'Show school logo'}
+                <Switch checked={settings.showSchoolLogo && settings.academyLogoSrc !== 'none'} onCheckedChange={(checked) => updateSettings({ showSchoolLogo: checked, ...(checked && settings.academyLogoSrc === 'none' ? { academyLogoSrc: '' } : {}) })} />
+              </label>
+              <p className="text-xs text-muted-foreground">{language === 'ko' ? '연결된 Canvas의 학교 로고를 자동으로 표시합니다. 직접 이미지를 올릴 수도 있습니다.' : 'Automatically use the connected Canvas school’s logo when available, or upload your own.'}</p>
               <div className="grid gap-3 rounded-lg border bg-card p-3 sm:grid-cols-[96px_minmax(0,1fr)]">
                 <div className="flex items-center justify-center rounded-lg border bg-muted/30 p-3">
-                  {isAcademyLogoHidden ? (
+                  {isAcademyLogoHidden || !academyLogoPreviewSrc ? (
                     <span className="text-[10px] font-black uppercase text-muted-foreground">
                       {dictionary.academyTopBarLogoNone}
                     </span>
@@ -4717,15 +4693,10 @@ function App() {
   const [academyPreferencesSaveError, setAcademyPreferencesSaveError] = useState('');
   const [isAcademySettingsLeaveDialogOpen, setIsAcademySettingsLeaveDialogOpen] = useState(false);
   const [canvasTokenStatus, setCanvasTokenStatus] = useState<CanvasTokenStatus | null>(null);
-  const [isCanvasTokenExpiryDialogOpen, setIsCanvasTokenExpiryDialogOpen] = useState(false);
-  const [isCanvasTokenExpirySaving, setIsCanvasTokenExpirySaving] = useState(false);
-  const [canvasTokenExpiryError, setCanvasTokenExpiryError] = useState('');
+  const [isCanvasSetupRequested, setIsCanvasSetupRequested] = useState(false);
+  const [isCanvasPromptDismissed, setIsCanvasPromptDismissed] = useState(false);
   const [selectedCourseOverviewRowId, setSelectedCourseOverviewRowId] = useState<string | null>(null);
   const [selectedCourseOverviewResourceUrl, setSelectedCourseOverviewResourceUrl] = useState<string | null>(null);
-  const [canvasTokenExpiryDraft, setCanvasTokenExpiryDraft] = useState({
-    accessToken: '',
-    expiresAt: '',
-  });
   const [focusedCalendarTodoId, setFocusedCalendarTodoId] = useState<string | null>(null);
   const [selectedCalendarTodoDetailsId, setSelectedCalendarTodoDetailsId] = useState<string | null>(null);
   const [canvasCalendarPages, setCanvasCalendarPages] = useState<Record<string, CanvasCalendarPage>>({});
@@ -4747,7 +4718,6 @@ function App() {
   const hasLoadedRemoteAcademySettingsRef = useRef(false);
   const hasUnsavedAcademySettingsRef = useRef(false);
   const authSessionKeyRef = useRef<string | null>(null);
-  const ignoredExpiredCanvasTokenOwnerRef = useRef<string | null>(null);
   const canvasTokenStatusLoadSequenceRef = useRef(0);
   const hasHandledCanvasRedirectRef = useRef(false);
   const pendingSettingsNavigationRef = useRef<(() => void) | null>(null);
@@ -5102,12 +5072,9 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
     setAcademyPreferencesSaveStatus('idle');
     setAcademyPreferencesSaveError('');
     setCanvasTokenStatus(null);
-    setIsCanvasTokenExpiryDialogOpen(false);
-    setIsCanvasTokenExpirySaving(false);
-    setCanvasTokenExpiryError('');
-    setCanvasTokenExpiryDraft({ accessToken: '', expiresAt: '' });
+    setIsCanvasSetupRequested(false);
+    setIsCanvasPromptDismissed(false);
     setAcademyTopBarCollapseOverride(null);
-    ignoredExpiredCanvasTokenOwnerRef.current = null;
     canvasTokenStatusLoadSequenceRef.current += 1;
   }, []);
 
@@ -5115,49 +5082,17 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
     ? getAuthSessionIdentityKey(authSession) ?? authSession.email ?? null
     : null;
 
-  const ignoreExpiredCanvasToken = () => {
-    ignoredExpiredCanvasTokenOwnerRef.current = canvasTokenOwnerKey;
-    setCanvasTokenExpiryDraft({ accessToken: '', expiresAt: '' });
-    setCanvasTokenExpiryError('');
-    setIsCanvasTokenExpiryDialogOpen(false);
-  };
-
-  const handleExpiredCanvasTokenSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-
-    if (!canvasTokenExpiryDraft.accessToken.trim()) {
-      setCanvasTokenExpiryError(dictionary.canvasTokenValueRequired);
-      return;
-    }
-
-    if (!canvasTokenExpiryDraft.expiresAt) {
-      setCanvasTokenExpiryError(dictionary.canvasTokenExpiryRequired);
-      return;
-    }
-
-    setIsCanvasTokenExpirySaving(true);
-    setCanvasTokenExpiryError('');
-    canvasTokenStatusLoadSequenceRef.current += 1;
-
-    canvasToDoApi
-      .updateCanvasToken({
-        accessToken: canvasTokenExpiryDraft.accessToken,
-        expiresAt: optionalIsoFromDateInput(canvasTokenExpiryDraft.expiresAt),
-        instanceUrl: canvasTokenStatus?.instanceUrl ?? 'https://sfu.instructure.com',
-      })
-      .then((status) => {
-        setCanvasTokenStatus(status);
-        setCanvasTokenExpiryDraft({ accessToken: '', expiresAt: '' });
-        setIsCanvasTokenExpiryDialogOpen(false);
-        ignoredExpiredCanvasTokenOwnerRef.current = null;
-        window.dispatchEvent(new CustomEvent<AcademyRefreshRequestedDetail>(academyRefreshRequestedEvent, {
-          detail: { forceRefresh: true },
-        }));
-      })
-      .catch((error: unknown) => {
-        setCanvasTokenExpiryError(error instanceof Error ? error.message : dictionary.canvasTokenSaveFailed);
-      })
-      .finally(() => setIsCanvasTokenExpirySaving(false));
+  const schoolLogoSrc = useCanvasSchoolLogo(canvasTokenStatus, academyCalendarSettings.showSchoolLogo && academyCalendarSettings.academyLogoSrc !== 'none');
+  const visibleAcademyLogoSrc = academyCalendarSettings.showSchoolLogo
+    ? academyCalendarSettings.academyLogoSrc || schoolLogoSrc
+    : 'none';
+  const isCanvasSetupOpen = isCanvasSetupRequested || (
+    authStatus === 'authenticated' && hasLoadedAcademyPreferences &&
+    shouldPromptForCanvasToken(canvasTokenStatus, academyCalendarSettings.canvasTokenPromptEnabled, isCanvasPromptDismissed)
+  );
+  const closeCanvasSetup = () => {
+    setIsCanvasSetupRequested(false);
+    setIsCanvasPromptDismissed(true);
   };
 
   useEffect(() => {
@@ -5169,36 +5104,21 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
     }
 
     let isCancelled = false;
-    const loadSequence = ++canvasTokenStatusLoadSequenceRef.current;
-
-    canvasToDoApi
-      .getCanvasTokenStatus()
-      .then((status) => {
-        if (isCancelled || loadSequence !== canvasTokenStatusLoadSequenceRef.current) {
-          return;
+    const loadStatus = () => {
+      const loadSequence = ++canvasTokenStatusLoadSequenceRef.current;
+      canvasToDoApi.getCanvasTokenStatus().then((status) => {
+        if (!isCancelled && loadSequence === canvasTokenStatusLoadSequenceRef.current) {
+          setCanvasTokenStatus(status);
         }
-
-        setCanvasTokenStatus(status);
-
-        if (
-          status.status === 'expired' &&
-          status.manualTokenEnabled !== false &&
-          !status.oauthConfigured &&
-          ignoredExpiredCanvasTokenOwnerRef.current !== canvasTokenOwnerKey
-        ) {
-          setCanvasTokenExpiryDraft({ accessToken: '', expiresAt: '' });
-          setCanvasTokenExpiryError('');
-          setIsCanvasTokenExpiryDialogOpen(true);
-        } else if (status.status !== 'expired') {
-          ignoredExpiredCanvasTokenOwnerRef.current = null;
-        }
-      })
-      .catch(() => {
-        // A status check must not block Academy when the workspace API is temporarily unavailable.
+      }).catch(() => {
+        // A temporary outage must not be mistaken for a missing token.
       });
-
+    };
+    loadStatus();
+    window.addEventListener('canvas-token-updated', loadStatus);
     return () => {
       isCancelled = true;
+      window.removeEventListener('canvas-token-updated', loadStatus);
     };
   }, [authStatus, canvasTokenOwnerKey]);
 
@@ -7225,7 +7145,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
     >
       {shouldHideCompactAcademyTopBar ? null : (
         <TopBar
-          academyLogoSrc={academyCalendarSettings.academyLogoSrc}
+          academyLogoSrc={visibleAcademyLogoSrc}
           authSession={authSession}
           isTopBarCollapsed={effectiveTopBarCollapsed}
           onOpenAddItem={openAcademyCourseworkDialog}
@@ -7317,68 +7237,21 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
         </DialogContent>
       </Dialog>
 
-      <Dialog
-        onOpenChange={(open) => {
-          if (!open && !isCanvasTokenExpirySaving) {
-            ignoreExpiredCanvasToken();
-          }
-        }}
-        open={isCanvasTokenExpiryDialogOpen}
-      >
-        <DialogContent className="max-w-md" showCloseButton={false}>
+      <Dialog open={isCanvasSetupOpen} onOpenChange={(open) => { if (!open) closeCanvasSetup(); }}>
+        <DialogContent aria-describedby="canvas-token-setup-description" className="max-h-[92dvh] overflow-y-auto sm:max-w-5xl">
           <DialogHeader>
-            <DialogTitle>{dictionary.canvasTokenExpiredDialogTitle}</DialogTitle>
+            <DialogTitle>{language === 'ko' ? 'Canvas 연결' : 'Connect your Canvas'}</DialogTitle>
           </DialogHeader>
-          <p className="text-sm font-semibold text-muted-foreground">
-            {dictionary.canvasTokenExpiredDialogDescription}
-          </p>
-          <form className="grid gap-3" onSubmit={handleExpiredCanvasTokenSubmit}>
-            <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
-              <span>{dictionary.canvasTokenValue}</span>
-              <Input
-                autoComplete="new-password"
-                disabled={isCanvasTokenExpirySaving}
-                onChange={(event) => setCanvasTokenExpiryDraft((currentDraft) => ({
-                  ...currentDraft,
-                  accessToken: event.target.value,
-                }))}
-                placeholder={dictionary.canvasTokenValuePlaceholder}
-                type="password"
-                value={canvasTokenExpiryDraft.accessToken}
-              />
-            </label>
-            <div className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
-              <span>{dictionary.canvasTokenExpiresAt}</span>
-              <DateTimeField
-                defaultTime="23:59"
-                disabled={isCanvasTokenExpirySaving}
-                id="expired-canvas-token-expires-at"
-                onChange={(value) => setCanvasTokenExpiryDraft((currentDraft) => ({
-                  ...currentDraft,
-                  expiresAt: value,
-                }))}
-                value={canvasTokenExpiryDraft.expiresAt}
-              />
-            </div>
-            {canvasTokenExpiryError ? (
-              <div className="rounded-md border border-red-500/35 bg-red-500/10 px-3 py-2 text-xs font-bold text-red-700 dark:text-red-200">
-                {canvasTokenExpiryError}
-              </div>
-            ) : null}
-            <DialogFooter className="gap-2 sm:justify-between">
-              <Button
-                disabled={isCanvasTokenExpirySaving}
-                onClick={ignoreExpiredCanvasToken}
-                type="button"
-                variant="outline"
-              >
-                {dictionary.canvasTokenIgnoreAndContinue}
-              </Button>
-              <Button disabled={isCanvasTokenExpirySaving} type="submit">
-                {isCanvasTokenExpirySaving ? dictionary.canvasTokenSaving : dictionary.canvasTokenSave}
-              </Button>
-            </DialogFooter>
-          </form>
+          {isCanvasSetupOpen ? <CanvasTokenSetupPage
+            key={canvasTokenOwnerKey}
+            status={canvasTokenStatus}
+            onContinue={closeCanvasSetup}
+            onConnected={(status) => {
+              setCanvasTokenStatus(status);
+              closeCanvasSetup();
+              window.dispatchEvent(new CustomEvent<AcademyRefreshRequestedDetail>(academyRefreshRequestedEvent, { detail: { forceRefresh: true } }));
+            }}
+          /> : null}
         </DialogContent>
       </Dialog>
 
@@ -7446,6 +7319,8 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
             {isAcademySettingsView ? (
               <AcademySettingsView
                 authSession={authSession}
+                schoolLogoSrc={schoolLogoSrc}
+                onOpenCanvasSetup={() => setIsCanvasSetupRequested(true)}
                 focusSection={academySettingsFocusSection}
                 hasUnsavedChanges={hasUnsavedAcademySettings}
                 onFocusSectionConsumed={() => setAcademySettingsFocusSection(null)}

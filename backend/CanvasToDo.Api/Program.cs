@@ -75,6 +75,7 @@ builder.Services.AddMemoryCache(options =>
 builder.Services.Configure<AccountEmailOptions>(builder.Configuration.GetSection("Email"));
 builder.Services.AddSingleton<IAccountEmailSender, SmtpAccountEmailSender>();
 builder.Services.AddScoped<LegacyAcademyImportService>();
+builder.Services.AddScoped<PasswordChangeService>();
 
 // Keep the legacy discriminator until existing encrypted Canvas tokens have been re-protected.
 var dataProtectionBuilder = builder.Services.AddDataProtection()

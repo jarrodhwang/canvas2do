@@ -68,6 +68,17 @@ public static class AuthEndpoints
             .RequireAuthorization()
             .RequireRateLimiting("auth-sensitive")
             .WithName("UpdateProfile");
+        auth.MapGet("/password-request", async (HttpContext context, UserManager<ApplicationUser> users, PasswordChangeService passwords) =>
+        {
+            var user = await users.GetUserAsync(context.User);
+            return user is null ? Results.Unauthorized() : Results.Ok(new { request = await passwords.GetAsync(user) });
+        }).RequireAuthorization();
+        auth.MapPost("/password-request", async (AdminAuthEndpoints.PasswordRequest request, HttpContext context,
+            UserManager<ApplicationUser> users, PasswordChangeService passwords) =>
+        {
+            var user = await users.GetUserAsync(context.User);
+            return user is null ? Results.Unauthorized() : await passwords.SubmitAsync(user.Id, request.NewPassword, request.ConfirmPassword, user.SecurityStamp);
+        }).RequireAuthorization().RequireRateLimiting("auth-sensitive");
 
         auth.MapGet("/2fa/status", GetTwoFactorStatusAsync)
             .RequireAuthorization()
@@ -323,7 +334,8 @@ public static class AuthEndpoints
 
     private static async Task<IResult> ResetPasswordAsync(
         ResetPasswordRequest request,
-        UserManager<ApplicationUser> userManager)
+        UserManager<ApplicationUser> userManager,
+        PasswordChangeService passwords)
     {
         var email = NormalizeEmail(request.Email);
 
@@ -345,24 +357,9 @@ public static class AuthEndpoints
             return InvalidPasswordReset();
         }
 
-        user.UpdatedAt = DateTimeOffset.UtcNow;
-        var resetResult = await userManager.ResetPasswordAsync(user, token, request.NewPassword);
-
-        if (!resetResult.Succeeded)
-        {
-            return resetResult.Errors.Any(error =>
-                    string.Equals(error.Code, "InvalidToken", StringComparison.OrdinalIgnoreCase))
-                ? InvalidPasswordReset()
-                : IdentityValidationProblem(resetResult);
-        }
-
-        await userManager.ResetAccessFailedCountAsync(user);
-        await userManager.SetLockoutEndDateAsync(user, null);
-
-        return Results.Ok(new
-        {
-            message = "Your password has been reset. Sign in with your new password.",
-        });
+        if (!await userManager.VerifyUserTokenAsync(user, userManager.Options.Tokens.PasswordResetTokenProvider,
+            UserManager<ApplicationUser>.ResetPasswordTokenPurpose, token)) return InvalidPasswordReset();
+        return await passwords.SubmitAsync(user.Id, request.NewPassword, request.ConfirmPassword, user.SecurityStamp);
     }
 
     private static async Task<IResult> LoginAsync(
@@ -687,90 +684,25 @@ public static class AuthEndpoints
     private static async Task<IResult> UpdateProfileAsync(
         UpdateProfileRequest request,
         HttpContext context,
-        AuthDbContext db,
         UserManager<ApplicationUser> userManager,
         SignInManager<ApplicationUser> signInManager)
     {
         var user = await userManager.GetUserAsync(context.User);
+        if (user is null) return Results.Unauthorized();
+        if (request.CurrentPassword is not null || request.NewPassword is not null)
+            return Results.Problem(statusCode: 409, detail: "Submit a password change request for administrator approval.");
 
-        if (user is null)
-        {
-            return Results.Unauthorized();
-        }
-
-        if (request.DisplayName is null && request.CurrentPassword is null && request.NewPassword is null)
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]>
-            {
-                ["profile"] = ["Provide a display name or a password change."],
-            });
-        }
-
-        var nextDisplayName = request.DisplayName?.Trim();
-
-        if (request.DisplayName is not null &&
-            (string.IsNullOrWhiteSpace(nextDisplayName) || nextDisplayName.Length > 160))
-        {
+        var displayName = request.DisplayName?.Trim();
+        if (string.IsNullOrWhiteSpace(displayName) || displayName.Length > 160)
             return Results.ValidationProblem(new Dictionary<string, string[]>
             {
                 ["displayName"] = ["Display name is required and must be 160 characters or less."],
             });
-        }
 
-        var hasCurrentPassword = !string.IsNullOrWhiteSpace(request.CurrentPassword);
-        var hasNewPassword = !string.IsNullOrWhiteSpace(request.NewPassword);
-
-        if ((request.CurrentPassword?.Length ?? 0) > 256 || (request.NewPassword?.Length ?? 0) > 256)
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]>
-            {
-                ["password"] = ["Passwords must be 256 characters or less."],
-            });
-        }
-
-        if (hasCurrentPassword != hasNewPassword)
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]>
-            {
-                ["password"] = ["Current password and new password are both required."],
-            });
-        }
-
-        if (hasCurrentPassword && !await userManager.HasPasswordAsync(user))
-        {
-            return Results.Problem(
-                title: "Password change unavailable.",
-                detail: "This account signs in through an external provider and does not have a password.",
-                statusCode: StatusCodes.Status409Conflict);
-        }
-
-        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
-        user.DisplayName = nextDisplayName ?? user.DisplayName;
+        user.DisplayName = displayName;
         user.UpdatedAt = DateTimeOffset.UtcNow;
-
-        if (hasCurrentPassword)
-        {
-            var passwordResult = await userManager.ChangePasswordAsync(
-                user,
-                request.CurrentPassword!,
-                request.NewPassword!);
-
-            if (!passwordResult.Succeeded)
-            {
-                return IdentityValidationProblem(passwordResult);
-            }
-        }
-        else
-        {
-            var updateResult = await userManager.UpdateAsync(user);
-
-            if (!updateResult.Succeeded)
-            {
-                return IdentityValidationProblem(updateResult);
-            }
-        }
-
-        await transaction.CommitAsync();
+        var result = await userManager.UpdateAsync(user);
+        if (!result.Succeeded) return IdentityValidationProblem(result);
         await signInManager.RefreshSignInAsync(user);
         return Results.Ok(await BuildProfileAsync(user, userManager));
     }
@@ -1399,7 +1331,7 @@ public static class AuthEndpoints
 
     public sealed record EmailTokenRequest(string? UserId, string? Code);
 
-    public sealed record ResetPasswordRequest(string? Email, string? Code, string? NewPassword);
+    public sealed record ResetPasswordRequest(string? Email, string? Code, string? NewPassword, string? ConfirmPassword = null);
 
     public sealed record LoginRequest(string Email, string? Password, bool RememberMe = false);
 

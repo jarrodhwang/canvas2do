@@ -1054,14 +1054,6 @@ public static partial class CanvasIntegrationEndpoints
             var assignmentEventsResult = await assignmentEventsTask;
             var calendarEventsResult = await calendarEventsTask;
 
-            if (assignmentEventsResult.Error is not null && calendarEventsResult.Error is not null)
-            {
-                return Results.Problem(
-                    title: "Canvas calendar failed to load.",
-                    detail: "Canvas could not provide assignment or event calendar data.",
-                    statusCode: GetMostRelevantCanvasStatusCode(assignmentEventsResult.Error, calendarEventsResult.Error));
-            }
-
             var assignmentEvents = assignmentEventsResult.Events;
             var calendarEvents = calendarEventsResult.Events;
             var submissionLookupResult = await GetCanvasAssignmentSubmissionLookupBestEffortAsync(
@@ -1083,6 +1075,17 @@ public static partial class CanvasIntegrationEndpoints
                 requestBudget,
                 requestCancellationToken);
             var courseAssignmentItems = courseAssignmentResult.Items;
+
+            // Calendar events and per-course assignments are independent sources.
+            // Keep any available data, even when an institution denies calendar access.
+            if (assignmentEventsResult.Error is not null && calendarEventsResult.Error is not null &&
+                assignmentEvents.Length == 0 && calendarEvents.Length == 0 &&
+                !courseAssignmentResult.HasSuccessfulResponse)
+            {
+                var error = GetMostRelevantCanvasError(assignmentEventsResult.Error, calendarEventsResult.Error)!;
+                return Results.Problem(title: error.Title, detail: error.Detail, statusCode: error.StatusCode);
+            }
+
             var items = assignmentEvents
                 .Select(calendarEvent => ParseCanvasCalendarItem(calendarEvent, "assignment", courseLookup, submissionLookup))
                 .Concat(courseAssignmentItems)
@@ -2410,7 +2413,7 @@ public static partial class CanvasIntegrationEndpoints
             NormalizeCanvasDisplayValue(GetJsonString(activityItem, "read_state"), CanvasMaxWorkflowStateLength));
     }
 
-    private static async Task<JsonElement[]> GetCanvasCalendarEventsAsync(
+    private static async Task<CanvasCalendarEventsResult> GetCanvasCalendarEventsBestEffortAsync(
         IHttpClientFactory httpClientFactory,
         string instanceUrl,
         string accessToken,
@@ -2432,7 +2435,7 @@ public static partial class CanvasIntegrationEndpoints
 
             try
             {
-                return await GetCanvasCalendarEventsBatchAsync(
+                var events = await GetCanvasCalendarEventsBatchAsync(
                     httpClientFactory,
                     instanceUrl,
                     accessToken,
@@ -2443,6 +2446,12 @@ public static partial class CanvasIntegrationEndpoints
                     contextCodeBatch,
                     requestBudget,
                     cancellationToken);
+                return new CanvasCalendarEventsResult(events, null);
+            }
+            catch (CanvasApiRequestException exception)
+            {
+                // An inaccessible batch must not discard successful course calendars.
+                return new CanvasCalendarEventsResult([], exception);
             }
             finally
             {
@@ -2451,7 +2460,7 @@ public static partial class CanvasIntegrationEndpoints
         });
         var batchEvents = await Task.WhenAll(batchTasks);
         var events = batchEvents
-            .SelectMany(batch => batch)
+            .SelectMany(batch => batch.Events)
             .Take(CanvasMaxPaginationItems + 1)
             .ToArray();
 
@@ -2460,51 +2469,13 @@ public static partial class CanvasIntegrationEndpoints
             throw new CanvasRequestLimitException();
         }
 
-        return events;
+        return new CanvasCalendarEventsResult(events, GetMostRelevantCanvasError(batchEvents.Select(batch => batch.Error).ToArray()));
     }
 
-    private static async Task<CanvasCalendarEventsResult> GetCanvasCalendarEventsBestEffortAsync(
-        IHttpClientFactory httpClientFactory,
-        string instanceUrl,
-        string accessToken,
-        string type,
-        DateTimeOffset startAt,
-        DateTimeOffset endAt,
-        int pageSize,
-        string[] contextCodes,
-        CanvasRequestBudget requestBudget,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            var events = await GetCanvasCalendarEventsAsync(
-                httpClientFactory,
-                instanceUrl,
-                accessToken,
-                type,
-                startAt,
-                endAt,
-                pageSize,
-                contextCodes,
-                requestBudget,
-                cancellationToken);
-
-            return new CanvasCalendarEventsResult(events, null);
-        }
-        catch (CanvasApiRequestException exception)
-        {
-            return new CanvasCalendarEventsResult([], exception);
-        }
-    }
-
-    private static int GetMostRelevantCanvasStatusCode(
-        CanvasApiRequestException firstException,
-        CanvasApiRequestException secondException)
-    {
-        return firstException.StatusCode is >= 400 and < 500
-            ? firstException.StatusCode
-            : secondException.StatusCode;
-    }
+    private static CanvasApiRequestException? GetMostRelevantCanvasError(params CanvasApiRequestException?[] errors) =>
+        errors.OfType<CanvasApiRequestException>()
+            .OrderBy(error => error.StatusCode is >= 400 and < 500 ? 0 : 1)
+            .FirstOrDefault();
 
     private static async Task<JsonElement[]> GetCanvasCalendarEventsBatchAsync(
         IHttpClientFactory httpClientFactory,
@@ -2602,7 +2573,7 @@ public static partial class CanvasIntegrationEndpoints
                         submissionLookup,
                         requestBudget,
                         cancellationToken);
-                    return new CanvasCourseAssignmentItemsResult(items, true);
+                    return new CanvasCourseAssignmentItemsResult(items, true, true);
                 }
                 catch (CanvasApiRequestException)
                 {
@@ -2626,7 +2597,8 @@ public static partial class CanvasIntegrationEndpoints
         return new CanvasCourseAssignmentItemsResult(
             items,
             items.Length <= CanvasMaxCalendarResponseItems &&
-            courseItems.All(result => result.IsComplete));
+            courseItems.All(result => result.IsComplete),
+            courseItems.Any(result => result.HasSuccessfulResponse));
     }
 
     private static async Task<CanvasCalendarItemDto[]> GetCanvasCourseAssignmentCalendarItemsForCourseAsync(
@@ -3937,7 +3909,7 @@ public static partial class CanvasIntegrationEndpoints
     private sealed record CanvasApiPage(string Payload, string? NextUrl);
     private sealed record CanvasResponsePayload(string Payload, int ByteCount);
     private sealed record CanvasCalendarEventsResult(JsonElement[] Events, CanvasApiRequestException? Error);
-    private sealed record CanvasCourseAssignmentItemsResult(CanvasCalendarItemDto[] Items, bool IsComplete);
+    private sealed record CanvasCourseAssignmentItemsResult(CanvasCalendarItemDto[] Items, bool IsComplete, bool HasSuccessfulResponse = false);
 
     private sealed class CanvasRequestBudget(int maximumPages, long maximumBytes)
     {

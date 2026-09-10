@@ -404,3 +404,14 @@
     min-height: 0;
   }
 }
+
+/* Fit class labels to the space available without changing the time scale. */
+@container (height < 54px) {
+  .timetable-class-location { display: none; }
+}
+@container (height < 38px) {
+  .timetable-class-time { display: none; }
+}
+@container (height < 24px) {
+  .timetable-class-meta { display: none; }
+}

@@ -62,6 +62,7 @@ interface CalendarShellProps {
   mobileCalendarScope?: 'month' | 'week';
   onMobileCalendarScopeChange?: (scope: 'month' | 'week') => void;
   selectedDateIso?: string;
+  onSelectTimetableDate?: (dateIso: string) => void;
   view: WorkspaceView;
   onNextMonth?: () => void;
   onNextWeek?: () => void;
@@ -116,6 +117,7 @@ export function CalendarShell({
   mobileCalendarScope = 'week',
   onMobileCalendarScopeChange,
   selectedDateIso,
+  onSelectTimetableDate,
   view,
   onNextMonth,
   onNextWeek,
@@ -156,7 +158,7 @@ export function CalendarShell({
   const hasWeekControls = (view === 'timetable' || (isPhone && view === 'month' && mobileCalendarScope === 'week')) && Boolean(onPreviousWeek && onNextWeek);
   const timetableDate = selectedDateIso ?? todayIso ?? `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`;
   const timetableWeek = getTimetableWeek(timetableDate);
-  const weekLabel = timetableWeek[0].toLocaleDateString(language === 'ko' ? 'ko-KR' : 'en-US', { month: 'short', day: 'numeric' }) + ' – ' + timetableWeek[6].toLocaleDateString(language === 'ko' ? 'ko-KR' : 'en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const weekLabel = timetableWeek[0].toLocaleDateString(language === 'ko' ? 'ko-KR' : 'en-US', { month: 'short', day: 'numeric' }) + ' – ' + timetableWeek[6].toLocaleDateString(language === 'ko' ? 'ko-KR' : 'en-US', { month: 'short', day: 'numeric', year: isPhone ? undefined : 'numeric' });
   const showCalendarLoading = isLoading;
   const previousMonthLabel = language === 'ko' ? '이전 달' : 'Previous month';
   const nextMonthLabel = language === 'ko' ? '다음 달' : 'Next month';
@@ -289,7 +291,7 @@ export function CalendarShell({
           </span>
         </button>
       ) : null}
-      <CardHeader className="flex flex-row items-start justify-between gap-3 px-3 pb-2 pt-1 max-xl:flex-col max-[520px]:flex-row max-[520px]:items-center max-[520px]:gap-1 max-[520px]:px-1 max-[520px]:pb-1 max-[520px]:pt-0">
+      <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3 px-3 pb-2 pt-1 max-xl:flex-col max-[520px]:flex-row max-[520px]:items-center max-[520px]:gap-1 max-[520px]:px-1 max-[520px]:pb-1 max-[520px]:pt-0">
         <div className="min-w-0 max-[520px]:w-full">
           <div className="flex min-w-0 items-center gap-2 max-[520px]:w-full max-[520px]:justify-between">
             {showDateControls ? (
@@ -501,7 +503,9 @@ export function CalendarShell({
                       : 'max-h-[clamp(320px,calc(100dvh-220px),780px)] lg:h-full lg:max-h-none max-md:max-h-[clamp(300px,calc(100dvh-190px),680px)] max-[520px]:max-h-none',
                     fillHeight && 'h-full min-h-0 flex-1 max-h-none',
                   )
-                : view === 'agenda' || view === 'timetable'
+                : view === 'timetable'
+                  ? cn('flex min-h-0 flex-1 flex-col overflow-hidden', isPhone ? 'min-h-32' : 'h-full')
+                : view === 'agenda'
                   ? cn(
                       'overflow-auto rounded-xl pr-1 lg:min-h-0 lg:flex-1 lg:max-h-none',
                       fillHeight && 'min-h-0 flex-1 max-h-none',
@@ -555,7 +559,7 @@ export function CalendarShell({
               />
             ) : null}
             {view === 'timetable' ? (
-              <TimetableView sessions={timetableSessions} selectedDateIso={timetableDate} todayIso={todayIso} />
+              <TimetableView sessions={timetableSessions} selectedDateIso={timetableDate} todayIso={todayIso} isPhone={isPhone} onSelectDate={onSelectTimetableDate} />
             ) : null}
             {view === 'board' ? (
               <BoardView
@@ -591,7 +595,7 @@ export function CalendarShell({
                 </div>
               </div>
             </div>
-          ) : emptyMessage && (view === 'month' || view === 'agenda' || view === 'timetable') ? (
+          ) : emptyMessage && (view === 'month' || view === 'agenda') ? (
             <div
               aria-live="polite"
               className="pointer-events-none absolute inset-0 z-10 flex min-h-[440px] items-center justify-center rounded-xl px-4 text-center"

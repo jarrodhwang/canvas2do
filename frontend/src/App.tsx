@@ -4785,8 +4785,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
   const isCalendarDataView = !isMainOnlyView && (
     currentView === 'month' ||
     currentView === 'agenda' ||
-    currentView === 'board' ||
-    currentView === 'timetable'
+    currentView === 'board'
   );
   const selectedAcademySemester = normalizeSemesterName(academyCalendarSettings.selectedSemester);
   const shouldFetchLiveCanvasCalendar = selectedAcademySemester !== defaultCanvasTermSemester;
@@ -7468,6 +7467,11 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                     handleSaveAcademyCalendarSettings({ ...academyCalendarSettingsRef.current, mobileCalendarScope });
                   } : undefined}
                   selectedDateIso={selectedCalendarDayIso}
+                  onSelectTimetableDate={(dateIso) => {
+                    setSelectedCalendarDayIso(dateIso);
+                    const month = getCalendarMonthFromIsoDate(dateIso);
+                    if (month) setCalendarMonth(month);
+                  }}
                   onNextWeek={() => handleMoveSelectedAgendaDay(7)}
                   onPreviousWeek={() => handleMoveSelectedAgendaDay(-7)}
                   agendaDateLabel={selectedDayHeading.year
@@ -7479,7 +7483,9 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                   data={calendarData}
                   timetableSessions={calendarSourceItems.filter((item) => item.source === 'class-session')}
                   emptyMessage={canvasCalendarEmptyMessage}
-                  warningMessage={hasIncompleteVisibleCanvasCalendar
+                  warningMessage={currentView === 'timetable'
+                    ? (hasFailedAcademyPreferencesLoad ? dictionary.academyPreferencesUnavailable : undefined)
+                    : hasIncompleteVisibleCanvasCalendar
                     ? dictionary.canvasCalendarIncomplete
                     : undefined}
                   fillHeight={shouldUseAcademyFullHeightLayout && isDashboardWorkspaceView}
@@ -7488,7 +7494,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                   isExpanded={effectiveCalendarExpanded}
                   isCompactMonth={shouldUseCompactDashboardMonth}
                   isSelectedDateToday={isSelectedCalendarDayToday}
-                  isLoading={effectiveCanvasCalendarLoadStatus === 'loading'}
+                  isLoading={currentView === 'timetable' ? isWaitingForAcademyPreferences : effectiveCanvasCalendarLoadStatus === 'loading'}
                   mode={activeMode}
                   onAddCourseworkForDay={handleQuickAddCalendarCourseworkForDay}
                   onFinishTodoTitleEdit={handleFinishCalendarTodoTitleEdit}

@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/backend/">
     <Project Path="backend/CanvasToDo.Api/CanvasToDo.Api.csproj" />
+    <Project Path="backend/CanvasToDo.Api.Tests/CanvasToDo.Api.Tests.csproj" />
   </Folder>
 </Solution>

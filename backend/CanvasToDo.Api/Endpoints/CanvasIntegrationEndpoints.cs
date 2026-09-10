@@ -1056,14 +1056,8 @@ public static partial class CanvasIntegrationEndpoints
 
             var assignmentEvents = assignmentEventsResult.Events;
             var calendarEvents = calendarEventsResult.Events;
-            var submissionLookupResult = await GetCanvasAssignmentSubmissionLookupBestEffortAsync(
-                httpClientFactory,
-                instanceUrl,
-                accessToken,
-                assignmentEvents,
-                requestBudget,
-                requestCancellationToken);
-            var submissionLookup = submissionLookupResult.Lookup;
+            // Course assignments already include submission status. Only enrich calendar
+            // assignments that were not returned by that source (for example, denied courses).
             var courseAssignmentResult = await GetCanvasCourseAssignmentCalendarItemsAsync(
                 httpClientFactory,
                 instanceUrl,
@@ -1071,10 +1065,27 @@ public static partial class CanvasIntegrationEndpoints
                 courses,
                 startAt,
                 endAt,
-                submissionLookup,
+                new Dictionary<string, CanvasSubmissionStatus>(),
                 requestBudget,
                 requestCancellationToken);
             var courseAssignmentItems = courseAssignmentResult.Items;
+            var coveredAssignments = courseAssignmentItems
+                .Select(GetCanvasCalendarItemDedupeKey)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var uncoveredAssignmentEvents = assignmentEvents.Where(calendarEvent =>
+            {
+                var reference = GetCanvasAssignmentReference(calendarEvent);
+                return reference is not null &&
+                    !coveredAssignments.Contains($"assignment:{reference.CourseId}:{reference.AssignmentId}");
+            }).ToArray();
+            var submissionLookupResult = await GetCanvasAssignmentSubmissionLookupBestEffortAsync(
+                httpClientFactory,
+                instanceUrl,
+                accessToken,
+                uncoveredAssignmentEvents,
+                requestBudget,
+                requestCancellationToken);
+            var submissionLookup = submissionLookupResult.Lookup;
 
             // Calendar events and per-course assignments are independent sources.
             // Keep any available data, even when an institution denies calendar access.
@@ -1086,9 +1097,8 @@ public static partial class CanvasIntegrationEndpoints
                 return Results.Problem(title: error.Title, detail: error.Detail, statusCode: error.StatusCode);
             }
 
-            var items = assignmentEvents
-                .Select(calendarEvent => ParseCanvasCalendarItem(calendarEvent, "assignment", courseLookup, submissionLookup))
-                .Concat(courseAssignmentItems)
+            var items = courseAssignmentItems
+                .Concat(assignmentEvents.Select(calendarEvent => ParseCanvasCalendarItem(calendarEvent, "assignment", courseLookup, submissionLookup)))
                 .Concat(calendarEvents.Select(calendarEvent => ParseCanvasCalendarItem(calendarEvent, "event", courseLookup, submissionLookup)))
                 .Where(item => item is not null)
                 .Select(item => item!)
@@ -2935,7 +2945,7 @@ public static partial class CanvasIntegrationEndpoints
         var courseId = GetCourseId(contextCode) ??
             (assignment.HasValue ? GetJsonStringOrNumber(assignment.Value, "course_id") : null);
         courses.TryGetValue(courseId ?? "", out var course);
-        var assignmentId = assignment.HasValue ? GetJsonStringOrNumber(assignment.Value, "id") : null;
+        var assignmentId = GetCanvasAssignmentReference(calendarEvent)?.AssignmentId;
         var submissionStatus = assignment.HasValue
             ? GetCanvasAssignmentSubmissionStatus(assignment.Value)
             : new CanvasSubmissionStatus(false, null);
@@ -2969,7 +2979,9 @@ public static partial class CanvasIntegrationEndpoints
         var type = GetCanvasCalendarItemType(title, calendarType, assignment);
 
         return new CanvasCalendarItemDto(
-            $"canvas-{calendarType}-{id}",
+            !string.IsNullOrWhiteSpace(courseId) && !string.IsNullOrWhiteSpace(assignmentId)
+                ? $"canvas-assignment-{courseId}-{assignmentId}"
+                : $"canvas-{calendarType}-{id}",
             title,
             type,
             courseId,

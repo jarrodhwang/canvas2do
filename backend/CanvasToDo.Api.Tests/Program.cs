@@ -19,7 +19,7 @@ var builder = WebApplication.CreateBuilder();
 await using var app = builder.Build();
 app.MapCanvasIntegrationEndpoints();
 
-foreach (var scenario in new[] { "healthy", "fallback", "empty-fallback", "partial-batch", "denied", "rate-limited" })
+foreach (var scenario in new[] { "healthy", "calendar-only", "duplicate-sources", "top-level-assignment", "submission-denied", "fallback", "empty-fallback", "partial-batch", "denied", "rate-limited" })
 {
     using var factory = new FakeCanvasFactory(scenario);
     using var cache = new MemoryCache(new MemoryCacheOptions());
@@ -54,7 +54,18 @@ foreach (var scenario in new[] { "healthy", "fallback", "empty-fallback", "parti
     Check((response as IStatusCodeHttpResult)?.StatusCode == expectedStatus, $"{scenario}: response status");
     if (response is IValueHttpResult { Value: CanvasCalendarItemsDto calendar })
     {
-        Check(calendar.IsComplete == (scenario == "healthy"), $"{scenario}: completeness");
+        Check(calendar.IsComplete == (scenario is "healthy" or "duplicate-sources" or "top-level-assignment" or "submission-denied"), $"{scenario}: completeness");
+        if (scenario == "calendar-only")
+            Check(calendar.Items.Length == 1 && calendar.Items[0].Id == "canvas-assignment-1-42",
+                "Calendar-only fallback keeps the same assignment ID");
+        if (scenario is "duplicate-sources" or "top-level-assignment" or "submission-denied")
+        {
+            Check(factory.CalendarAssignmentEvents > 0, $"{scenario}: fixture includes both data sources");
+            Check(calendar.Items.Length == 2, $"{scenario}: merge duplicate sources, preserve distinct same-title assignments");
+            Check(calendar.Items.Any(item => item.Id == "canvas-assignment-1-42" && item.IsSubmitted),
+                $"{scenario}: stable ID and submission status from course assignments");
+            Check(factory.SubmissionRequests == 0, $"{scenario}: no redundant submission requests");
+        }
         if (scenario is "fallback" or "partial-batch")
             Check(calendar.Items.Length > 0, $"{scenario}: preserve working data source");
         if (scenario == "empty-fallback")
@@ -79,6 +90,10 @@ static void Check(bool condition, string description)
 sealed class FakeCanvasFactory(string scenario) : HttpMessageHandler, IHttpClientFactory
 {
     private int assignmentRequests;
+    private int submissionRequests;
+    private int calendarAssignmentEvents;
+    public int CalendarAssignmentEvents => calendarAssignmentEvents;
+    public int SubmissionRequests => submissionRequests;
     public int AssignmentRequests => assignmentRequests;
     public HttpClient CreateClient(string name) => new(this, disposeHandler: false);
 
@@ -91,18 +106,43 @@ sealed class FakeCanvasFactory(string scenario) : HttpMessageHandler, IHttpClien
             payload = Enumerable.Range(1, 11).Select(id => new { id, name = $"Course {id}", course_code = $"TEST {id}", workflow_state = "available" }).ToArray();
         else if (uri.AbsolutePath == "/api/v1/calendar_events")
         {
-            if (scenario == "partial-batch" && !Uri.UnescapeDataString(uri.Query).Contains("course_11"))
+            if (scenario is "calendar-only" or "duplicate-sources" or "top-level-assignment" or "submission-denied")
+            {
+                if (uri.Query.Contains("type=assignment") && Uri.UnescapeDataString(uri.Query).Contains("course_1&"))
+                {
+                    Interlocked.Increment(ref calendarAssignmentEvents);
+                    payload = new[] { new {
+                        id = "assignment_42", title = "Resume", context_code = "course_1", assignment_id = 42,
+                        start_at = "2026-09-10T17:00:00Z",
+                        assignment = scenario == "top-level-assignment" ? null : new { id = 42, course_id = 1, name = "Resume", due_at = "2026-09-10T17:00:00Z" }
+                    } };
+                }
+            }
+            else if (scenario == "partial-batch" && !Uri.UnescapeDataString(uri.Query).Contains("course_11"))
                 payload = new[] { new { id = "working-event", title = "Available class", context_code = "course_1", start_at = "2026-09-10T09:00:00Z", end_at = "2026-09-10T10:00:00Z" } };
             else if (scenario != "healthy") status = FailureStatus();
         }
         else if (uri.AbsolutePath.EndsWith("/assignments"))
         {
             Interlocked.Increment(ref assignmentRequests);
-            if (scenario == "fallback")
+            if (scenario is "duplicate-sources" or "top-level-assignment" or "submission-denied")
+            {
+                if (uri.AbsolutePath == "/api/v1/courses/1/assignments")
+                    payload = new[] { 42, 43 }.Select(id => new {
+                        id, name = "Resume", due_at = "2026-09-10T17:00:00Z",
+                        submission = new { workflow_state = "submitted", submitted_at = "2026-09-09T17:00:00Z" }
+                    }).ToArray();
+            }
+            else if (scenario == "fallback")
                 payload = new[] { new { id = 42, name = "Available coursework", due_at = "2026-09-10T17:00:00Z", published = true, submission_types = new[] { "online_upload" } } };
             else if (scenario is not ("healthy" or "empty-fallback")) status = FailureStatus();
         }
-        else if (!uri.AbsolutePath.Contains("/submissions"))
+        else if (uri.AbsolutePath.Contains("/submissions"))
+        {
+            Interlocked.Increment(ref submissionRequests);
+            if (scenario == "submission-denied") status = HttpStatusCode.Forbidden;
+        }
+        else
             throw new InvalidOperationException($"Unexpected upstream request: {uri.AbsolutePath}");
         return Task.FromResult(new HttpResponseMessage(status)
         {

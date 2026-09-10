@@ -1,3 +1,4 @@
+import { normalizeCanvasItemPreferences } from '../lib/canvasItemIdentity';
 import { appPath } from '../lib/appPath';
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || appPath('/api');
@@ -1374,7 +1375,11 @@ export const canvasToDoApi = {
 
     const result = await response.json() as AcademyPreferences;
     assertCurrentAcademyPreferenceScope(scope);
-    return result;
+    return {
+      ...result,
+      canvasCourseworkPreferences: normalizeCanvasItemPreferences(result.canvasCourseworkPreferences ?? {}),
+      canvasAssessmentPreferences: normalizeCanvasItemPreferences(result.canvasAssessmentPreferences ?? {}),
+    };
   },
 
   async saveAcademyPreferences(
@@ -1402,7 +1407,11 @@ export const canvasToDoApi = {
 
     const result = await response.json() as AcademyPreferences;
     assertCurrentAcademyPreferenceScope(scope);
-    return result;
+    return {
+      ...result,
+      canvasCourseworkPreferences: normalizeCanvasItemPreferences(result.canvasCourseworkPreferences ?? {}),
+      canvasAssessmentPreferences: normalizeCanvasItemPreferences(result.canvasAssessmentPreferences ?? {}),
+    };
   },
 
 };

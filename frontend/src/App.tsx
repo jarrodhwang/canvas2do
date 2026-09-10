@@ -4799,9 +4799,6 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
     canvasCalendarPages,
     visibleCalendarMonthKeys,
   );
-  const hasIncompleteVisibleCanvasCalendar = visibleCalendarMonthKeys.some(
-    (monthKey) => canvasCalendarPages[monthKey]?.isComplete === false,
-  );
   const canvasCalendarLoadStatus: CanvasCalendarLoadStatus =
     canvasCalendarPage?.status ?? (shouldLoadCanvasCalendar ? 'loading' : 'idle');
   const isWaitingForAcademyPreferences =
@@ -7485,8 +7482,6 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                   emptyMessage={canvasCalendarEmptyMessage}
                   warningMessage={currentView === 'timetable'
                     ? (hasFailedAcademyPreferencesLoad ? dictionary.academyPreferencesUnavailable : undefined)
-                    : hasIncompleteVisibleCanvasCalendar
-                    ? dictionary.canvasCalendarIncomplete
                     : undefined}
                   fillHeight={shouldUseAcademyFullHeightLayout && isDashboardWorkspaceView}
                   focusedBoardItemId={focusedCalendarTodoId}

@@ -77,11 +77,13 @@ public sealed record CanvasCourseDto(
     DateTimeOffset? TermEndAt = null,
     string? EnrollmentState = null,
     bool AccessRestrictedByDate = false,
-    bool AccessClosed = false);
+    bool AccessClosed = false,
+    bool IsPublished = true);
 
 public sealed record CanvasCoursesDto(
     CanvasCourseDto[] Courses,
-    string? TermName = null);
+    string? TermName = null,
+    bool IsComplete = true);
 
 public sealed record CanvasCoursePersonDto(
     string Id,

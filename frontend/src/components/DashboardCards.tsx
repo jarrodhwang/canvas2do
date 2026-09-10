@@ -157,6 +157,7 @@ type CanvasLecturePreferences = Record<string, {
   friendlyName?: string;
   hidden?: boolean;
   htmlUrl?: string;
+  isPublished?: boolean;
   labSection?: string;
   lastSeenAt?: string;
   lectureSection?: string;
@@ -3664,6 +3665,7 @@ function AssessmentDialog({
 }
 
 interface DashboardCardsProps {
+  courseworkOnly?: boolean;
   isPhone?: boolean;
   academyAutoRefreshIntervalMs?: number;
   compactAcademySummary?: boolean;
@@ -3678,6 +3680,7 @@ interface DashboardCardsProps {
 }
 
 export function DashboardCards({
+  courseworkOnly = false,
   isPhone = false,
   academyAutoRefreshIntervalMs = defaultAcademyAutoRefreshIntervalMs,
   compactAcademySummary = false,
@@ -3694,6 +3697,7 @@ export function DashboardCards({
   const { dictionary, language, translateDashboardCard, translateModeName } = useLanguage();
   const [dashboardSnackbar, setDashboardSnackbar] = useState<DashboardSnackbar | null>(null);
   const [canvasCourses, setCanvasCourses] = useState<CanvasCourse[] | null>(null);
+  const [canvasCourseListIsComplete, setCanvasCourseListIsComplete] = useState(false);
   const [canvasCourseLoadStatus, setCanvasCourseLoadStatus] = useState<CanvasCourseLoadStatus>('loading');
   const [canvasCourseworkItems, setCanvasCourseworkItems] = useState<CanvasCalendarItem[]>([]);
   const [canvasCourseworkLoadStatus, setCanvasCourseworkLoadStatus] = useState<CanvasCourseLoadStatus>('loading');
@@ -4482,12 +4486,13 @@ export function DashboardCards({
 
     canvasToDoApi
       .getCanvasCourses(100)
-      .then(({ courses, termName }) => {
+      .then(({ courses, isComplete, termName }) => {
         if (isCancelled) {
           return;
         }
 
         setCanvasCourses(courses);
+        setCanvasCourseListIsComplete(isComplete === true);
         setCanvasTermName(termName);
         setCanvasCourseLoadStatus('loaded');
       })
@@ -4497,6 +4502,7 @@ export function DashboardCards({
         }
 
         setCanvasCourses(null);
+        setCanvasCourseListIsComplete(false);
         setCanvasTermName(undefined);
         setCanvasCourseLoadStatus('failed');
       });
@@ -4728,6 +4734,7 @@ export function DashboardCards({
           currentGrade: course.currentGrade,
           currentScore: course.currentScore,
           htmlUrl: course.htmlUrl,
+          isPublished: course.isPublished,
           lastSeenAt: preference.lastSeenAt ?? seenAt,
           originalCourseCode,
           semesterSource: shouldUseReportedSemester
@@ -4801,8 +4808,7 @@ export function DashboardCards({
   useEffect(() => {
     if (
       canvasCourseLoadStatus !== 'loaded' ||
-      !canvasCourses ||
-      canvasCourses.length === 0
+      !canvasCourses
     ) {
       return;
     }
@@ -4822,7 +4828,10 @@ export function DashboardCards({
 
       const course = courseById.get(courseId);
 
-      if (!course || !shouldConvertCanvasCourseToManual(course, now)) {
+      if (!shouldConvertCanvasCourseToManual(course, now, {
+        courseListIsComplete: canvasCourseListIsComplete,
+        wasPreviouslySeen: Boolean(preference.lastSeenAt),
+      })) {
         return;
       }
 
@@ -4836,21 +4845,25 @@ export function DashboardCards({
         return;
       }
 
-      const alreadyStored = currentManualLectures.some((lecture) => (
-        lecture.id === archivedLecture.id ||
-        (
-          normalizeSemesterName(lecture.semester, fallbackCourseSemester) === archivedLecture.semester &&
-          codesMatch(lecture.code, archivedLecture.code)
-        )
-      ));
+      const manualLectureId = `manual-canvas-${courseId}`;
+      const alreadyStored = currentManualLectures.some((lecture) => lecture.id === manualLectureId);
 
       if (!alreadyStored) {
-        archivedLectures.push(archivedLecture);
+        archivedLectures.push({
+          ...archivedLecture,
+          id: manualLectureId,
+          canvasGradeSummary: {
+            grade: preference.currentGrade,
+            score: preference.currentScore,
+          },
+        });
       }
 
       nextPreferences[courseId] = {
         ...preference,
-        archivedAsManualLectureId: archivedLecture.id,
+        convertedToManualAt: new Date(now).toISOString(),
+        deleted: true,
+        hidden: true,
       };
       changed = true;
     });
@@ -4877,6 +4890,7 @@ export function DashboardCards({
     );
   }, [
     activeMode.id,
+    canvasCourseListIsComplete,
     canvasCourseLoadStatus,
     canvasCourses,
     canvasLecturePreferences,
@@ -6212,10 +6226,12 @@ export function DashboardCards({
 
     if (coursesResult.status === 'fulfilled') {
       setCanvasCourses(coursesResult.value.courses);
+      setCanvasCourseListIsComplete(coursesResult.value.isComplete === true);
       setCanvasTermName(coursesResult.value.termName);
       setCanvasCourseLoadStatus('loaded');
     } else {
       setCanvasCourses(null);
+      setCanvasCourseListIsComplete(false);
       setCanvasTermName(undefined);
       setCanvasCourseLoadStatus('failed');
     }
@@ -6480,7 +6496,7 @@ export function DashboardCards({
         )}
         aria-label={`${translateModeName(activeMode.id, activeMode.displayName)} dashboard summary`}
       >
-        {dashboardCards.map((card) => {
+        {dashboardCards.filter((card) => !courseworkOnly || card.id === 'upcoming-coursework').map((card) => {
           const cardAction = renderCardAction(card);
           const isCompactCourseCard = compactAcademySummary && card.id === 'semester-lectures';
           const isCompactCourseworkCard = compactAcademySummary && card.id === 'upcoming-coursework';

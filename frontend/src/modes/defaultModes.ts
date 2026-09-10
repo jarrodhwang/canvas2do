@@ -9,7 +9,7 @@ export const defaultModeConfigs: WorkspaceModeConfig[] = [
     id: 'academy',
     displayName: 'Canvas To Do',
     icon: 'graduation-cap',
-    views: ['month', 'agenda', 'board'],
+    views: ['month', 'agenda', 'board', 'timetable'],
     sidebar: [
       {
         id: 'menu',

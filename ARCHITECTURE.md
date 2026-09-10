@@ -125,12 +125,19 @@ once, and abandons capacity waits after three seconds. A partial best-effort cal
 response carries `isComplete: false`, is shown with a warning, and is never cached as
 authoritative. The pooled Canvas HTTP handler stores no cookies between users.
 
-Course-to-manual migration is fail-safe: it requires a current Canvas course result
-whose term end is in the past and whose `access_restricted_by_date` signal says the
-user is prevented from viewing it. A completed/read-only enrollment and absence from
-an active-course response are not treated as closed access. Previously generated
+Course-to-manual migration is fail-safe: a returned course requires a term end in the
+past plus an `access_restricted_by_date` signal that says the user cannot view it. A
+previously seen course also migrates when it is absent from a successful, complete
+active-and-historical course response. Partial historical responses, token failures,
+and other connection errors are not treated as lost enrollment. Previously generated
 manual copies are suppressed while the same Canvas course is accessible, without
 deleting the retained manual backup.
+
+Active student-course discovery explicitly requests both published and unpublished
+courses. Unpublished enrollments remain Canvas-linked and visible with a publication
+warning, but the client does not request Canvas course content or expose Canvas-only
+navigation until the course is published. User-saved external course links remain
+available during that period.
 
 OAuth state is protected, user-bound, local-return-path-only, and expires quickly.
 The authorization code and refresh token exchange happens server-side. Access and

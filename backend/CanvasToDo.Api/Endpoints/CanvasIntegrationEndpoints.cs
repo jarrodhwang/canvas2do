@@ -510,6 +510,7 @@ public static partial class CanvasIntegrationEndpoints
                 requestBudget,
                 requestCancellationToken);
             CanvasCourseDto[] completedCourses;
+            var completedCoursesAreComplete = true;
 
             try
             {
@@ -526,19 +527,25 @@ public static partial class CanvasIntegrationEndpoints
             catch (CanvasApiRequestException)
             {
                 // Active coursework remains usable if Canvas cannot provide historical enrollments.
-                // Missing historical data is never interpreted as permission to migrate a course.
+                // Tell clients the combined list is incomplete so they do not interpret a missing
+                // historical course as a lost enrollment.
                 completedCourses = [];
+                completedCoursesAreComplete = false;
             }
             catch (CanvasRequestLimitException)
             {
                 completedCourses = [];
+                completedCoursesAreComplete = false;
             }
             var courses = activeCourses
                 .Concat(completedCourses)
                 .GroupBy(course => course.Id, StringComparer.OrdinalIgnoreCase)
                 .Select(group => group.First())
                 .ToArray();
-            var response = new CanvasCoursesDto(courses, GetCommonTermName(activeCourses));
+            var response = new CanvasCoursesDto(
+                courses,
+                GetCommonTermName(activeCourses),
+                completedCoursesAreComplete);
             EnsureSerializedOutputWithinLimit(response, CanvasMaxCoursesOutputBytes);
 
             return Results.Ok(response);
@@ -2025,7 +2032,7 @@ public static partial class CanvasIntegrationEndpoints
         var courseCacheKey = string.Join(
             ':',
             "canvas-active-courses",
-            "v4",
+            "v5",
             userCacheKey,
             instanceUrl);
 
@@ -2086,6 +2093,7 @@ public static partial class CanvasIntegrationEndpoints
             new("enrollment_state", "active"),
             new("include[]", "term"),
             new("include[]", "total_scores"),
+            new("state[]", "unpublished"),
             new("state[]", "available"),
             new("per_page", Math.Min(pageSize, CanvasActiveCourseFetchPageSize).ToString(CultureInfo.InvariantCulture)),
         };
@@ -2146,7 +2154,7 @@ public static partial class CanvasIntegrationEndpoints
         var courseCacheKey = string.Join(
             ':',
             "canvas-completed-courses",
-            "v1",
+            "v2",
             userCacheKey,
             instanceUrl);
 
@@ -2215,6 +2223,7 @@ public static partial class CanvasIntegrationEndpoints
             new("enrollment_state", "completed"),
             new("include[]", "term"),
             new("include[]", "total_scores"),
+            new("state[]", "unpublished"),
             new("state[]", "available"),
             new("state[]", "completed"),
             new("per_page", Math.Min(pageSize, CanvasActiveCourseFetchPageSize).ToString(CultureInfo.InvariantCulture)),
@@ -2276,6 +2285,9 @@ public static partial class CanvasIntegrationEndpoints
         }
 
         var grade = GetCanvasCourseGrade(course);
+        var workflowState = NormalizeCanvasDisplayValue(
+            GetJsonString(course, "workflow_state"),
+            CanvasMaxWorkflowStateLength);
         var enrollmentState = GetCanvasCourseEnrollmentState(course);
         var accessRestrictedByDate = GetJsonBool(course, "access_restricted_by_date") == true;
         var accessClosed = accessRestrictedByDate ||
@@ -2287,7 +2299,7 @@ public static partial class CanvasIntegrationEndpoints
             name,
             NormalizeCanvasDisplayValue(GetJsonString(course, "course_code"), CanvasMaxCourseCodeLength),
             GetCanvasTermName(course),
-            NormalizeCanvasDisplayValue(GetJsonString(course, "workflow_state"), CanvasMaxWorkflowStateLength),
+            workflowState,
             GetJsonDateTimeOffset(course, "start_at"),
             GetJsonDateTimeOffset(course, "end_at"),
             htmlUrl,
@@ -2297,7 +2309,10 @@ public static partial class CanvasIntegrationEndpoints
             term.HasValue ? GetJsonDateTimeOffset(term.Value, "end_at") : null,
             enrollmentState,
             accessRestrictedByDate,
-            accessClosed);
+            accessClosed,
+            !string.Equals(workflowState, "unpublished", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(workflowState, "created", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(workflowState, "claimed", StringComparison.OrdinalIgnoreCase));
     }
 
     private static CanvasCoursePersonDto? ParseCanvasCoursePerson(JsonElement person)

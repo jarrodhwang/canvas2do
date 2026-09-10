@@ -1,4 +1,4 @@
-export type WorkspaceView = 'month' | 'agenda' | 'board';
+export type WorkspaceView = 'month' | 'agenda' | 'board' | 'timetable';
 
 export type ColorToken =
   | 'blue'

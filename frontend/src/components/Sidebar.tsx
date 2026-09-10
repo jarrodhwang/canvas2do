@@ -30,6 +30,7 @@ export function Sidebar({ activeItemId, collapsed, mode, onSelectItem, onToggleC
     <Card className="sticky top-[calc(var(--top-bar-height)_+_0.75rem)] hidden h-[calc(100vh_-_var(--top-bar-height)_-_1.5rem)] min-h-0 w-full min-w-0 self-start overflow-hidden rounded-xl bg-card shadow-none lg:flex lg:flex-col lg:self-start">
       <CardHeader className={cn('px-3', collapsed && 'px-2')}>
         <Button
+          aria-expanded={!collapsed}
           aria-label={collapsed ? dictionary.sidebarExpand : dictionary.sidebarCollapse}
           className={cn(
             'h-10 w-full min-w-0 justify-start gap-2 rounded-lg px-2 text-base font-black',

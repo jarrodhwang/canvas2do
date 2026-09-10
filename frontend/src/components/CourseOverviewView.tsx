@@ -19,6 +19,9 @@ import {
   Megaphone,
   MoreHorizontal,
   Palette,
+  PanelLeftClose,
+  PanelLeftOpen,
+  RotateCcw,
   Star,
   Trash2,
   Users,
@@ -28,6 +31,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEven
 
 import { canvasToDoApi } from '../api/canvasToDoApi';
 import { isCanvasConnectionError } from '../lib/canvasOnboarding';
+import { isCanvasCoursePublished, shouldConvertCanvasCourseToManual } from '../lib/canvasCourseMigration';
 import { CanvasNoticeDialog } from './CanvasNoticeDialog';
 import type {
   AcademyPreferences,
@@ -55,6 +59,7 @@ import {
 } from '../lib/gradeProgress';
 import { compareSemestersNewestFirst } from '../lib/semesterSort';
 import { cn } from '../lib/utils';
+import { usePersistentBoolean } from '../lib/usePersistentBoolean';
 import type { ColorToken } from '../modes/types';
 import { ManualGradeEditor } from './ManualGradeEditor';
 import {
@@ -128,6 +133,7 @@ interface CanvasLecturePreference {
   friendlyName?: string;
   hidden?: boolean;
   htmlUrl?: string;
+  isPublished?: boolean;
   labSection?: string;
   lastSeenAt?: string;
   lectureSection?: string;
@@ -159,8 +165,10 @@ interface CourseOverviewRow {
   notificationCount: number;
   color: ColorToken;
   hidden: boolean;
+  isPublished?: boolean;
   semester: string;
   source: 'canvas' | 'manual';
+  deleted?: boolean;
   starred: boolean;
   status: string;
   htmlUrl?: string;
@@ -172,6 +180,7 @@ type CourseDetailSection = 'home' | 'modules' | 'announcements' | 'syllabus' | '
 
 interface CourseNavigationItem {
   id: string;
+  isSavedLink?: boolean;
   label: string;
   section: CourseDetailSection;
   htmlUrl?: string;
@@ -410,6 +419,7 @@ function getCanvasCourseSnapshot(
     currentGrade: course.currentGrade,
     currentScore: course.currentScore,
     htmlUrl: course.htmlUrl,
+    isPublished: isCanvasCoursePublished(course),
     lastSeenAt: preference?.lastSeenAt ?? new Date().toISOString(),
     originalCourseCode,
     semester,
@@ -611,6 +621,7 @@ function createCanvasRows(
       notificationCount: notificationCounts[courseId] ?? 0,
       color: preference.chipColor ?? defaultCourseChipColor,
       hidden: restoreAccessibleConversion ? false : Boolean(preference.hidden),
+      isPublished: isCanvasCoursePublished(course),
       semester,
       source: 'canvas',
       starred: Boolean(preference.starred),
@@ -638,6 +649,28 @@ function createManualRows(lectures: ManualLecture[]): CourseOverviewRow[] {
     notificationCount: 0,
     color: lecture.chipColor ?? defaultCourseChipColor,
     hidden: Boolean(lecture.hidden),
+    semester: normalizeSemesterName(lecture.semester),
+    source: 'manual',
+    starred: Boolean(lecture.starred),
+    status: '',
+    manualLecture: lecture,
+  }));
+}
+
+function createDeletedManualRows(lectures: ManualLecture[]): CourseOverviewRow[] {
+  return lectures.filter((lecture) => lecture.deleted).map((lecture) => ({
+    id: `manual:${lecture.id}`,
+    name: lecture.friendlyName?.trim() || lecture.name,
+    courseCode: lecture.friendlyCourseCode?.trim() || lecture.code,
+    credits: lecture.credits?.trim() || '',
+    lectureSection: formatSection(lecture.lectureSection || getManualSection(lecture, 'lecture')),
+    labSection: formatSection(lecture.labSection || getManualSection(lecture, 'lab')),
+    tutorialSection: formatSection(lecture.tutorialSection || getManualSection(lecture, 'tutorial')),
+    grade: '--',
+    notificationCount: 0,
+    color: lecture.chipColor ?? defaultCourseChipColor,
+    deleted: true,
+    hidden: true,
     semester: normalizeSemesterName(lecture.semester),
     source: 'manual',
     starred: Boolean(lecture.starred),
@@ -676,6 +709,7 @@ function createStoredCanvasRows(
       notificationCount: 0,
       color: preference.chipColor ?? defaultCourseChipColor,
       hidden: Boolean(preference.hidden),
+      isPublished: preference.isPublished,
       semester: normalizeSemesterName(preference.semester ?? preference.termName),
       source: 'canvas' as const,
       starred: Boolean(preference.starred),
@@ -821,13 +855,16 @@ function getCourseDetailItems(
   row: CourseOverviewRow,
   dictionary: ReturnType<typeof useLanguage>['dictionary'],
 ) {
+  const status = row.isPublished === false
+    ? dictionary.courseOverviewNotPublished
+    : row.status;
   const detailItems = [
     row.lectureSection ? [dictionary.courseOverviewLecture, row.lectureSection] : null,
     row.labSection ? [dictionary.courseOverviewLab, row.labSection] : null,
     row.tutorialSection ? [dictionary.courseOverviewTutorial, row.tutorialSection] : null,
     row.credits ? [dictionary.courseOverviewCredits, row.credits] : null,
     row.grade !== '--' ? [dictionary.courseOverviewGrade, row.grade] : null,
-    row.status ? [dictionary.courseOverviewStatus, row.status] : null,
+    status ? [dictionary.courseOverviewStatus, status] : null,
   ].filter(Boolean) as string[][];
 
   if (detailItems.length > 0) {
@@ -1522,6 +1559,42 @@ function getIntegratedResourceFromModuleItem(
   });
 }
 
+function appendSavedCourseLinks(
+  items: CourseNavigationItem[],
+  links: ManualLecture['links'],
+  canvasBaseUrl?: string,
+) {
+  const normalizeNavigationUrl = (url?: string) => (
+    getIntegratedCourseResourceFromLink(url, { baseUrl: canvasBaseUrl })?.url
+  );
+  const existingUrls = new Set([
+    normalizeNavigationUrl(canvasBaseUrl),
+    ...items.map((item) => normalizeNavigationUrl(item.htmlUrl)),
+  ].filter((url): url is string => Boolean(url)));
+  const savedLinkItems = links.flatMap((link, index) => {
+    const resource = getIntegratedCourseResourceFromLink(link.url, {
+      baseUrl: canvasBaseUrl,
+      label: link.label,
+    });
+
+    if (!resource || !/^https?:\/\//i.test(resource.url) || existingUrls.has(resource.url)) {
+      return [];
+    }
+
+    existingUrls.add(resource.url);
+
+    return [{
+      id: `saved-link:${link.id}:${index}`,
+      isSavedLink: true,
+      label: link.label.trim() || `Link ${index + 1}`,
+      section: 'external' as const,
+      htmlUrl: resource.url,
+    }];
+  });
+
+  return [...items, ...savedLinkItems];
+}
+
 function getCanvasNavigationItems(
   content: CanvasCourseContent | null,
   dictionary: ReturnType<typeof useLanguage>['dictionary'],
@@ -1539,39 +1612,8 @@ function getCanvasNavigationItems(
     { id: 'grades', label: dictionary.courseDetailGrades, section: 'grades' },
   ];
 
-  const appendSavedLinks = (items: CourseNavigationItem[]) => {
-    const normalizeNavigationUrl = (url?: string) => (
-      getIntegratedCourseResourceFromLink(url, { baseUrl: canvasBaseUrl })?.url
-    );
-    const existingUrls = new Set([
-      normalizeNavigationUrl(canvasBaseUrl),
-      ...items.map((item) => normalizeNavigationUrl(item.htmlUrl)),
-    ].filter((url): url is string => Boolean(url)));
-    const savedLinkItems = links.flatMap((link, index) => {
-      const resource = getIntegratedCourseResourceFromLink(link.url, {
-        baseUrl: canvasBaseUrl,
-        label: link.label,
-      });
-
-      if (!resource || !/^https?:\/\//i.test(resource.url) || existingUrls.has(resource.url)) {
-        return [];
-      }
-
-      existingUrls.add(resource.url);
-
-      return [{
-        id: `saved-link:${link.id}:${index}`,
-        label: link.label.trim() || `Link ${index + 1}`,
-        section: 'external' as const,
-        htmlUrl: resource.url,
-      }];
-    });
-
-    return [...items, ...savedLinkItems];
-  };
-
   if (!content || content.tabs.length === 0) {
-    return appendSavedLinks(fallbackItems);
+    return appendSavedCourseLinks(fallbackItems, links, canvasBaseUrl);
   }
 
   const items = content.tabs
@@ -1595,9 +1637,25 @@ function getCanvasNavigationItems(
       : null,
   ].filter(Boolean) as CourseNavigationItem[];
 
-  return appendSavedLinks(hasHome
-    ? enrichedItems
-    : [{ id: 'home', label: dictionary.courseDetailHome, section: 'home' }, ...enrichedItems]);
+  return appendSavedCourseLinks(
+    hasHome
+      ? enrichedItems
+      : [{ id: 'home', label: dictionary.courseDetailHome, section: 'home' }, ...enrichedItems],
+    links,
+    canvasBaseUrl,
+  );
+}
+
+function getUnpublishedCanvasNavigationItems(
+  dictionary: ReturnType<typeof useLanguage>['dictionary'],
+  links: ManualLecture['links'] = [],
+  canvasBaseUrl?: string,
+) {
+  const savedLinks = appendSavedCourseLinks([], links, canvasBaseUrl);
+
+  return savedLinks.length > 0
+    ? savedLinks
+    : [{ id: 'links', label: dictionary.courseDetailLinks, section: 'links' as const }];
 }
 
 function getManualNavigationItems(dictionary: ReturnType<typeof useLanguage>['dictionary']): CourseNavigationItem[] {
@@ -1682,19 +1740,27 @@ function CourseDetailView({
 }) {
   const { language } = useLanguage();
   const [phoneScreen, setPhoneScreen] = useState<'menu' | 'content'>(initialResourceUrl ? 'content' : 'menu');
+  const [isCourseSidebarCollapsed, setIsCourseSidebarCollapsed] = usePersistentBoolean('canvas-todo.course-sidebar-collapsed', false);
+  const CourseSidebarToggleIcon = isCourseSidebarCollapsed ? PanelLeftOpen : PanelLeftClose;
   const phoneScreenRef = useRef<HTMLDivElement>(null);
+  const isUnpublishedCanvasCourse = row.source === 'canvas' && row.isPublished === false;
   const navigationItems = row.source === 'canvas'
-    ? getCanvasNavigationItems(content, dictionary, row.links, content?.course.htmlUrl ?? row.htmlUrl)
+    ? isUnpublishedCanvasCourse
+      ? getUnpublishedCanvasNavigationItems(dictionary, row.links, row.htmlUrl)
+      : getCanvasNavigationItems(content, dictionary, row.links, content?.course.htmlUrl ?? row.htmlUrl)
     : getManualNavigationItems(dictionary);
   const activeSection = activeItem.section;
   const detailItems = getCourseDetailItems(row, dictionary);
   const enabledAssessments = row.manualLecture?.assessments.filter((assessment) => assessment.enabled) ?? [];
   const scheduleEntries = getScheduleEntriesFromSchedule(row.manualLecture?.schedule);
-  const links = row.manualLecture?.links ?? [];
+  const storedLinks = row.manualLecture?.links ?? row.links ?? [];
+  const links = isUnpublishedCanvasCourse
+    ? storedLinks.filter((link) => link.url.trim() !== row.htmlUrl?.trim())
+    : storedLinks;
   const manualLectureWebsiteUrl = normalizeEmbedUrl(getManualLectureLinkUrl(links, 'lecture-website'));
   const manualSubmissionUrl = normalizeEmbedUrl(getManualLectureLinkUrl(links, 'submission-link'));
-  const isCanvasLoading = row.source === 'canvas' && contentLoadStatus === 'loading';
-  const isCanvasFailed = row.source === 'canvas' && contentLoadStatus === 'failed';
+  const isCanvasLoading = row.source === 'canvas' && !isUnpublishedCanvasCourse && contentLoadStatus === 'loading';
+  const isCanvasFailed = row.source === 'canvas' && !isUnpublishedCanvasCourse && contentLoadStatus === 'failed';
   const canvasBaseUrl = content?.course.htmlUrl ?? row.htmlUrl;
   const [activeIntegratedResource, setActiveIntegratedResource] = useState<IntegratedCourseResource | null>(null);
   const [integratedCanvasPage, setIntegratedCanvasPage] = useState<CanvasCoursePage | null>(null);
@@ -3228,11 +3294,15 @@ function CourseDetailView({
     if (activeSection === 'external') {
       return activeItem.htmlUrl ? (
         <div className="rounded-lg border bg-background p-4">
-          <p className="text-sm font-medium text-muted-foreground">{dictionary.courseDetailExternalDescription}</p>
+          <p className="text-sm font-medium text-muted-foreground">
+            {activeItem.isSavedLink
+              ? dictionary.courseDetailSavedLinkDescription
+              : dictionary.courseDetailExternalDescription}
+          </p>
           <Button asChild className="mt-3" variant="outline">
             <a href={activeItem.htmlUrl} rel="noreferrer" target="_blank">
               <ExternalLink className="size-4" />
-              {dictionary.courseOverviewOpenCanvas}
+              {activeItem.isSavedLink ? dictionary.courseDetailOpenLink : dictionary.courseOverviewOpenCanvas}
             </a>
           </Button>
         </div>
@@ -3260,7 +3330,7 @@ function CourseDetailView({
     integratedDiscussion?.htmlUrl ??
     integratedFile?.htmlUrl ??
     activeIntegratedResource?.url ??
-    (activeManualUrl || row.htmlUrl);
+    (activeManualUrl || (isUnpublishedCanvasCourse ? undefined : row.htmlUrl));
   const canGoBackInIntegratedContent = integratedHistoryIndex > 0;
   const canGoForwardInIntegratedContent = integratedHistoryIndex >= 0 && integratedHistoryIndex < integratedHistory.length - 1;
   const handleIntegratedContentAuxClick = (event: MouseEvent<HTMLDivElement>) => {
@@ -3276,14 +3346,29 @@ function CourseDetailView({
   };
 
   return (
-    <div ref={phoneScreenRef} tabIndex={isPhone ? -1 : undefined} className="grid h-full min-h-0 gap-3 overflow-hidden outline-none lg:grid-cols-[220px_minmax(0,1fr)] max-[520px]:h-auto max-[520px]:overflow-visible max-[520px]:scroll-mt-[calc(var(--top-bar-height)+0.5rem)]">
+    <div ref={phoneScreenRef} tabIndex={isPhone ? -1 : undefined} className={cn(
+      'grid h-full min-h-0 gap-3 overflow-hidden outline-none max-[520px]:h-auto max-[520px]:overflow-visible max-[520px]:scroll-mt-[calc(var(--top-bar-height)+0.5rem)]',
+      isCourseSidebarCollapsed ? 'lg:grid-cols-[64px_minmax(0,1fr)]' : 'lg:grid-cols-[220px_minmax(0,1fr)]',
+    )}>
       {!isPhone || phoneScreen === 'menu' ? (
       <aside className="rounded-xl border bg-card p-3 lg:sticky lg:top-0 lg:h-full lg:min-h-0 lg:self-start lg:overflow-y-auto max-[520px]:border-0 max-[520px]:bg-transparent max-[520px]:p-0">
-        <Button className="mb-3 h-8 w-full justify-start rounded-md max-[520px]:h-11" onClick={onBack} size="sm" variant="ghost">
-          <ArrowLeft className="size-4" />
-          {dictionary.courseDetailBack}
+        <Button
+          aria-expanded={!isCourseSidebarCollapsed}
+          aria-label={isCourseSidebarCollapsed ? dictionary.sidebarExpand : dictionary.sidebarCollapse}
+          className={cn('mb-2 hidden h-8 w-full rounded-md lg:flex', isCourseSidebarCollapsed && 'px-0')}
+          onClick={() => setIsCourseSidebarCollapsed((current) => !current)}
+          title={isCourseSidebarCollapsed ? dictionary.sidebarExpand : dictionary.sidebarCollapse}
+          size="sm"
+          variant="ghost"
+        >
+          <CourseSidebarToggleIcon className="size-4 shrink-0" />
+          <span className={cn(isCourseSidebarCollapsed && 'sr-only')}>{dictionary.sidebarCollapse}</span>
         </Button>
-        <div className="mb-3 min-w-0 px-1">
+        <Button aria-label={dictionary.courseDetailBack} title={dictionary.courseDetailBack} className={cn('mb-3 h-8 w-full justify-start rounded-md max-[520px]:h-11', isCourseSidebarCollapsed && 'lg:justify-center lg:px-0')} onClick={onBack} size="sm" variant="ghost">
+          <ArrowLeft className="size-4 shrink-0" />
+          <span className={cn(isCourseSidebarCollapsed && 'lg:sr-only')}>{dictionary.courseDetailBack}</span>
+        </Button>
+        <div className={cn('mb-3 min-w-0 px-1', isCourseSidebarCollapsed && 'lg:hidden')}>
           <div
             className={cn(
               'mb-2 inline-flex max-w-full items-center rounded-md border px-2 py-1 text-xs font-semibold',
@@ -3292,10 +3377,15 @@ function CourseDetailView({
           >
             <span className="truncate">{row.courseCode}</span>
           </div>
+          {isUnpublishedCanvasCourse ? (
+            <Badge className="mb-2 rounded-md" variant="secondary">
+              {dictionary.courseOverviewNotPublished}
+            </Badge>
+          ) : null}
           <h2 className="line-clamp-2 text-sm font-semibold text-foreground">{row.name}</h2>
         </div>
         {isCanvasLoading ? (
-          <CanvasLoadingBanner className="mb-3" label={dictionary.courseDetailLoading} size="compact" />
+          <CanvasLoadingBanner className={cn('mb-3', isCourseSidebarCollapsed && 'lg:sr-only')} label={dictionary.courseDetailLoading} size="compact" />
         ) : null}
         <nav className="space-y-1">
           {navigationItems.map((item) => {
@@ -3307,19 +3397,27 @@ function CourseDetailView({
                 className={cn(
                   'flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground',
                   isActive && !isPhone && 'bg-muted text-foreground',
+                  isCourseSidebarCollapsed && 'lg:justify-center lg:px-0',
                   'max-[520px]:min-h-12 max-[520px]:rounded-xl max-[520px]:border max-[520px]:bg-background max-[520px]:px-3 max-[520px]:text-foreground',
                 )}
                 key={item.id}
+                title={item.label}
                 onClick={() => {
                   resetIntegratedResource();
                   onSelectItem(item);
                   setPhoneScreen('content');
                   if (item.section === 'external' && item.htmlUrl) {
-                    const integratedResource = getIntegratedCourseResourceFromLink(item.htmlUrl, {
-                      baseUrl: canvasBaseUrl,
-                      courseId: row.canvasCourseId,
-                      label: item.label,
-                    });
+                    const integratedResource = isUnpublishedCanvasCourse && item.isSavedLink
+                      ? {
+                          kind: 'external' as const,
+                          title: item.label,
+                          url: item.htmlUrl,
+                        }
+                      : getIntegratedCourseResourceFromLink(item.htmlUrl, {
+                          baseUrl: canvasBaseUrl,
+                          courseId: row.canvasCourseId,
+                          label: item.label,
+                        });
 
                     if (integratedResource) {
                       setIntegratedHistory([integratedResource]);
@@ -3331,7 +3429,7 @@ function CourseDetailView({
                 type="button"
               >
                 <Icon className="size-4 shrink-0" />
-                <span className="truncate">{item.label}</span>
+                <span className={cn('truncate', isCourseSidebarCollapsed && 'lg:sr-only')}>{item.label}</span>
                 {isPhone ? <ChevronRight aria-hidden="true" className="ml-auto size-4 shrink-0 text-muted-foreground" /> : null}
               </button>
             );
@@ -3377,6 +3475,11 @@ function CourseDetailView({
               <Badge className="rounded-md" variant="outline">
                 {row.source === 'canvas' ? dictionary.courseOverviewCanvas : dictionary.courseOverviewManual}
               </Badge>
+              {isUnpublishedCanvasCourse ? (
+                <Badge className="rounded-md" variant="secondary">
+                  {dictionary.courseOverviewNotPublished}
+                </Badge>
+              ) : null}
               <Badge className="rounded-md" variant="secondary">{row.semester}</Badge>
             </div>
             <h1 className="truncate text-xl font-semibold text-foreground">{activeTitle}</h1>
@@ -3451,6 +3554,7 @@ export function CourseOverviewView({
 } = {}) {
   const { dictionary } = useLanguage();
   const [canvasCourses, setCanvasCourses] = useState<CanvasCourse[]>([]);
+  const [canvasCourseListIsComplete, setCanvasCourseListIsComplete] = useState(false);
   const [canvasLecturePreferences, setCanvasLecturePreferences] = useState<CanvasLecturePreferences>(() => getStoredCanvasLecturePreferences());
   const [courseLoadStatus, setCourseLoadStatus] = useState<LoadStatus>('idle');
   const [connectionWarning, setConnectionWarning] = useState('');
@@ -3468,6 +3572,8 @@ export function CourseOverviewView({
   const [selectedManualLectureId, setSelectedManualLectureId] = useState<string | null>(null);
   const [selectedCanvasCourseId, setSelectedCanvasCourseId] = useState<string | null>(null);
   const [coursePendingDelete, setCoursePendingDelete] = useState<CourseOverviewRow | null>(null);
+  const [coursePendingPermanentDelete, setCoursePendingPermanentDelete] = useState<CourseOverviewRow | null>(null);
+  const [showDeletedManualCourses, setShowDeletedManualCourses] = useState(false);
   const [activeCourseItem, setActiveCourseItem] = useState<CourseNavigationItem | null>(null);
   const [canvasCourseContent, setCanvasCourseContent] = useState<CanvasCourseContent | null>(null);
   const [canvasCourseContentStatus, setCanvasCourseContentStatus] = useState<LoadStatus>('idle');
@@ -3613,12 +3719,13 @@ export function CourseOverviewView({
 
     const canvasCoursesTask = canvasToDoApi
       .getCanvasCourses(100)
-      .then(({ courses }) => {
+      .then(({ courses, isComplete }) => {
         if (isCancelled) {
           return [];
         }
 
         setCanvasCourses(courses);
+        setCanvasCourseListIsComplete(isComplete === true);
         setCourseLoadStatus('loaded');
         return courses;
       })
@@ -3629,6 +3736,7 @@ export function CourseOverviewView({
 
         if (isCanvasConnectionError(error)) setConnectionWarning(error.message);
         setCanvasCourses([]);
+        setCanvasCourseListIsComplete(false);
         setCourseLoadStatus('failed');
         return [];
       });
@@ -3701,61 +3809,95 @@ export function CourseOverviewView({
       .catch(() => undefined);
   };
 
-  const saveCanvasLectureSnapshotPreferences = (
-    nextCanvasLecturePreferences: CanvasLecturePreferences,
-  ) => {
-    const calendarSettings = { selectedSemester: normalizeSemesterName(selectedSemester) };
-
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent(academyPreferencesUpdatedEvent, {
-        detail: {
-          calendarSettings,
-          canvasLecturePreferences: nextCanvasLecturePreferences,
-        },
-      }));
-    }
-
-    void canvasToDoApi
-      .saveAcademyPreferences({
-        canvasLecturePreferences: nextCanvasLecturePreferences,
-        calendarSettings,
-      })
-      .catch(() => undefined);
-  };
-
   useEffect(() => {
-    if (!hasLoadedAcademyPreferences || canvasCourses.length === 0) {
+    if (!hasLoadedAcademyPreferences || courseLoadStatus !== 'loaded') {
       return;
     }
 
-    setCanvasLecturePreferences((currentPreferences) => {
-      let changed = false;
-      const nextPreferences = { ...currentPreferences };
-      const fallbackSemester = normalizeSemesterName(selectedSemester);
+    const courseById = new Map(canvasCourses.map((course) => [String(course.id ?? ''), course]));
+    const now = Date.now();
+    const nowIso = new Date(now).toISOString();
+    const fallbackSemester = normalizeSemesterName(selectedSemester);
+    const nextCanvasLecturePreferences = { ...canvasLecturePreferences };
+    const nextManualLectures = [...manualLectures];
+    let changed = false;
 
-      canvasCourses.forEach((course) => {
-        const courseId = String(course.id ?? '');
-        const preference = currentPreferences[courseId] ?? {};
-        const { changed: preferenceChanged, nextPreference } = mergeDefinedSnapshot(
-          preference,
-          getCanvasCourseSnapshot(course, preference, fallbackSemester),
-        );
+    canvasCourses.forEach((course) => {
+      const courseId = String(course.id ?? '');
+      const preference = nextCanvasLecturePreferences[courseId] ?? {};
+      const { changed: preferenceChanged, nextPreference } = mergeDefinedSnapshot(
+        preference,
+        getCanvasCourseSnapshot(course, preference, fallbackSemester),
+      );
 
-        if (preferenceChanged) {
-          nextPreferences[courseId] = nextPreference;
-          changed = true;
-        }
-      });
+      if (preferenceChanged) {
+        nextCanvasLecturePreferences[courseId] = nextPreference;
+        changed = true;
+      }
+    });
 
-      if (!changed) {
-        return currentPreferences;
+    Object.entries(nextCanvasLecturePreferences).forEach(([courseId, preference]) => {
+      if (
+        preference.archivedAsManualLectureId ||
+        preference.convertedToManualAt ||
+        preference.deleted ||
+        !shouldConvertCanvasCourseToManual(courseById.get(courseId), now, {
+          courseListIsComplete: canvasCourseListIsComplete,
+          wasPreviouslySeen: Boolean(preference.lastSeenAt),
+        })
+      ) {
+        return;
       }
 
-      saveCanvasLectureSnapshotPreferences(nextPreferences);
+      const editableLecture = createCanvasEditableLecture(
+        courseId,
+        courseById.get(courseId),
+        preference,
+        fallbackSemester,
+      );
 
-      return nextPreferences;
+      if (!editableLecture) {
+        return;
+      }
+
+      const manualLectureId = `manual-canvas-${courseId}`;
+
+      if (!nextManualLectures.some((lecture) => lecture.id === manualLectureId)) {
+        nextManualLectures.push({
+          ...editableLecture,
+          id: manualLectureId,
+          canvasGradeSummary: {
+            grade: preference.currentGrade,
+            score: preference.currentScore,
+          },
+        });
+      }
+
+      nextCanvasLecturePreferences[courseId] = {
+        ...preference,
+        convertedToManualAt: nowIso,
+        deleted: true,
+        hidden: true,
+      };
+      changed = true;
     });
-  }, [canvasCourses, hasLoadedAcademyPreferences, selectedSemester]);
+
+    if (!changed) {
+      return;
+    }
+
+    setManualLectures(nextManualLectures);
+    setCanvasLecturePreferences(nextCanvasLecturePreferences);
+    saveCoursePreferences(nextManualLectures, nextCanvasLecturePreferences);
+  }, [
+    canvasCourseListIsComplete,
+    canvasCourses,
+    canvasLecturePreferences,
+    courseLoadStatus,
+    hasLoadedAcademyPreferences,
+    manualLectures,
+    selectedSemester,
+  ]);
 
   const allRows = useMemo(
     () => (
@@ -3797,6 +3939,10 @@ export function CourseOverviewView({
   const rows = useMemo(
     () => allRows.filter((row) => normalizeSemesterName(row.semester) === normalizeSemesterName(selectedSemester)),
     [allRows, selectedSemester],
+  );
+  const deletedManualRows = useMemo(
+    () => createDeletedManualRows(manualLectures).sort(sortRows),
+    [manualLectures],
   );
   const selectedCourseRow = selectedCourseRowId
     ? allRows.find((row) => row.id === selectedCourseRowId)
@@ -3931,7 +4077,9 @@ export function CourseOverviewView({
     setManualLectures(nextManualLectures);
     saveCoursePreferences(nextManualLectures, canvasLecturePreferences);
   };
-  const canDeleteCourse = (row: CourseOverviewRow) => normalizeSemesterName(row.semester) === noTermSemester;
+  const canDeleteCourse = (row: CourseOverviewRow) => (
+    row.source === 'manual' || normalizeSemesterName(row.semester) === noTermSemester
+  );
   const handleDeleteCourse = (row: CourseOverviewRow) => {
     if (!canDeleteCourse(row)) {
       return;
@@ -3973,6 +4121,31 @@ export function CourseOverviewView({
     }
     setSelectedManualLectureId(null);
     setCoursePendingDelete(null);
+  };
+  const handleRestoreManualCourse = (row: CourseOverviewRow) => {
+    if (!row.manualLecture?.id) {
+      return;
+    }
+
+    const nextManualLectures = manualLectures.map((lecture) => (
+      lecture.id === row.manualLecture?.id
+        ? { ...lecture, deleted: false, hidden: false }
+        : lecture
+    ));
+
+    setManualLectures(nextManualLectures);
+    saveCoursePreferences(nextManualLectures, canvasLecturePreferences);
+  };
+  const handlePermanentlyDeleteManualCourse = (row: CourseOverviewRow) => {
+    if (!row.manualLecture?.id) {
+      return;
+    }
+
+    const nextManualLectures = manualLectures.filter((lecture) => lecture.id !== row.manualLecture?.id);
+
+    setManualLectures(nextManualLectures);
+    saveCoursePreferences(nextManualLectures, canvasLecturePreferences);
+    setCoursePendingPermanentDelete(null);
   };
   const handleToggleCourseStar = (row: CourseOverviewRow) => {
     if (row.source === 'canvas') {
@@ -4346,8 +4519,9 @@ export function CourseOverviewView({
         setCourseLoadStatus('loading');
         void canvasToDoApi
           .getCanvasCourses(100)
-          .then(({ courses }) => {
+          .then(({ courses, isComplete }) => {
             setCanvasCourses(courses);
+            setCanvasCourseListIsComplete(isComplete === true);
             setCourseLoadStatus('loaded');
 
             return canvasToDoApi.getCanvasCalendarItems({
@@ -4362,6 +4536,7 @@ export function CourseOverviewView({
           })
           .catch(() => {
             setCanvasCourses([]);
+            setCanvasCourseListIsComplete(false);
             setNotificationCounts({});
             setCourseLoadStatus('failed');
           });
@@ -4464,7 +4639,11 @@ export function CourseOverviewView({
   useEffect(() => {
     const requestedSection = getCanvasContentSectionForCourseDetail(activeCourseItem?.section ?? 'home');
 
-    if (!selectedCourseRow?.canvasCourseId || !requestedSection) {
+    if (
+      !selectedCourseRow?.canvasCourseId ||
+      selectedCourseRow.isPublished === false ||
+      !requestedSection
+    ) {
       return undefined;
     }
 
@@ -4509,7 +4688,12 @@ export function CourseOverviewView({
     return () => {
       canvasCourseContentRequestRef.current += 1;
     };
-  }, [activeCourseItem?.section, loadedCanvasCourseContentSections, selectedCourseRow?.canvasCourseId]);
+  }, [
+    activeCourseItem?.section,
+    loadedCanvasCourseContentSections,
+    selectedCourseRow?.canvasCourseId,
+    selectedCourseRow?.isPublished,
+  ]);
 
   useEffect(() => {
     if (!selectedCourseRow) {
@@ -4518,12 +4702,18 @@ export function CourseOverviewView({
     }
 
     const navigationItems = selectedCourseRow.source === 'canvas'
-      ? getCanvasNavigationItems(
-          canvasCourseContent,
-          dictionary,
-          selectedCourseRow.links,
-          canvasCourseContent?.course.htmlUrl ?? selectedCourseRow.htmlUrl,
-        )
+      ? selectedCourseRow.isPublished === false
+        ? getUnpublishedCanvasNavigationItems(
+            dictionary,
+            selectedCourseRow.links,
+            selectedCourseRow.htmlUrl,
+          )
+        : getCanvasNavigationItems(
+            canvasCourseContent,
+            dictionary,
+            selectedCourseRow.links,
+            canvasCourseContent?.course.htmlUrl ?? selectedCourseRow.htmlUrl,
+          )
       : getManualNavigationItems(dictionary);
     const nextActiveItem = activeCourseItem && navigationItems.some((item) => item.id === activeCourseItem.id)
       ? activeCourseItem
@@ -4581,6 +4771,19 @@ export function CourseOverviewView({
           {dictionary.courseOverviewSubtitle}
         </CardDescription>
         <CardAction className="flex flex-wrap items-center justify-end gap-2 max-[520px]:col-start-2 max-[520px]:row-span-1 max-[520px]:row-start-1 max-[520px]:gap-1.5">
+          {deletedManualRows.length > 0 ? (
+            <Button
+              aria-expanded={showDeletedManualCourses}
+              className="h-8 gap-1.5 rounded-md px-2.5 text-xs max-[520px]:h-11"
+              onClick={() => setShowDeletedManualCourses((current) => !current)}
+              type="button"
+              variant={showDeletedManualCourses ? 'secondary' : 'outline'}
+            >
+              <Trash2 aria-hidden="true" className="size-3.5" />
+              <span>{dictionary.courseOverviewTrash}</span>
+              <span>({deletedManualRows.length})</span>
+            </Button>
+          ) : null}
           <Select onValueChange={handleSelectSemester} value={normalizeSemesterName(selectedSemester)}>
             <SelectTrigger aria-label={dictionary.courseOverviewSemester} className="h-8 w-[150px] rounded-md text-xs font-semibold max-[520px]:h-11 max-[520px]:w-[138px] max-[520px]:text-xs">
               <SelectValue aria-label={dictionary.courseOverviewSemester} />
@@ -4658,6 +4861,11 @@ export function CourseOverviewView({
                         <Badge className="h-5 rounded-md px-1.5 text-[10px] uppercase max-[520px]:hidden" variant="outline">
                           {row.source === 'canvas' ? dictionary.courseOverviewCanvas : dictionary.courseOverviewManual}
                         </Badge>
+                        {row.isPublished === false ? (
+                          <Badge className="h-5 rounded-md px-1.5 text-[10px] uppercase" variant="secondary">
+                            {dictionary.courseOverviewNotPublished}
+                          </Badge>
+                        ) : null}
                         <Badge className="h-5 rounded-md px-1.5 text-[10px] max-[520px]:hidden" variant="secondary">
                           {row.semester}
                         </Badge>
@@ -4731,6 +4939,45 @@ export function CourseOverviewView({
                 </ContextMenu>
               );
             })}
+            {showDeletedManualCourses && deletedManualRows.length > 0 ? (
+              <section className="mt-5 space-y-2 border-t pt-4" aria-label={dictionary.courseOverviewTrash}>
+                <div>
+                  <h3 className="text-sm font-semibold text-foreground">{dictionary.courseOverviewTrash}</h3>
+                  <p className="text-xs text-muted-foreground">{dictionary.courseOverviewTrashDescription}</p>
+                </div>
+                {deletedManualRows.map((row) => (
+                  <article
+                    className="flex min-w-0 items-center gap-3 rounded-lg border border-dashed bg-muted/20 px-3 py-3"
+                    key={`deleted-${row.id}`}
+                  >
+                    <span className={cn('size-2.5 shrink-0 rounded-full opacity-60', dotColorClasses[row.color])} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex min-w-0 flex-wrap items-center gap-2">
+                        <span className="truncate text-sm font-semibold text-foreground">{row.courseCode}</span>
+                        <Badge className="h-5 rounded-md px-1.5 text-[10px]" variant="secondary">{row.semester}</Badge>
+                      </div>
+                      <p className="truncate text-xs text-muted-foreground">{row.name}</p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <Button className="gap-1.5" onClick={() => handleRestoreManualCourse(row)} size="sm" type="button" variant="outline">
+                        <RotateCcw aria-hidden="true" className="size-3.5" />
+                        <span className="max-[520px]:sr-only">{dictionary.courseOverviewRestore}</span>
+                      </Button>
+                      <Button
+                        aria-label={dictionary.courseOverviewDeletePermanently}
+                        onClick={() => setCoursePendingPermanentDelete(row)}
+                        size="icon-sm"
+                        title={dictionary.courseOverviewDeletePermanently}
+                        type="button"
+                        variant="destructive"
+                      >
+                        <Trash2 aria-hidden="true" className="size-4" />
+                      </Button>
+                    </div>
+                  </article>
+                ))}
+              </section>
+            ) : null}
           </div>
         ) : null}
       </CardContent>
@@ -4795,7 +5042,9 @@ export function CourseOverviewView({
         <DialogHeader>
           <DialogTitle>{dictionary.manualLectureDeleteTitle}</DialogTitle>
           <DialogDescription>
-            {dictionary.courseOverviewDeleteDefaultTermDescription}
+            {coursePendingDelete?.source === 'manual'
+              ? dictionary.courseOverviewDeleteManualDescription
+              : dictionary.courseOverviewDeleteDefaultTermDescription}
           </DialogDescription>
         </DialogHeader>
         {coursePendingDelete ? (
@@ -4823,6 +5072,44 @@ export function CourseOverviewView({
           >
             <Trash2 className="size-4" />
             {dictionary.manualLectureDelete}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    <Dialog
+      onOpenChange={(isOpen) => {
+        if (!isOpen) {
+          setCoursePendingPermanentDelete(null);
+        }
+      }}
+      open={Boolean(coursePendingPermanentDelete)}
+    >
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{dictionary.courseOverviewDeletePermanentlyTitle}</DialogTitle>
+          <DialogDescription>{dictionary.courseOverviewDeletePermanentlyDescription}</DialogDescription>
+        </DialogHeader>
+        {coursePendingPermanentDelete ? (
+          <div className="rounded-md border border-border bg-muted/30 p-3 text-sm">
+            <p className="font-semibold text-foreground">{coursePendingPermanentDelete.courseCode}</p>
+            <p className="mt-1 text-muted-foreground">{coursePendingPermanentDelete.name}</p>
+          </div>
+        ) : null}
+        <DialogFooter>
+          <Button onClick={() => setCoursePendingPermanentDelete(null)} type="button" variant="outline">
+            {dictionary.cancel}
+          </Button>
+          <Button
+            onClick={() => {
+              if (coursePendingPermanentDelete) {
+                handlePermanentlyDeleteManualCourse(coursePendingPermanentDelete);
+              }
+            }}
+            type="button"
+            variant="destructive"
+          >
+            <Trash2 className="size-4" />
+            {dictionary.courseOverviewDeletePermanently}
           </Button>
         </DialogFooter>
       </DialogContent>

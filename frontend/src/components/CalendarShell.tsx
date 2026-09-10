@@ -1,6 +1,6 @@
 import type { WorkspaceModeMockData } from '../data/mockWorkspaceData';
-import { AlertTriangle, CalendarCheck2, CalendarDays, CalendarRange, ChevronLeft, ChevronRight, ListChecks, LoaderCircle, Maximize2, Minimize2, SlidersHorizontal } from 'lucide-react';
-import { useRef, useState, type WheelEvent } from 'react';
+import { AlertTriangle, CalendarCheck2, CalendarDays, CalendarRange, ChevronLeft, ChevronRight, Clock, ListChecks, LoaderCircle, Maximize2, Minimize2, SlidersHorizontal } from 'lucide-react';
+import { useRef, useState, type ReactNode, type WheelEvent } from 'react';
 import { useLanguage } from '../context/LanguageContext';
 import { formatMonthHeading, getViewLabel, type AcademyNation } from '../i18n';
 import { cn } from '../lib/utils';
@@ -9,6 +9,8 @@ import { AgendaView } from './AgendaView';
 import { BoardView } from './BoardView';
 import type { CalendarProgressDisplay, CalendarProgressThresholds } from './calendarProgress';
 import { FilterPanel } from './FilterPanel';
+import { TimetableView } from './TimetableView';
+import { getTimetableWeek, type TimetableSession } from './timetableLayout';
 import { MonthCalendar } from './MonthCalendar';
 import { Button } from './ui/button';
 import { Card, CardContent, CardHeader } from './ui/card';
@@ -33,11 +35,16 @@ const viewLabels: Record<WorkspaceView, { label: string; icon: string }> = {
   month: { label: 'Month', icon: 'calendar-days' },
   agenda: { label: 'Agenda', icon: 'list-checks' },
   board: { label: 'Board', icon: 'columns-3' },
+  timetable: { label: 'Timetable', icon: 'calendar-range' },
 };
 
 interface CalendarShellProps {
+  isCourseworkOpen?: boolean;
+  onOpenCoursework?: () => void;
+  mobileCourseworkContent?: ReactNode;
   mode: WorkspaceModeConfig;
   data: WorkspaceModeMockData;
+  timetableSessions?: TimetableSession[];
   agendaDateLabel?: string;
   boardColumns?: WorkspaceModeConfig['board']['columns'];
   calendarTodoStyle?: 'comfortable' | 'compact';
@@ -86,8 +93,12 @@ interface CalendarShellProps {
 }
 
 export function CalendarShell({
+  isCourseworkOpen = false,
+  onOpenCoursework,
+  mobileCourseworkContent,
   mode,
   data,
+  timetableSessions = [],
   agendaDateLabel,
   boardColumns,
   calendarTodoStyle = 'compact',
@@ -142,14 +153,17 @@ export function CalendarShell({
   const hasMonthControls = Boolean(onPreviousMonth && onNextMonth);
   const hasMonthControlsForView = view === 'month' && hasMonthControls;
   const hasDayControls = (view === 'agenda' || view === 'board') && Boolean(onPreviousAgendaDay && onNextAgendaDay);
-  const hasWeekControls = isPhone && view === 'month' && mobileCalendarScope === 'week' && Boolean(onPreviousWeek && onNextWeek);
+  const hasWeekControls = (view === 'timetable' || (isPhone && view === 'month' && mobileCalendarScope === 'week')) && Boolean(onPreviousWeek && onNextWeek);
+  const timetableDate = selectedDateIso ?? todayIso ?? `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`;
+  const timetableWeek = getTimetableWeek(timetableDate);
+  const weekLabel = timetableWeek[0].toLocaleDateString(language === 'ko' ? 'ko-KR' : 'en-US', { month: 'short', day: 'numeric' }) + ' – ' + timetableWeek[6].toLocaleDateString(language === 'ko' ? 'ko-KR' : 'en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   const showCalendarLoading = isLoading;
   const previousMonthLabel = language === 'ko' ? '이전 달' : 'Previous month';
   const nextMonthLabel = language === 'ko' ? '다음 달' : 'Next month';
   const previousDayLabel = language === 'ko' ? '이전 날짜' : 'Previous day';
   const nextDayLabel = language === 'ko' ? '다음 날짜' : 'Next day';
   const todayLabel = language === 'ko' ? '오늘' : 'Today';
-  const phoneCalendarScopeLabel = view === 'month'
+  const phoneCalendarScopeLabel = !isCourseworkOpen && view === 'month'
     ? mobileCalendarScope === 'week'
       ? (language === 'ko' ? '월간 보기로 전환' : 'Switch to month view')
       : (language === 'ko' ? '주간 보기로 전환' : 'Switch to week view')
@@ -159,12 +173,16 @@ export function CalendarShell({
   const isPhoneTodayDisabled = isSelectedDateToday && (
     view !== 'month' || data.days.some((day) => !day.outsideMonth && (day.isToday || day.dateIso === todayIso))
   );
-  const headingLabel = hasDayControls && agendaDateLabel
+  const headingLabel = isCourseworkOpen
+    ? { primary: dictionary.courseworkCardSettingsTitle, secondary: '' }
+    : view === 'timetable'
+    ? { primary: weekLabel, secondary: '' }
+    : hasDayControls && agendaDateLabel
     ? { primary: agendaDateLabel, secondary: '' }
     : monthHeading;
   const previousLabel = hasWeekControls ? (language === 'ko' ? '이전 주' : 'Previous week') : hasDayControls ? previousDayLabel : previousMonthLabel;
   const nextLabel = hasWeekControls ? (language === 'ko' ? '다음 주' : 'Next week') : hasDayControls ? nextDayLabel : nextMonthLabel;
-  const showDateControls = hasMonthControlsForView || hasDayControls;
+  const showDateControls = !isCourseworkOpen && (hasMonthControlsForView || hasDayControls || hasWeekControls);
   const handlePreviousPeriod = () => {
     if (hasWeekControls) {
       onPreviousWeek?.();
@@ -271,7 +289,7 @@ export function CalendarShell({
           </span>
         </button>
       ) : null}
-      <CardHeader className="flex flex-row items-start justify-between gap-3 px-3 pb-2 pt-1 max-md:flex-col max-[520px]:flex-row max-[520px]:items-center max-[520px]:gap-1 max-[520px]:px-1 max-[520px]:pb-1 max-[520px]:pt-0">
+      <CardHeader className="flex flex-row items-start justify-between gap-3 px-3 pb-2 pt-1 max-xl:flex-col max-[520px]:flex-row max-[520px]:items-center max-[520px]:gap-1 max-[520px]:px-1 max-[520px]:pb-1 max-[520px]:pt-0">
         <div className="min-w-0 max-[520px]:w-full">
           <div className="flex min-w-0 items-center gap-2 max-[520px]:w-full max-[520px]:justify-between">
             {showDateControls ? (
@@ -286,7 +304,7 @@ export function CalendarShell({
                 <ChevronLeft aria-hidden="true" size={16} strokeWidth={2.4} />
               </Button>
             ) : null}
-            <h2 className="flex min-w-0 items-end gap-2 text-3xl font-black leading-none max-[520px]:order-1 max-[520px]:mr-auto max-[520px]:text-base">
+            <h2 className="flex min-w-0 items-end gap-2 text-2xl font-black leading-none max-[520px]:order-1 max-[520px]:mr-auto max-[520px]:text-base">
               <span className="truncate">{isPhone ? headingLabel.primary.replace(/,$/, '') : headingLabel.primary}</span>
               {headingLabel.secondary ? (
                 <span className="shrink-0 pb-0.5 text-base font-black text-muted-foreground max-[520px]:text-xs">
@@ -306,7 +324,7 @@ export function CalendarShell({
                 <ChevronRight aria-hidden="true" size={16} strokeWidth={2.4} />
               </Button>
             ) : null}
-            {hasDayControls && onToday ? (
+            {(hasDayControls || view === 'timetable') && onToday ? (
               <Button
                 className={cn(
                   'h-8 shrink-0 rounded-md border px-2.5 text-xs font-black disabled:opacity-100 max-[520px]:hidden',
@@ -373,11 +391,11 @@ export function CalendarShell({
           {mode.views.includes('month') ? (
             <Button
               aria-label={phoneCalendarScopeLabel}
-              aria-pressed={view === 'month'}
+              aria-pressed={!isCourseworkOpen && view === 'month'}
               className="size-11 rounded-lg text-muted-foreground aria-pressed:bg-primary/15 aria-pressed:text-primary"
               disabled={!onMobileCalendarScopeChange}
               onClick={() => {
-                if (view === 'month') {
+                if (!isCourseworkOpen && view === 'month') {
                   onMobileCalendarScopeChange?.(mobileCalendarScope === 'week' ? 'month' : 'week');
                 }
                 onViewChange('month');
@@ -389,27 +407,47 @@ export function CalendarShell({
               {mobileCalendarScope === 'week' ? <CalendarRange aria-hidden="true" className="size-5" /> : <CalendarDays aria-hidden="true" className="size-5" />}
             </Button>
           ) : null}
-          {mode.views.includes('agenda') ? (
+          {onOpenCoursework ? (
             <Button
-              aria-label={getViewLabel(language, 'agenda')}
-              aria-pressed={view === 'agenda'}
+              aria-label={dictionary.courseworkCardSettingsTitle}
+              aria-pressed={isCourseworkOpen}
               className="size-11 rounded-lg text-muted-foreground aria-pressed:bg-primary/15 aria-pressed:text-primary"
-              onClick={() => onViewChange('agenda')}
-              title={getViewLabel(language, 'agenda')}
+              onClick={onOpenCoursework}
+              title={dictionary.courseworkCardSettingsTitle}
               type="button"
               variant="ghost"
             >
               <ListChecks aria-hidden="true" className="size-5" />
             </Button>
           ) : null}
+          {mode.views.includes('agenda') ? (
+            <Button
+              aria-label={getViewLabel(language, 'agenda')}
+              aria-pressed={!isCourseworkOpen && view === 'agenda'}
+              className="size-11 rounded-lg text-muted-foreground aria-pressed:bg-primary/15 aria-pressed:text-primary"
+              onClick={() => onViewChange('agenda')}
+              title={getViewLabel(language, 'agenda')}
+              type="button"
+              variant="ghost"
+            >
+              <Clock aria-hidden="true" className="size-5" />
+            </Button>
+          ) : null}
+          {mode.views.includes('timetable') ? (
+            <Button aria-label={getViewLabel(language, 'timetable')} aria-pressed={!isCourseworkOpen && view === 'timetable'}
+              className="size-11 rounded-lg text-muted-foreground aria-pressed:bg-primary/15 aria-pressed:text-primary"
+              onClick={() => onViewChange('timetable')} title={getViewLabel(language, 'timetable')} type="button" variant="ghost">
+              <WorkspaceIcon name="calendar-range" size={20} />
+            </Button>
+          ) : null}
         </div>
         <div className="flex items-center gap-1">
-          {onToday ? (
+          {onToday && !isCourseworkOpen ? (
             <Button aria-label={todayLabel} className="size-11 rounded-lg" disabled={isPhoneTodayDisabled} onClick={onToday} title={todayLabel} type="button" variant="ghost">
               <CalendarCheck2 className="size-5" />
             </Button>
           ) : null}
-          {hasFilters ? (
+          {hasFilters && !isCourseworkOpen ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button aria-label={dictionary.boardCourseMenu} className="relative size-11 rounded-lg" title={dictionary.boardCourseMenu} type="button" variant="ghost">
@@ -425,8 +463,13 @@ export function CalendarShell({
         </div>
       </div>
 
+      {mobileCourseworkContent ? (
+        <div className={cn(!isCourseworkOpen && 'hidden')}>{mobileCourseworkContent}</div>
+      ) : null}
+
       <CardContent
         className={cn(
+          isCourseworkOpen && '!hidden',
           'px-3 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col max-[520px]:px-0',
           fillHeight && 'flex min-h-0 flex-1 flex-col',
         )}
@@ -458,7 +501,7 @@ export function CalendarShell({
                       : 'max-h-[clamp(320px,calc(100dvh-220px),780px)] lg:h-full lg:max-h-none max-md:max-h-[clamp(300px,calc(100dvh-190px),680px)] max-[520px]:max-h-none',
                     fillHeight && 'h-full min-h-0 flex-1 max-h-none',
                   )
-                : view === 'agenda'
+                : view === 'agenda' || view === 'timetable'
                   ? cn(
                       'overflow-auto rounded-xl pr-1 lg:min-h-0 lg:flex-1 lg:max-h-none',
                       fillHeight && 'min-h-0 flex-1 max-h-none',
@@ -511,6 +554,9 @@ export function CalendarShell({
                 showCurrentTime={showCurrentTime}
               />
             ) : null}
+            {view === 'timetable' ? (
+              <TimetableView sessions={timetableSessions} selectedDateIso={timetableDate} todayIso={todayIso} />
+            ) : null}
             {view === 'board' ? (
               <BoardView
                 calendarTodoStyle={calendarTodoStyle}
@@ -545,7 +591,7 @@ export function CalendarShell({
                 </div>
               </div>
             </div>
-          ) : emptyMessage && (view === 'month' || view === 'agenda') ? (
+          ) : emptyMessage && (view === 'month' || view === 'agenda' || view === 'timetable') ? (
             <div
               aria-live="polite"
               className="pointer-events-none absolute inset-0 z-10 flex min-h-[440px] items-center justify-center rounded-xl px-4 text-center"

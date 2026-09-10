@@ -36,6 +36,7 @@ import type { AcademyPreferences, AuthSession, CanvasCalendarItem, CanvasTokenSt
 import { AccountSecurityPanel } from './components/AccountSecurityPanel';
 import { CanvasTokenSetupPage } from './components/CanvasTokenSetupPage';
 import { useCanvasSchoolLogo } from './lib/useCanvasSchoolLogo';
+import { usePersistentBoolean } from './lib/usePersistentBoolean';
 import { shouldPromptForCanvasToken } from './lib/canvasOnboarding';
 import { Switch } from './components/ui/switch';
 import { PasswordChangePanel } from './components/PasswordChangePanel';
@@ -384,6 +385,7 @@ interface StoredCoursePreference {
   friendlyCourseCode?: string;
   friendlyName?: string;
   htmlUrl?: string;
+  isPublished?: boolean;
   hidden?: boolean;
   id?: string;
   isSubmitted?: boolean;
@@ -4680,7 +4682,7 @@ function App() {
   });
   const [authStatus, setAuthStatus] = useState<'checking' | 'authenticated' | 'unauthenticated'>('checking');
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
-  const [isWorkspaceSidebarCollapsed, setIsWorkspaceSidebarCollapsed] = useState(false);
+  const [isWorkspaceSidebarCollapsed, setIsWorkspaceSidebarCollapsed] = usePersistentBoolean('canvas-todo.workspace-sidebar-collapsed', false);
   const [academyTopBarCollapseOverride, setAcademyTopBarCollapseOverride] = useState<{
     defaultValue: boolean;
     value: boolean;
@@ -4689,6 +4691,7 @@ function App() {
   const [calendarMonth, setCalendarMonth] = useState(() => getInitialCalendarMonth(activeData));
   const [selectedCalendarDayIso, setSelectedCalendarDayIso] = useState(getTodayIsoDate);
   const [isCalendarExpanded, setIsCalendarExpanded] = useState(false);
+  const [isMobileCourseworkOpen, setIsMobileCourseworkOpen] = useState(false);
   const [isDayTodoDialogOpen, setIsDayTodoDialogOpen] = useState(false);
   const [academyCalendarSettings, setAcademyCalendarSettings] = useState(getStoredAcademyCalendarSettings);
   const [savedAcademyCalendarSettings, setSavedAcademyCalendarSettings] = useState(getStoredAcademyCalendarSettings);
@@ -4782,7 +4785,8 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
   const isCalendarDataView = !isMainOnlyView && (
     currentView === 'month' ||
     currentView === 'agenda' ||
-    currentView === 'board'
+    currentView === 'board' ||
+    currentView === 'timetable'
   );
   const selectedAcademySemester = normalizeSemesterName(academyCalendarSettings.selectedSemester);
   const shouldFetchLiveCanvasCalendar = selectedAcademySemester !== defaultCanvasTermSemester;
@@ -5137,6 +5141,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
   };
 
   const navigateWorkspace = useCallback((nextNavigation: WorkspaceNavigation) => {
+    setIsMobileCourseworkOpen(false);
     const isSameNavigation =
       navigation.modeId === nextNavigation.modeId
       && navigation.sidebarItemId === nextNavigation.sidebarItemId
@@ -7395,23 +7400,25 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                     effectiveCalendarExpanded && 'contents',
                   )}
                 >
-                  <DashboardCards
-                    isPhone={isPhoneAcademyMode}
-                    academyAutoRefreshIntervalMs={academyAutoRefreshIntervalMs}
-                    compactAcademySummary={shouldUseCompactDashboardMonth}
-                    courseworkHideSettings={{
-                      completedAfterHours: academyCalendarSettings.courseworkHideCompletedAfterHours,
-                      completedFrom: academyCalendarSettings.courseworkHideCompletedFrom,
-                      uncompletedAfterHours: academyCalendarSettings.courseworkHideUncompletedAfterHours,
-                    }}
-                    courseworkShowStudyItems={academyCalendarSettings.courseworkShowStudyItems}
-                    effectiveWideSummaryCards={isAcademyEffectiveExtraLarge}
-                    hideSummaryCards={effectiveCalendarExpanded}
-                    onOpenAddItem={openAcademyCourseworkDialog}
-                    onOpenCourse={openAcademyCourseResource}
-                    onToggleCourseworkStudyItems={handleToggleCourseworkStudyItems}
-                    selectedSemester={selectedAcademySemester}
-                  />
+                  {!isPhoneAcademyMode ? (
+                    <DashboardCards
+                      isPhone={isPhoneAcademyMode}
+                      academyAutoRefreshIntervalMs={academyAutoRefreshIntervalMs}
+                      compactAcademySummary={shouldUseCompactDashboardMonth}
+                      courseworkHideSettings={{
+                        completedAfterHours: academyCalendarSettings.courseworkHideCompletedAfterHours,
+                        completedFrom: academyCalendarSettings.courseworkHideCompletedFrom,
+                        uncompletedAfterHours: academyCalendarSettings.courseworkHideUncompletedAfterHours,
+                      }}
+                      courseworkShowStudyItems={academyCalendarSettings.courseworkShowStudyItems}
+                      effectiveWideSummaryCards={isAcademyEffectiveExtraLarge}
+                      hideSummaryCards={effectiveCalendarExpanded}
+                      onOpenAddItem={openAcademyCourseworkDialog}
+                      onOpenCourse={openAcademyCourseResource}
+                      onToggleCourseworkStudyItems={handleToggleCourseworkStudyItems}
+                      selectedSemester={selectedAcademySemester}
+                    />
+                  ) : null}
                 </div>
               {currentView === 'board' ? (
                 <div
@@ -7434,6 +7441,27 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                 )}
               >
                 <CalendarShell
+                  isCourseworkOpen={isPhoneAcademyMode && isMobileCourseworkOpen}
+                  onOpenCoursework={() => setIsMobileCourseworkOpen(true)}
+                  mobileCourseworkContent={isPhoneAcademyMode ? (
+                    <DashboardCards
+                      isPhone={isPhoneAcademyMode}
+                      academyAutoRefreshIntervalMs={academyAutoRefreshIntervalMs}
+                      compactAcademySummary={false}
+                      courseworkHideSettings={{
+                        completedAfterHours: academyCalendarSettings.courseworkHideCompletedAfterHours,
+                        completedFrom: academyCalendarSettings.courseworkHideCompletedFrom,
+                        uncompletedAfterHours: academyCalendarSettings.courseworkHideUncompletedAfterHours,
+                      }}
+                      courseworkShowStudyItems={academyCalendarSettings.courseworkShowStudyItems}
+                      effectiveWideSummaryCards={false}
+                      courseworkOnly
+                      onOpenAddItem={openAcademyCourseworkDialog}
+                      onOpenCourse={openAcademyCourseResource}
+                      onToggleCourseworkStudyItems={handleToggleCourseworkStudyItems}
+                      selectedSemester={selectedAcademySemester}
+                    />
+                  ) : undefined}
                   isPhone={isPhoneAcademyMode}
                   mobileCalendarScope={academyCalendarSettings.mobileCalendarScope}
                   onMobileCalendarScopeChange={hasLoadedAcademyPreferences ? (mobileCalendarScope) => {
@@ -7449,6 +7477,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                   calendarTodoStyle={academyCalendarSettings.calendarTodoStyle}
                   courseFilterOptions={calendarCourseFilterOptions}
                   data={calendarData}
+                  timetableSessions={calendarSourceItems.filter((item) => item.source === 'class-session')}
                   emptyMessage={canvasCalendarEmptyMessage}
                   warningMessage={hasIncompleteVisibleCanvasCalendar
                     ? dictionary.canvasCalendarIncomplete
@@ -7509,7 +7538,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                   todayIso={activeCalendarTodayIso}
                   view={currentView}
                 />
-                {currentView === 'month' ? (
+                {currentView === 'month' && !(isPhoneAcademyMode && isMobileCourseworkOpen) ? (
                   <div
                     className={cn(
                       'px-1 pb-3 pt-2',

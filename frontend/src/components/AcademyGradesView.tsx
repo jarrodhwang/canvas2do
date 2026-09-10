@@ -57,6 +57,7 @@ interface CanvasLecturePreference {
   friendlyName?: string;
   hidden?: boolean;
   htmlUrl?: string;
+  isPublished?: boolean;
   labSection?: string;
   lastSeenAt?: string;
   lectureSection?: string;
@@ -488,6 +489,7 @@ function getCanvasCourseSnapshot(
     currentGrade: course.currentGrade,
     currentScore: course.currentScore,
     htmlUrl: course.htmlUrl,
+    isPublished: course.isPublished,
     lastSeenAt: now,
     originalCourseCode: preference.originalCourseCode || courseCode,
     semester,
@@ -598,6 +600,7 @@ function migrateClosedCanvasCourses(
   preferences: AcademyPreferences,
   liveCourses: CanvasCourse[],
   fallbackSemester: string,
+  courseListIsComplete: boolean,
   now = Date.now(),
 ) {
   const courseById = new Map(liveCourses.map((course) => [String(course.id ?? ''), course]));
@@ -636,7 +639,10 @@ function migrateClosedCanvasCourses(
 
     const isAlreadyConverted = Boolean(preference.convertedToManualAt);
 
-    if (!shouldConvertCanvasCourseToManual(courseById.get(courseId), now)) {
+    if (!shouldConvertCanvasCourseToManual(courseById.get(courseId), now, {
+      courseListIsComplete,
+      wasPreviouslySeen: Boolean(preference.lastSeenAt),
+    })) {
       return;
     }
 
@@ -912,7 +918,12 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp, isPh
       ? coursesResult.value.courses
       : [];
     const migration = coursesResult.status === 'fulfilled'
-      ? migrateClosedCanvasCourses(preferences, liveCanvasCourses, selectedSemesterFromProp ?? defaultAcademySemester)
+      ? migrateClosedCanvasCourses(
+          preferences,
+          liveCanvasCourses,
+          selectedSemesterFromProp ?? defaultAcademySemester,
+          coursesResult.value.isComplete === true,
+        )
       : {
         changed: false,
         migratedCount: 0,

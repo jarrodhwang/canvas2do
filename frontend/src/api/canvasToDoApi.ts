@@ -440,6 +440,7 @@ export interface CanvasCourse {
   enrollmentState?: string;
   accessRestrictedByDate?: boolean;
   accessClosed?: boolean;
+  isPublished?: boolean;
   startAt?: string;
   endAt?: string;
   htmlUrl?: string;
@@ -450,6 +451,8 @@ export interface CanvasCourse {
 export interface CanvasCourses {
   courses: CanvasCourse[];
   termName?: string;
+  /** False when Canvas returned active courses but historical enrollment lookup was partial. */
+  isComplete: boolean;
 }
 
 export interface CanvasCourseTab {

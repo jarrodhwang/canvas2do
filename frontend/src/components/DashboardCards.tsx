@@ -2955,6 +2955,8 @@ function DashboardRows({
             'min-w-0 border-t text-sm first:border-t-0',
             isPhone ? 'flex flex-col gap-2 py-3' : 'grid grid-cols-[auto_minmax(0,1fr)] items-start gap-2 py-2 sm:grid-cols-[auto_minmax(0,1fr)_auto]',
             isCheckableRow && 'rounded-md px-1 transition-colors hover:bg-muted/45',
+            isPhone && isCheckableRow && row.isCompleted &&
+              'border-emerald-500/25 bg-emerald-500/10 hover:bg-emerald-500/15 dark:border-emerald-300/25 dark:bg-emerald-300/10 dark:hover:bg-emerald-300/15',
           )}
           role={isPhone && isCheckableRow ? 'article' : undefined}
           aria-label={isPhone && isCheckableRow ? row.value : undefined}

@@ -39,9 +39,9 @@ const viewLabels: Record<WorkspaceView, { label: string; icon: string }> = {
 };
 
 interface CalendarShellProps {
-  isCourseworkOpen?: boolean;
-  onOpenCoursework?: () => void;
-  mobileCourseworkContent?: ReactNode;
+  isTodoOpen?: boolean;
+  onOpenTodoTab?: () => void;
+  mobileTodoContent?: ReactNode;
   mode: WorkspaceModeConfig;
   data: WorkspaceModeMockData;
   timetableSessions?: TimetableSession[];
@@ -93,9 +93,9 @@ interface CalendarShellProps {
 }
 
 export function CalendarShell({
-  isCourseworkOpen = false,
-  onOpenCoursework,
-  mobileCourseworkContent,
+  isTodoOpen = false,
+  onOpenTodoTab,
+  mobileTodoContent,
   mode,
   data,
   timetableSessions = [],
@@ -163,7 +163,7 @@ export function CalendarShell({
   const previousDayLabel = language === 'ko' ? '이전 날짜' : 'Previous day';
   const nextDayLabel = language === 'ko' ? '다음 날짜' : 'Next day';
   const todayLabel = language === 'ko' ? '오늘' : 'Today';
-  const phoneCalendarScopeLabel = !isCourseworkOpen && view === 'month'
+  const phoneCalendarScopeLabel = !isTodoOpen && view === 'month'
     ? mobileCalendarScope === 'week'
       ? (language === 'ko' ? '월간 보기로 전환' : 'Switch to month view')
       : (language === 'ko' ? '주간 보기로 전환' : 'Switch to week view')
@@ -173,8 +173,8 @@ export function CalendarShell({
   const isPhoneTodayDisabled = isSelectedDateToday && (
     view !== 'month' || data.days.some((day) => !day.outsideMonth && (day.isToday || day.dateIso === todayIso))
   );
-  const headingLabel = isCourseworkOpen
-    ? { primary: dictionary.courseworkCardSettingsTitle, secondary: '' }
+  const headingLabel = isTodoOpen
+    ? { primary: (language === 'ko' ? '할 일' : 'To Do'), secondary: '' }
     : view === 'timetable'
     ? { primary: weekLabel, secondary: '' }
     : hasDayControls && agendaDateLabel
@@ -182,7 +182,7 @@ export function CalendarShell({
     : monthHeading;
   const previousLabel = hasWeekControls ? (language === 'ko' ? '이전 주' : 'Previous week') : hasDayControls ? previousDayLabel : previousMonthLabel;
   const nextLabel = hasWeekControls ? (language === 'ko' ? '다음 주' : 'Next week') : hasDayControls ? nextDayLabel : nextMonthLabel;
-  const showDateControls = !isCourseworkOpen && (hasMonthControlsForView || hasDayControls || hasWeekControls);
+  const showDateControls = !isTodoOpen && (hasMonthControlsForView || hasDayControls || hasWeekControls);
   const handlePreviousPeriod = () => {
     if (hasWeekControls) {
       onPreviousWeek?.();
@@ -294,11 +294,11 @@ export function CalendarShell({
           {mode.views.includes('month') ? (
             <Button
               aria-label={phoneCalendarScopeLabel}
-              aria-pressed={!isCourseworkOpen && view === 'month'}
+              aria-pressed={!isTodoOpen && view === 'month'}
               className="size-11 rounded-lg text-muted-foreground aria-pressed:bg-primary/15 aria-pressed:text-primary"
               disabled={!onMobileCalendarScopeChange}
               onClick={() => {
-                if (!isCourseworkOpen && view === 'month') {
+                if (!isTodoOpen && view === 'month') {
                   onMobileCalendarScopeChange?.(mobileCalendarScope === 'week' ? 'month' : 'week');
                 }
                 onViewChange('month');
@@ -310,13 +310,13 @@ export function CalendarShell({
               {mobileCalendarScope === 'week' ? <CalendarRange aria-hidden="true" className="size-5" /> : <CalendarDays aria-hidden="true" className="size-5" />}
             </Button>
           ) : null}
-          {onOpenCoursework ? (
+          {onOpenTodoTab ? (
             <Button
-              aria-label={dictionary.courseworkCardSettingsTitle}
-              aria-pressed={isCourseworkOpen}
+              aria-label={(language === 'ko' ? '할 일' : 'To Do')}
+              aria-pressed={isTodoOpen}
               className="size-11 rounded-lg text-muted-foreground aria-pressed:bg-primary/15 aria-pressed:text-primary"
-              onClick={onOpenCoursework}
-              title={dictionary.courseworkCardSettingsTitle}
+              onClick={onOpenTodoTab}
+              title={(language === 'ko' ? '할 일' : 'To Do')}
               type="button"
               variant="ghost"
             >
@@ -326,7 +326,7 @@ export function CalendarShell({
           {mode.views.includes('agenda') ? (
             <Button
               aria-label={getViewLabel(language, 'agenda')}
-              aria-pressed={!isCourseworkOpen && view === 'agenda'}
+              aria-pressed={!isTodoOpen && view === 'agenda'}
               className="size-11 rounded-lg text-muted-foreground aria-pressed:bg-primary/15 aria-pressed:text-primary"
               onClick={() => onViewChange('agenda')}
               title={getViewLabel(language, 'agenda')}
@@ -337,7 +337,7 @@ export function CalendarShell({
             </Button>
           ) : null}
           {mode.views.includes('timetable') ? (
-            <Button aria-label={getViewLabel(language, 'timetable')} aria-pressed={!isCourseworkOpen && view === 'timetable'}
+            <Button aria-label={getViewLabel(language, 'timetable')} aria-pressed={!isTodoOpen && view === 'timetable'}
               className="size-11 rounded-lg text-muted-foreground aria-pressed:bg-primary/15 aria-pressed:text-primary"
               onClick={() => onViewChange('timetable')} title={getViewLabel(language, 'timetable')} type="button" variant="ghost">
               <WorkspaceIcon name="calendar-range" size={20} />
@@ -345,12 +345,12 @@ export function CalendarShell({
           ) : null}
         </div>
         <div className="flex items-center gap-1">
-          {onToday && !isCourseworkOpen ? (
+          {onToday && !isTodoOpen ? (
             <Button aria-label={todayLabel} className="size-11 rounded-lg" disabled={isPhoneTodayDisabled} onClick={onToday} title={todayLabel} type="button" variant="ghost">
               <CalendarCheck2 className="size-5" />
             </Button>
           ) : null}
-          {hasFilters && !isCourseworkOpen ? (
+          {hasFilters && !isTodoOpen ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button aria-label={dictionary.boardCourseMenu} className="relative size-11 rounded-lg" title={dictionary.boardCourseMenu} type="button" variant="ghost">
@@ -367,7 +367,7 @@ export function CalendarShell({
       </div>
 
 
-      <CardHeader className={cn("flex flex-row flex-wrap items-start justify-between gap-3 px-3 pb-2 pt-1 max-xl:flex-col max-[520px]:flex-row max-[520px]:items-center max-[520px]:gap-1 max-[520px]:px-1 max-[520px]:pb-1 max-[520px]:pt-0", isPhone && isCourseworkOpen && 'hidden')}>
+      <CardHeader className={cn("flex flex-row flex-wrap items-start justify-between gap-3 px-3 pb-2 pt-1 max-xl:flex-col max-[520px]:flex-row max-[520px]:items-center max-[520px]:gap-1 max-[520px]:px-1 max-[520px]:pb-1 max-[520px]:pt-0", isPhone && isTodoOpen && 'hidden')}>
         <div className="min-w-0 max-[520px]:w-full">
           <div className="flex min-w-0 items-center gap-2 max-[520px]:w-full max-[520px]:justify-between">
             {showDateControls ? (
@@ -465,13 +465,13 @@ export function CalendarShell({
       </CardHeader>
 
 
-      {mobileCourseworkContent ? (
-        <div className={cn(!isCourseworkOpen && 'hidden')}>{mobileCourseworkContent}</div>
+      {mobileTodoContent ? (
+        <div className={cn(!isTodoOpen && 'hidden')}>{mobileTodoContent}</div>
       ) : null}
 
       <CardContent
         className={cn(
-          isCourseworkOpen && '!hidden',
+          isTodoOpen && '!hidden',
           'px-3 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col max-[520px]:px-0',
           fillHeight && 'flex min-h-0 flex-1 flex-col',
         )}

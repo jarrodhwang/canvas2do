@@ -4691,7 +4691,7 @@ function App() {
   const [calendarMonth, setCalendarMonth] = useState(() => getInitialCalendarMonth(activeData));
   const [selectedCalendarDayIso, setSelectedCalendarDayIso] = useState(getTodayIsoDate);
   const [isCalendarExpanded, setIsCalendarExpanded] = useState(false);
-  const [isMobileCourseworkOpen, setIsMobileCourseworkOpen] = useState(false);
+  const [isMobileTodoOpen, setIsMobileTodoOpen] = useState(false);
   const [isDayTodoDialogOpen, setIsDayTodoDialogOpen] = useState(false);
   const [academyCalendarSettings, setAcademyCalendarSettings] = useState(getStoredAcademyCalendarSettings);
   const [savedAcademyCalendarSettings, setSavedAcademyCalendarSettings] = useState(getStoredAcademyCalendarSettings);
@@ -5137,7 +5137,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
   };
 
   const navigateWorkspace = useCallback((nextNavigation: WorkspaceNavigation) => {
-    setIsMobileCourseworkOpen(false);
+    setIsMobileTodoOpen(false);
     const isSameNavigation =
       navigation.modeId === nextNavigation.modeId
       && navigation.sidebarItemId === nextNavigation.sidebarItemId
@@ -6741,7 +6741,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                 ) : null}
               </>
             ) : null}
-            {variant !== 'mobile' || currentView === 'board' ? <button
+            {variant !== 'mobile' || isMobileTodoOpen ? <button
               className={cn(
                 'rounded-md border px-2 py-0.5 text-xs font-black transition-colors',
                 variant === 'mobile' && 'grid size-11 place-items-center rounded-xl border-0 p-0',
@@ -7411,23 +7411,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                     isPhoneAcademyMode ? 'flex' : 'hidden',
                   )}
                 >
-                  {renderDayTodoContent('mobile')}
-                </div>
-              ) : null}
-              <div
-                className={cn(
-                  'min-w-0 lg:flex lg:h-full lg:min-h-0 lg:flex-col',
-                  (shouldForceDashboardCalendarFill || shouldUseCompactDashboardMonth) &&
-                    'flex h-full min-h-0 flex-col',
-                  currentView === 'board' &&
-                    isPhoneAcademyMode &&
-                    'hidden',
-                )}
-              >
-                <CalendarShell
-                  isCourseworkOpen={isPhoneAcademyMode && isMobileCourseworkOpen}
-                  onOpenCoursework={() => setIsMobileCourseworkOpen(true)}
-                  mobileCourseworkContent={isPhoneAcademyMode ? (
+                  {isPhoneAcademyMode ? (
                     <DashboardCards
                       isPhone={isPhoneAcademyMode}
                       academyAutoRefreshIntervalMs={academyAutoRefreshIntervalMs}
@@ -7445,6 +7429,24 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                       onToggleCourseworkStudyItems={handleToggleCourseworkStudyItems}
                       selectedSemester={selectedAcademySemester}
                     />
+                  ) : null}
+                </div>
+              ) : null}
+              <div
+                className={cn(
+                  'min-w-0 lg:flex lg:h-full lg:min-h-0 lg:flex-col',
+                  (shouldForceDashboardCalendarFill || shouldUseCompactDashboardMonth) &&
+                    'flex h-full min-h-0 flex-col',
+                  currentView === 'board' &&
+                    isPhoneAcademyMode &&
+                    'hidden',
+                )}
+              >
+                <CalendarShell
+                  isTodoOpen={isPhoneAcademyMode && isMobileTodoOpen}
+                  onOpenTodoTab={() => setIsMobileTodoOpen(true)}
+                  mobileTodoContent={isPhoneAcademyMode ? (
+                    <div className="p-3">{renderDayTodoContent('mobile')}</div>
                   ) : undefined}
                   isPhone={isPhoneAcademyMode}
                   mobileCalendarScope={academyCalendarSettings.mobileCalendarScope}
@@ -7522,7 +7524,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                   todayIso={activeCalendarTodayIso}
                   view={currentView}
                 />
-                {currentView === 'month' && !(isPhoneAcademyMode && isMobileCourseworkOpen) ? (
+                {currentView === 'month' && !(isPhoneAcademyMode && isMobileTodoOpen) ? (
                   <div
                     className={cn(
                       'px-1 pb-3 pt-2',
@@ -7599,7 +7601,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
         {isPhoneAcademyMode ? (
           <PhoneNavigation
             activeItemId={activeSidebarItem}
-            isTodoActive={isDashboardWorkspaceView && currentView === 'board'}
+            isCourseworkActive={isDashboardWorkspaceView && currentView === 'board'}
             items={filteredActiveMode.sidebar.flatMap((section) => section.items)}
             onSelectItem={handleSelectSidebarItem}
             onOpenProfile={() => {
@@ -7608,16 +7610,15 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
             }}
             onSignOut={signOut}
             onOpenAddItem={openAcademyCourseworkDialog}
-            onSelectTodo={() => {
-              const navigateToTodo = () => {
-                handleMoveSelectedDayToToday();
+            onSelectCoursework={() => {
+              const navigateToCoursework = () => {
                 navigateWorkspace({ modeId: activeMode.id, sidebarItemId: 'dashboard', view: 'board' });
               };
               if (isAcademySettingsView && hasUnsavedAcademySettingsRef.current) {
-                requestSettingsNavigation(navigateToTodo);
+                requestSettingsNavigation(navigateToCoursework);
                 return;
               }
-              navigateToTodo();
+              navigateToCoursework();
             }}
           />
         ) : filteredActiveMode.sidebar.flatMap((section) => section.items).map((item) => (

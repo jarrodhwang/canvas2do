@@ -8,10 +8,10 @@ import { WorkspaceIcon } from './WorkspaceIcon';
 
 interface PhoneNavigationProps {
   activeItemId: string;
-  isTodoActive: boolean;
+  isCourseworkActive: boolean;
   items: SidebarItemConfig[];
   onSelectItem: (id: string) => void;
-  onSelectTodo: () => void;
+  onSelectCoursework: () => void;
   onOpenProfile: () => void;
   onSignOut: () => void;
   onOpenAddItem: () => void;
@@ -20,19 +20,19 @@ interface PhoneNavigationProps {
 const primaryItemIds = ['dashboard', 'courses', 'grades'];
 const navigationButtonClass = 'mx-auto h-11 w-full max-w-16 rounded-xl p-0';
 
-export function PhoneNavigation({ activeItemId, isTodoActive, items, onSelectItem, onSelectTodo, onOpenProfile, onSignOut, onOpenAddItem }: PhoneNavigationProps) {
+export function PhoneNavigation({ activeItemId, isCourseworkActive, items, onSelectItem, onSelectCoursework, onOpenProfile, onSignOut, onOpenAddItem }: PhoneNavigationProps) {
   const { dictionary, language, translateItemLabel } = useLanguage();
   const primaryItems = items.filter((item) => primaryItemIds.includes(item.id));
   const moreItems = items.filter((item) => !primaryItemIds.includes(item.id));
-  const canShowTodo = items.some((item) => item.id === 'dashboard');
-  const moreActive = !isTodoActive && moreItems.some((item) => item.id === activeItemId);
+  const canShowCoursework = items.some((item) => item.id === 'dashboard');
+  const moreActive = !isCourseworkActive && moreItems.some((item) => item.id === activeItemId);
   const moreLabel = language === 'ko' ? '더 보기' : 'More';
-  const todoLabel = language === 'ko' ? '할 일' : 'To Do';
+  const courseworkLabel = dictionary.courseworkCardSettingsTitle;
 
   return (
     <>
       {primaryItems.map((item) => {
-        const active = activeItemId === item.id && !isTodoActive;
+        const active = activeItemId === item.id && !isCourseworkActive;
         const label = translateItemLabel(item.id, item.label);
         return (
           <Button
@@ -49,13 +49,13 @@ export function PhoneNavigation({ activeItemId, isTodoActive, items, onSelectIte
           </Button>
         );
       })}
-      {canShowTodo ? (
+      {canShowCoursework ? (
         <Button
-          aria-current={isTodoActive ? 'page' : undefined}
-          aria-label={todoLabel}
-          className={cn(navigationButtonClass, isTodoActive ? 'bg-primary/15 text-primary hover:bg-primary/15' : 'bg-transparent text-muted-foreground hover:bg-transparent')}
-          onClick={onSelectTodo}
-          title={todoLabel}
+          aria-current={isCourseworkActive ? 'page' : undefined}
+          aria-label={courseworkLabel}
+          className={cn(navigationButtonClass, isCourseworkActive ? 'bg-primary/15 text-primary hover:bg-primary/15' : 'bg-transparent text-muted-foreground hover:bg-transparent')}
+          onClick={onSelectCoursework}
+          title={courseworkLabel}
           type="button"
           variant="ghost"
         >
@@ -84,7 +84,7 @@ export function PhoneNavigation({ activeItemId, isTodoActive, items, onSelectIte
             </DropdownMenuItem>
             {moreItems.map((item) => (
               <DropdownMenuItem
-                aria-current={activeItemId === item.id && !isTodoActive ? 'page' : undefined}
+                aria-current={activeItemId === item.id && !isCourseworkActive ? 'page' : undefined}
                 className="min-h-11 gap-3 rounded-lg aria-[current=page]:bg-primary/15 aria-[current=page]:text-primary"
                 key={item.id}
                 onSelect={() => onSelectItem(item.id)}

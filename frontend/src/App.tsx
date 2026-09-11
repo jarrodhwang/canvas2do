@@ -7464,11 +7464,6 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                     handleSaveAcademyCalendarSettings({ ...academyCalendarSettingsRef.current, mobileCalendarScope });
                   } : undefined}
                   selectedDateIso={selectedCalendarDayIso}
-                  onSelectTimetableDate={(dateIso) => {
-                    setSelectedCalendarDayIso(dateIso);
-                    const month = getCalendarMonthFromIsoDate(dateIso);
-                    if (month) setCalendarMonth(month);
-                  }}
                   onNextWeek={() => handleMoveSelectedAgendaDay(7)}
                   onPreviousWeek={() => handleMoveSelectedAgendaDay(-7)}
                   agendaDateLabel={selectedDayHeading.year

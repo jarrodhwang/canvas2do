@@ -2045,6 +2045,7 @@ function getCurrentTimestamp() {
 }
 
 interface DashboardRowsProps {
+  isPhone?: boolean;
   card: RenderableDashboardCard;
   compactCourseRows?: boolean;
   compactCourseworkRows?: boolean;
@@ -2073,6 +2074,7 @@ interface DashboardRowsProps {
 }
 
 function DashboardRows({
+  isPhone = false,
   card,
   compactCourseRows = false,
   compactCourseworkRows = false,
@@ -2390,7 +2392,7 @@ function DashboardRows({
     <DropdownMenuTrigger asChild>
       <Button
         aria-label={dictionary.moreActions}
-        className={touchMenuButtonClassName}
+        className={cn(touchMenuButtonClassName, isPhone && 'size-11 rounded-lg')}
         data-dashboard-row-action
         onClick={stopTouchMenuPropagation}
         onMouseDown={stopTouchMenuPropagation}
@@ -2860,12 +2862,102 @@ function DashboardRows({
       const touchActionMenu = row.assessmentKey && !row.courseworkKey
         ? renderAssessmentTouchMenu(row)
         : renderCourseworkTouchMenu(row);
+      const courseBadge = row.id === 'loading'
+        ? <RefreshCw className="size-4 shrink-0 animate-spin text-muted-foreground" />
+        : row.id === 'message' ? (isPhone ? null : <span aria-hidden="true" className="h-6 w-0 shrink-0" />)
+        : <EventPill className="h-6 min-w-0 max-w-full px-2 text-xs" color={row.chipColor ?? card.color} compact label={row.label} />;
+      const typeBadges = <>
+        {row.courseworkType ? <EventPill className="h-5 max-w-24 px-1.5 text-[10px]" color={row.chipColor ?? card.color} compact label={row.courseworkType} /> : null}
+        {row.assessmentType ? <EventPill className="h-5 max-w-24 px-1.5 text-[10px]" color={row.chipColor ?? card.color} compact label={row.assessmentType} /> : null}
+      </>;
+      const titleContent = isRenamingRow ? (
+        <input
+          aria-label={dictionary.boardAddTodoItem}
+          autoFocus
+          className="block min-w-0 max-w-full rounded-md border bg-background px-2 py-1 text-sm font-black text-foreground outline-none transition focus-visible:ring-2 focus-visible:ring-ring/45"
+          onBlur={onFinishCourseworkRename}
+          onChange={(event) => onRenameCoursework(row, event.target.value)}
+          onClick={(event) => event.stopPropagation()}
+          onFocus={(event) => event.currentTarget.select()}
+          onKeyDown={(event) => {
+            event.stopPropagation();
+            if (event.key === 'Enter' || event.key === 'Escape') {
+              event.currentTarget.blur();
+            }
+          }}
+          placeholder={dictionary.boardAddTodoItem}
+          value={row.value}
+        />
+      ) : isPhone && isCheckableRow ? (
+        <button type="button" className="block w-full min-w-0 rounded-md text-left text-sm font-bold leading-snug [overflow-wrap:anywhere] outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          title={row.value || dictionary.boardAddTodoItem}
+          onClick={() => row.assessmentKey && !row.courseworkKey ? onOpenAssessment(row) : onOpenCoursework(row)}>
+          {row.value || dictionary.boardAddTodoItem}
+        </button>
+      ) : (
+        <strong title={row.value || dictionary.boardAddTodoItem} className="block min-w-0 max-w-full truncate" onClick={(event) => {
+          if (!isCheckableRow || row.isCanvasSubmitted) return;
+          event.preventDefault();
+          event.stopPropagation();
+          startCourseworkRename(row);
+        }}>{row.value || dictionary.boardAddTodoItem}</strong>
+      );
+      const completionButton = isCheckableRow ? (
+        <button
+          aria-label={row.isCanvasSubmitted
+            ? dictionary.courseworkSubmittedInCanvas
+            : row.isCompleted
+              ? dictionary.courseworkMarkNotDone
+              : dictionary.courseworkMarkDone}
+          className={cn(
+            'grid size-5 shrink-0 place-items-center rounded-[7px] border text-[11px] font-black leading-none transition-colors',
+            isPhone && 'size-11 rounded-lg',
+            row.isCompleted
+              ? 'border-emerald-400/40 bg-emerald-500 text-white'
+              : 'border-muted-foreground/30 bg-muted/70 text-muted-foreground hover:bg-muted',
+            row.isCanvasSubmitted && 'cursor-default opacity-90',
+          )}
+          aria-pressed={Boolean(row.isCompleted)}
+          disabled={row.isCanvasSubmitted}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (row.assessmentKey && !row.courseworkKey) {
+              onToggleAssessmentDone(row);
+              return;
+            }
+
+            onToggleCourseworkDone(row);
+          }}
+          title={row.isCanvasSubmitted
+            ? dictionary.courseworkSubmittedInCanvas
+            : row.isCompleted
+              ? dictionary.courseworkMarkNotDone
+              : dictionary.courseworkMarkDone}
+          type="button"
+        >
+          {row.isCompleted ? '✓' : ''}
+        </button>
+      ) : null;
+      const star = row.isStarred ? <Star className="size-3.5 shrink-0 fill-amber-400 text-amber-500" /> : null;
+      const dueBadge = row.description ? (
+        <span className={cn(
+          'inline-flex items-center rounded-md border px-2 text-xs font-semibold',
+          isPhone ? 'min-h-7 min-w-0 max-w-full py-1' : 'h-6 w-32 shrink-0 justify-center',
+          getCourseworkDueChipClass(row.dueState),
+        )}>
+          <span className={isPhone ? '[overflow-wrap:anywhere]' : 'truncate'}>{row.description}</span>
+        </span>
+      ) : null;
       const rowElement = (
         <div
           className={cn(
-            'grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-2 border-t py-2 text-sm first:border-t-0 sm:grid-cols-[auto_minmax(0,1fr)_auto]',
+            'min-w-0 border-t text-sm first:border-t-0',
+            isPhone ? 'flex flex-col gap-2 py-3' : 'grid grid-cols-[auto_minmax(0,1fr)] items-start gap-2 py-2 sm:grid-cols-[auto_minmax(0,1fr)_auto]',
             isCheckableRow && 'rounded-md px-1 transition-colors hover:bg-muted/45',
           )}
+          role={isPhone && isCheckableRow ? 'article' : undefined}
+          aria-label={isPhone && isCheckableRow ? row.value : undefined}
           key={`${card.id}-${row.label}-${row.value}`}
           onDoubleClick={(event) => {
             if (!isCheckableRow) {
@@ -2885,106 +2977,20 @@ function DashboardRows({
           onPointerLeave={clearCourseworkLongPress}
           onPointerUp={clearCourseworkLongPress}
         >
-          {row.id === 'loading' ? (
-            <RefreshCw className="size-4 shrink-0 animate-spin text-muted-foreground" />
-          ) : row.id === 'message' ? (
-            <span aria-hidden="true" className="h-6 w-0 shrink-0" />
-          ) : (
-            <EventPill className="h-6 min-w-8 px-2 text-xs" color={row.chipColor ?? card.color} compact label={row.label} />
-          )}
-          <div className="min-w-0">
-            {isRenamingRow ? (
-              <input
-                aria-label={dictionary.boardAddTodoItem}
-                autoFocus
-                className="block min-w-0 max-w-full rounded-md border bg-background px-2 py-1 text-sm font-black text-foreground outline-none transition focus-visible:ring-2 focus-visible:ring-ring/45"
-                onBlur={onFinishCourseworkRename}
-                onChange={(event) => onRenameCoursework(row, event.target.value)}
-                onClick={(event) => event.stopPropagation()}
-                onFocus={(event) => event.currentTarget.select()}
-                onKeyDown={(event) => {
-                  event.stopPropagation();
-                  if (event.key === 'Enter' || event.key === 'Escape') {
-                    event.currentTarget.blur();
-                  }
-                }}
-                placeholder={dictionary.boardAddTodoItem}
-                value={row.value}
-              />
-            ) : (
-              <strong
-                className="block min-w-0 max-w-full truncate"
-                onClick={(event) => {
-                  if (!isCheckableRow || row.isCanvasSubmitted) {
-                    return;
-                  }
-
-                  event.preventDefault();
-                  event.stopPropagation();
-                  startCourseworkRename(row);
-                }}
-              >
-                {row.value || dictionary.boardAddTodoItem}
-              </strong>
-            )}
-          </div>
-          <div className="col-start-2 flex min-w-0 items-center justify-start gap-1.5 sm:col-start-auto sm:justify-end">
-            {row.courseworkType ? (
-              <EventPill className="h-5 max-w-24 px-1.5 text-[10px]" color={row.chipColor ?? card.color} compact label={row.courseworkType} />
-            ) : null}
-            {row.assessmentType ? (
-              <EventPill className="h-5 max-w-24 px-1.5 text-[10px]" color={row.chipColor ?? card.color} compact label={row.assessmentType} />
-            ) : null}
-            {isCheckableRow ? (
-              <button
-                aria-label={row.isCanvasSubmitted
-                  ? dictionary.courseworkSubmittedInCanvas
-                  : row.isCompleted
-                    ? dictionary.courseworkMarkNotDone
-                    : dictionary.courseworkMarkDone}
-                className={cn(
-                  'grid size-5 shrink-0 place-items-center rounded-[7px] border text-[11px] font-black leading-none transition-colors',
-                  row.isCompleted
-                    ? 'border-emerald-400/40 bg-emerald-500 text-white'
-                    : 'border-muted-foreground/30 bg-muted/70 text-muted-foreground hover:bg-muted',
-                  row.isCanvasSubmitted && 'cursor-default opacity-90',
-                )}
-                disabled={row.isCanvasSubmitted}
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  if (row.assessmentKey && !row.courseworkKey) {
-                    onToggleAssessmentDone(row);
-                    return;
-                  }
-
-                  onToggleCourseworkDone(row);
-                }}
-                title={row.isCanvasSubmitted
-                  ? dictionary.courseworkSubmittedInCanvas
-                  : row.isCompleted
-                    ? dictionary.courseworkMarkNotDone
-                    : dictionary.courseworkMarkDone}
-                type="button"
-              >
-                {row.isCompleted ? '✓' : ''}
-              </button>
-            ) : null}
-            {row.isStarred ? (
-              <Star className="size-3.5 shrink-0 fill-amber-400 text-amber-500" />
-            ) : null}
-            {row.description ? (
-              <span
-                className={cn(
-                  'inline-flex h-6 w-32 shrink-0 items-center justify-center rounded-md border px-2 text-xs font-semibold',
-                  getCourseworkDueChipClass(row.dueState),
-                )}
-              >
-                <span className="truncate">{row.description}</span>
-              </span>
-            ) : null}
-            {touchActionMenu}
-          </div>
+          {isPhone && isCheckableRow ? <>
+            <div className="flex min-w-0 items-center justify-between gap-2">
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">{courseBadge}{typeBadges}{star}</div>
+              {touchActionMenu}
+            </div>
+            {titleContent}
+            <div className="flex min-w-0 items-center justify-between gap-2">{dueBadge}{completionButton}</div>
+          </> : <>
+            {courseBadge}
+            <div className="min-w-0">{titleContent}</div>
+            <div className="col-start-2 flex min-w-0 items-center justify-start gap-1.5 sm:col-start-auto sm:justify-end">
+              {typeBadges}{completionButton}{star}{dueBadge}{touchActionMenu}
+            </div>
+          </>}
         </div>
       );
 
@@ -3003,8 +3009,7 @@ function DashboardRows({
       ? (
           <div
             className={cn(
-              'overflow-y-auto pr-1',
-              compactCourseworkRows ? compactRowsMaxHeightClassName : 'max-h-64',
+              isPhone ? 'min-w-0' : cn('overflow-y-auto pr-1', compactCourseworkRows ? compactRowsMaxHeightClassName : 'max-h-64'),
             )}
             ref={courseworkScrollContainerRef}
           >
@@ -6486,7 +6491,8 @@ export function DashboardCards({
     <>
       <section
         className={cn(
-          'dashboard-summary-cards grid gap-3',
+          'dashboard-summary-cards grid min-w-0 gap-3',
+          isPhone && 'grid-cols-[minmax(0,1fr)]',
           compactAcademySummary
             ? 'grid-cols-[minmax(132px,0.28fr)_minmax(0,1fr)] items-start gap-2'
             : effectiveWideSummaryCards === undefined
@@ -6507,7 +6513,8 @@ export function DashboardCards({
 	          return (
 	            <Card
 	              className={cn(
-	                'rounded-xl bg-card shadow-none',
+	                'min-w-0 rounded-xl bg-card shadow-none',
+                    isPhone && 'gap-1 py-3',
 		                (isCompactCourseCard || isCompactCourseworkCard) && 'h-54 overflow-hidden',
 	                card.id === 'upcoming-coursework' &&
 	                  !compactAcademySummary &&
@@ -6519,7 +6526,7 @@ export function DashboardCards({
 	              size={isCompactCourseCard || isCompactCourseworkCard ? 'sm' : 'default'}
 	            >
               {isCompactHeaderHidden ? null : (
-                <CardHeader className="gap-2 pb-3">
+                <CardHeader className={cn('gap-2 pb-3', isPhone && 'px-3 pb-1')}>
                   <div className="flex min-w-0 items-start justify-between gap-3">
                     {card.kicker ? (
                       <div className="text-[11px] font-black uppercase text-muted-foreground">
@@ -6556,8 +6563,9 @@ export function DashboardCards({
                   ) : null}
                 </CardHeader>
               )}
-              <CardContent>
+              <CardContent className={cn(isPhone && 'min-w-0 px-3')}>
                 <DashboardRows
+                  isPhone={isPhone}
                   card={card}
                   compactCourseRows={isCompactCourseCard}
                   compactCourseworkRows={isCompactCourseworkCard}

@@ -1,7 +1,7 @@
 import { CalendarDays, Clock3, MapPin } from 'lucide-react';
 import { useState, type CSSProperties } from 'react';
 import { useLanguage } from '../context/LanguageContext';
-import { badgeColorClasses, dotColorClasses } from '../lib/colorStyles';
+import { badgeColorClasses } from '../lib/colorStyles';
 import { cn } from '../lib/utils';
 import { EventPill } from './EventPill';
 import { getTimetableWeek, layoutTimetableDay, type TimetableSession } from './timetableLayout';
@@ -13,14 +13,13 @@ interface TimetableViewProps {
   selectedDateIso: string;
   todayIso?: string;
   isPhone?: boolean;
-  onSelectDate?: (dateIso: string) => void;
 }
 
 function dateKey(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
-export function TimetableView({ sessions, selectedDateIso, todayIso, isPhone = false, onSelectDate }: TimetableViewProps) {
+export function TimetableView({ sessions, selectedDateIso, todayIso, isPhone = false }: TimetableViewProps) {
   const { language } = useLanguage();
   const [selectedSession, setSelectedSession] = useState<TimetableSession | null>(null);
   const [showWeekends, setShowWeekends] = useState(false);
@@ -33,18 +32,16 @@ export function TimetableView({ sessions, selectedDateIso, todayIso, isPhone = f
   const startHour = blocks.length ? Math.floor(Math.min(...blocks.map((block) => block.start)) / 60) : 8;
   const endHour = blocks.length ? Math.ceil(Math.max(...blocks.map((block) => block.end)) / 60) : 18;
   const duration = Math.max(60, (endHour - startHour) * 60);
-  const selectedDayIndex = Math.max(0, days.findIndex((day) => dateKey(day) === selectedDateIso));
-  const selectedBlocks = layouts[selectedDayIndex];
   const timeLabel = (minute: number) => new Date(2000, 0, 1, 0, minute).toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' });
   const sessionTime = (session: TimetableSession, start: number, end: number) => session.endAt
     ? `${timeLabel(start)} – ${timeLabel(end)}`
     : `${timeLabel(start)} · ${language === 'ko' ? '종료 시간 없음' : 'End not set'}`;
   const canceledLabel = language === 'ko' ? '휴강' : 'Canceled';
-  const emptyState = (isWeek: boolean) => (
+  const emptyState = () => (
     <div className="flex min-h-32 flex-1 flex-col items-center justify-center gap-2 rounded-xl border border-dashed bg-muted/20 p-5 text-center" role="status">
       <CalendarDays aria-hidden="true" className="size-6 text-muted-foreground" />
-      <p className="text-sm font-bold">{isWeek ? (language === 'ko' ? '이번 주에는 수업이 없습니다' : 'No classes this week') : (language === 'ko' ? '오늘은 수업이 없습니다' : 'No classes on this day')}</p>
-      <p className="max-w-xs text-xs text-muted-foreground">{isWeek ? (language === 'ko' ? '과목에서 수업 요일, 시간, 기간을 설정하세요.' : 'Add meeting days, times, and dates in your courses.') : (language === 'ko' ? '다른 날짜를 선택하여 수업을 확인하세요.' : 'Choose another day to see your classes.')}</p>
+      <p className="text-sm font-bold">{language === 'ko' ? '이번 주에는 수업이 없습니다' : 'No classes this week'}</p>
+      <p className="max-w-xs text-xs text-muted-foreground">{language === 'ko' ? '과목에서 수업 요일, 시간, 기간을 설정하세요.' : 'Add meeting days, times, and dates in your courses.'}</p>
     </div>
   );
 
@@ -53,42 +50,30 @@ export function TimetableView({ sessions, selectedDateIso, todayIso, isPhone = f
       <section aria-label={language === 'ko' ? '주간 시간표' : 'Weekly timetable'} className={cn('flex min-h-0 min-w-0 flex-1 flex-col gap-2', isPhone ? 'w-full' : 'h-full overflow-hidden')}>
         {isPhone ? (
           <>
-            <div className="grid grid-cols-7 gap-1 rounded-xl border bg-card p-1" aria-label={language === 'ko' ? '수업 날짜 선택' : 'Choose class day'} role="group">
-              {days.map((day, index) => {
-                const key = dateKey(day);
-                const isSelected = index === selectedDayIndex;
-                return <button key={key} type="button" aria-pressed={isSelected} aria-current={key === todayIso ? 'date' : undefined}
-                  aria-label={day.toLocaleDateString(locale, { weekday: 'long', month: 'long', day: 'numeric' })}
-                  onClick={() => onSelectDate?.(key)}
-                  className={cn('flex min-h-16 min-w-0 flex-col items-center justify-center gap-0.5 rounded-lg text-muted-foreground outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring', isSelected ? 'bg-primary text-primary-foreground' : key === todayIso ? 'bg-primary/10 text-foreground' : 'hover:bg-muted')}>
+            <p className="px-1 py-1 text-xs text-muted-foreground">{language === 'ko' ? `이번 주 수업 ${blocks.length}개` : `${blocks.length} ${blocks.length === 1 ? 'class' : 'classes'} this week`}</p>
+            <ol className="min-w-0 rounded-xl border bg-card px-2" aria-label={language === 'ko' ? '이번 주 수업' : 'Classes this week'}>
+              {days.map((day, index) => <li key={dateKey(day)} className="grid min-w-0 grid-cols-[3rem_minmax(0,1fr)] items-start gap-2 border-t py-2 first:border-t-0">
+                <h3 aria-current={dateKey(day) === todayIso ? 'date' : undefined} aria-label={day.toLocaleDateString(locale, { weekday: 'long', month: 'long', day: 'numeric' })}
+                  className={cn('flex flex-col items-center gap-0.5 rounded-lg py-1.5 text-muted-foreground', dateKey(day) === todayIso && 'bg-primary/15 text-foreground')}>
                   <span className="text-[10px] font-semibold">{day.toLocaleDateString(locale, { weekday: 'short' })}</span>
-                  <span className="text-sm font-black">{day.getDate()}</span>
-                  <span aria-hidden="true" className="mt-0.5 flex h-1 gap-0.5">
-                    {layouts[index].slice(0, 3).map(({ session }) => <span key={session.id} className={cn('size-1 rounded-full', isSelected ? 'bg-primary-foreground/60' : dotColorClasses[session.color])} />)}
-                  </span>
-                </button>;
-              })}
-            </div>
-            <div className="flex items-center justify-between px-1 py-1 text-xs">
-              <h3 className="font-bold">{days[selectedDayIndex].toLocaleDateString(locale, { weekday: 'long', month: 'short', day: 'numeric' })}</h3>
-              <span className="text-muted-foreground">{language === 'ko' ? `수업 ${selectedBlocks.length}개` : `${selectedBlocks.length} ${selectedBlocks.length === 1 ? 'class' : 'classes'}`}</span>
-            </div>
-            {selectedBlocks.length ? <ol className="space-y-2">
-              {selectedBlocks.map(({ session, start, end }) => <li key={session.id}>
-                <button type="button" onClick={() => setSelectedSession(session)} className="flex w-full min-w-0 items-stretch gap-3 rounded-xl border bg-card p-3 text-left outline-none transition-colors hover:bg-muted/30 focus-visible:ring-2 focus-visible:ring-ring">
-                  <span className="flex w-16 shrink-0 flex-col gap-1 border-r pr-2 text-[11px] tabular-nums">
-                    <span className="font-bold">{timeLabel(start)}</span>
-                    <span className="text-muted-foreground">{session.endAt ? timeLabel(end) : '—'}</span>
-                  </span>
-                  <span className="flex min-w-0 flex-1 flex-col items-start gap-1.5">
-                    <EventPill color={session.color} label={session.courseCode || session.title} className={cn('h-6 rounded-full px-2 text-xs', session.isCanceledForHoliday && 'line-through')} />
-                    <span className="text-xs font-semibold">{session.type}</span>
-                    {session.location ? <span className="flex max-w-full items-start gap-1 text-xs text-muted-foreground"><MapPin aria-hidden="true" className="mt-0.5 size-3 shrink-0" /><span className="break-words">{session.location}</span></span> : null}
-                    {session.isCanceledForHoliday ? <span className="text-xs font-semibold text-muted-foreground">{canceledLabel} · {session.holidayName}</span> : null}
-                  </span>
-                </button>
+                  <span className="text-base font-black leading-tight">{day.getDate()}</span>
+                </h3>
+                {layouts[index].length ? <ul className="min-w-0 space-y-1.5">
+                  {layouts[index].map(({ session, start, end }) => <li key={session.id} className="min-w-0">
+                    <button type="button" onClick={() => setSelectedSession(session)}
+                      className="flex w-full min-w-0 flex-col items-start gap-1 rounded-lg border bg-muted/15 p-2 text-left outline-none transition-colors hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring">
+                      <span className="flex max-w-full flex-wrap items-center gap-x-1.5 gap-y-1">
+                        <EventPill color={session.color} label={session.courseCode || session.title} className={cn('h-5 rounded-full px-1.5 text-[11px]', session.isCanceledForHoliday && 'line-through')} />
+                        <span className="text-[11px] font-semibold">{session.type}</span>
+                      </span>
+                      <span className="text-[11px] font-semibold tabular-nums">{sessionTime(session, start, end)}</span>
+                      {session.location ? <span className="flex max-w-full items-start gap-1 text-[11px] text-muted-foreground"><MapPin aria-hidden="true" className="mt-0.5 size-3 shrink-0" /><span className="min-w-0 [overflow-wrap:anywhere]">{session.location}</span></span> : null}
+                      {session.isCanceledForHoliday ? <span className="text-[11px] font-semibold text-muted-foreground">{canceledLabel} · {session.holidayName}</span> : null}
+                    </button>
+                  </li>)}
+                </ul> : <p className="py-3 text-xs text-muted-foreground">{language === 'ko' ? '수업 없음' : 'No classes'}</p>}
               </li>)}
-            </ol> : emptyState(blocks.length === 0)}
+            </ol>
           </>
         ) : (
           <>
@@ -120,7 +105,7 @@ export function TimetableView({ sessions, selectedDateIso, todayIso, isPhone = f
                   </button>;
                 })}
               </div>)}
-            </div> : emptyState(true)}
+            </div> : emptyState()}
           </>
         )}
       </section>

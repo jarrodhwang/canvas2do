@@ -62,7 +62,6 @@ interface CalendarShellProps {
   mobileCalendarScope?: 'month' | 'week';
   onMobileCalendarScopeChange?: (scope: 'month' | 'week') => void;
   selectedDateIso?: string;
-  onSelectTimetableDate?: (dateIso: string) => void;
   view: WorkspaceView;
   onNextMonth?: () => void;
   onNextWeek?: () => void;
@@ -117,7 +116,6 @@ export function CalendarShell({
   mobileCalendarScope = 'week',
   onMobileCalendarScopeChange,
   selectedDateIso,
-  onSelectTimetableDate,
   view,
   onNextMonth,
   onNextWeek,
@@ -291,7 +289,7 @@ export function CalendarShell({
           </span>
         </button>
       ) : null}
-      <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3 px-3 pb-2 pt-1 max-xl:flex-col max-[520px]:flex-row max-[520px]:items-center max-[520px]:gap-1 max-[520px]:px-1 max-[520px]:pb-1 max-[520px]:pt-0">
+      <CardHeader className={cn("flex flex-row flex-wrap items-start justify-between gap-3 px-3 pb-2 pt-1 max-xl:flex-col max-[520px]:flex-row max-[520px]:items-center max-[520px]:gap-1 max-[520px]:px-1 max-[520px]:pb-1 max-[520px]:pt-0", isPhone && isCourseworkOpen && 'hidden')}>
         <div className="min-w-0 max-[520px]:w-full">
           <div className="flex min-w-0 items-center gap-2 max-[520px]:w-full max-[520px]:justify-between">
             {showDateControls ? (
@@ -559,7 +557,7 @@ export function CalendarShell({
               />
             ) : null}
             {view === 'timetable' ? (
-              <TimetableView sessions={timetableSessions} selectedDateIso={timetableDate} todayIso={todayIso} isPhone={isPhone} onSelectDate={onSelectTimetableDate} />
+              <TimetableView sessions={timetableSessions} selectedDateIso={timetableDate} todayIso={todayIso} isPhone={isPhone} />
             ) : null}
             {view === 'board' ? (
               <BoardView

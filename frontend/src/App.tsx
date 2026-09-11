@@ -41,6 +41,7 @@ import { CanvasTokenSetupPage } from './components/CanvasTokenSetupPage';
 import { useCanvasSchoolLogo } from './lib/useCanvasSchoolLogo';
 import { usePersistentBoolean } from './lib/usePersistentBoolean';
 import { shouldPromptForCanvasToken } from './lib/canvasOnboarding';
+import { getCanvasCalendarLoadState, type CanvasCalendarLoadStatus } from './lib/canvasCalendarLoading';
 import { Switch } from './components/ui/switch';
 import { PasswordChangePanel } from './components/PasswordChangePanel';
 import { CalendarShell } from './components/CalendarShell';
@@ -134,7 +135,6 @@ interface WorkspaceHistoryState {
   navigation: WorkspaceNavigation;
 }
 
-type CanvasCalendarLoadStatus = 'idle' | 'loading' | 'loaded' | 'failed';
 type CalendarTodoStyle = 'comfortable' | 'compact';
 
 // Keep the view-level timeout aligned with the API client's cancellation timeout.
@@ -4783,18 +4783,17 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
     canvasTokenStatus?.status === 'needs_connection' && !academyCalendarSettings.canvasTokenPromptEnabled
   );
   const shouldFetchLiveCanvasCalendar = selectedAcademySemester !== defaultCanvasTermSemester;
-  const shouldLoadCanvasCalendar =
-    authStatus === 'authenticated' &&
-    isCalendarDataView &&
-    shouldFetchLiveCanvasCalendar && !quietCanvas;
   const canvasCalendarPage = canvasCalendarPages[canvasCalendarMonthKey];
+  const { shouldLoad: shouldLoadCanvasCalendar, status: canvasCalendarLoadStatus } = getCanvasCalendarLoadState(
+    authStatus === 'authenticated' && isCalendarDataView && shouldFetchLiveCanvasCalendar,
+    canvasTokenStatus,
+    canvasCalendarPage?.status,
+  );
   const isCanvasCalendarPageLoaded = canvasCalendarPage?.status === 'loaded';
   const visibleCanvasCalendarItems = getCanvasCalendarItemsForMonthKeys(
     canvasCalendarPages,
     visibleCalendarMonthKeys,
   );
-  const canvasCalendarLoadStatus: CanvasCalendarLoadStatus =
-    canvasCalendarPage?.status ?? (shouldLoadCanvasCalendar ? 'loading' : 'idle');
   const isWaitingForAcademyPreferences =
     !hasLoadedAcademyPreferences &&
     academyPreferencesLoadStatus !== 'failed';

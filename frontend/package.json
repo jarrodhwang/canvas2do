@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "test:canvas-identity": "node --experimental-strip-types scripts/test-canvas-item-identity.mjs",
+    "test:calendar-loading": "node --experimental-strip-types scripts/test-canvas-calendar-loading.mjs",
     "test:migration": "node --experimental-strip-types scripts/test-canvas-course-migration.mjs",
     "preview": "vite preview",
     "test:onboarding": "node --experimental-strip-types scripts/test-canvas-onboarding.mjs",

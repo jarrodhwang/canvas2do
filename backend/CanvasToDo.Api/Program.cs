@@ -389,6 +389,7 @@ app.Use(async (context, next) =>
 app.UseRateLimiter();
 app.UseAuthorization();
 app.Use(EnforceApplicationAccessAsync);
+app.Use(UserActivityTracking.TrackAsync);
 
 app.MapAuthEndpoints();
 app.MapAdminAuthEndpoints();

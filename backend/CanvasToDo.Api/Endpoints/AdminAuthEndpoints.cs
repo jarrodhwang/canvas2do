@@ -82,7 +82,7 @@ public static class AdminAuthEndpoints
         {
             user.Id, user.Email, user.DisplayName, user.PhoneNumber, user.Status, user.EmailConfirmed,
             role = await users.IsInRoleAsync(user, ApplicationRoles.Admin) ? ApplicationRoles.Admin : ApplicationRoles.User,
-            user.CreatedAt, user.LastLoginAt, user.TwoFactorEnabled, lockedUntil = user.LockoutEnd,
+            user.CreatedAt, user.LastActiveAt, user.LastLoginAt, user.TwoFactorEnabled, lockedUntil = user.LockoutEnd,
             hasPassword = await users.HasPasswordAsync(user), passwordRequest = await passwords.GetAsync(user),
         });
     }
@@ -124,6 +124,7 @@ public static class AdminAuthEndpoints
                 user.EmailConfirmed,
                 user.TwoFactorEnabled,
                 user.LockoutEnd,
+                user.LastActiveAt,
                 user.LastLoginAt,
                 user.CreatedAt,
                 user.SecurityStamp,
@@ -160,6 +161,7 @@ public static class AdminAuthEndpoints
                 role,
                 status = user.Status,
                 emailConfirmed = user.EmailConfirmed,
+                lastActiveAt = user.LastActiveAt,
                 lastLoginAt = user.LastLoginAt,
                 twoFactorEnabled = user.TwoFactorEnabled,
                 lockedUntil = user.LockoutEnd,
@@ -382,6 +384,7 @@ public static class AdminAuthEndpoints
             status = target.Status,
             role = requestedRole,
             emailConfirmed = target.EmailConfirmed,
+            lastActiveAt = target.LastActiveAt,
             lastLoginAt = target.LastLoginAt,
             twoFactorEnabled = target.TwoFactorEnabled,
             lockedUntil = target.LockoutEnd,

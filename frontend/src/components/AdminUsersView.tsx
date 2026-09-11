@@ -201,6 +201,7 @@ export function AdminUsersView() {
                     {!user.emailConfirmed ? (
                       <div className="mt-0.5 text-[11px] font-bold text-amber-700 dark:text-amber-200">Email not confirmed</div>
                     ) : null}
+                    <div className="mt-0.5 text-[11px] font-semibold text-muted-foreground" title="Latest authenticated app request, recorded at most once per minute. Times are local.">Last active: {user.lastActiveAt ? formatDate(user.lastActiveAt) : 'Not recorded'}</div>
                     <div className="mt-0.5 text-[11px] font-semibold text-muted-foreground">Last sign-in: {formatDate(user.lastLoginAt)}</div>
                   </div>
                 </div>

@@ -12,6 +12,8 @@ public sealed class ApplicationUser : IdentityUser<Guid>
 
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 
+    public DateTimeOffset? LastActiveAt { get; set; }
+
     public DateTimeOffset? LastLoginAt { get; set; }
 }
 

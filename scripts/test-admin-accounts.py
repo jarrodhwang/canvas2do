@@ -118,10 +118,25 @@ def main():
 
             admin.call(target + "/data/preferences", "PUT", {"calendarSettings": {"themeMode": "light", "selectedSemester": "Summer 2026"},
                 "manualLectures": [{"id": "manual-276", "name": "CMPT276"}], "manualCoursework": [{"id": "todo-1", "title": "Private task"}]})
+            before = admin.call(target)
+            assert before.get('lastActiveAt') is None, 'Login and administrator edits must not count as target activity'
             own = alice.call("/api/academy/preferences", headers={"X-Canvas-To-Do-Owner-Key": "user:" + ids['alice']})
             other = bob.call("/api/academy/preferences", headers={"X-Canvas-To-Do-Owner-Key": "user:" + ids['bob']})
             assert own['manualLectures'][0]['name'] == 'CMPT276' and not other['manualLectures']
+            active = admin.call(target)
+            assert active['lastActiveAt'] is not None
+            assert active['lastLoginAt'] == before['lastLoginAt'], 'Activity must not change last login'
+            alice.call('/api/academy/preferences', headers={'X-Canvas-To-Do-Owner-Key': 'user:' + ids['alice']})
+            assert admin.call(target)['lastActiveAt'] == active['lastActiveAt'], 'Activity writes are throttled'
+            sql(f"""UPDATE auth_users SET "LastActiveAt" = NOW() - INTERVAL '2 minutes' WHERE "Id" = '{ids['alice']}'""")
+            alice.call('/api/academy/preferences', headers={'X-Canvas-To-Do-Owner-Key': 'user:' + ids['alice']})
+            refreshed = admin.call(target)['lastActiveAt']
+            assert refreshed >= active['lastActiveAt'], 'Continued app use refreshes activity'
             preview = admin.call(target + "/data/preferences")
+            assert admin.call(target)['lastActiveAt'] == refreshed, 'Admin previews must not refresh target activity'
+            listed = next(user for user in admin.call('/api/admin/users')['users'] if user['id'] == ids['alice'])
+            assert listed['lastActiveAt'] == refreshed
+            print("PASS last activity tracking, login separation, throttling, and administrator attribution")
             assert preview == own
             assert admin.call('/api/auth/session')['email'] == 'admin@example.test'
             admin.call(target + '/data/calendar', 'POST', {}, 405)

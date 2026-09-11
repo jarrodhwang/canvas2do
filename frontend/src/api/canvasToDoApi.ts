@@ -367,6 +367,7 @@ export interface AdminUser {
   displayName: string;
   role?: string;
   status: AdminUserStatus;
+  lastActiveAt?: string | null;
   lastLoginAt?: string;
   twoFactorEnabled?: boolean;
   phoneNumber?: string;

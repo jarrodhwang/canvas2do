@@ -140,7 +140,7 @@ export function AdminUsersView() {
     onClose={() => { setSelectedUser(null); void refresh(); }} onSaved={() => void refresh()} />;
 
   return (
-    <Card className="rounded-xl bg-card shadow-none">
+    <Card className="min-w-0 rounded-xl bg-card shadow-none max-[520px]:gap-2 max-[520px]:py-2">
       <CardHeader className="gap-3 border-b md:flex-row md:items-center md:justify-between max-[520px]:flex max-[520px]:flex-row max-[520px]:items-center max-[520px]:gap-2 max-[520px]:px-3">
         <div>
           <ShieldCheck aria-hidden="true" className="hidden size-5 text-muted-foreground max-[520px]:block" />
@@ -186,9 +186,9 @@ export function AdminUsersView() {
             const role = user.role?.toLowerCase() === 'admin' ? 'Admin' : 'User';
 
             return (
-              <div className="grid gap-4 p-4 lg:grid-cols-[minmax(220px,1fr)_150px_150px] lg:items-center" key={user.id}>
-                <div className="flex min-w-0 items-center gap-3">
-                  <span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-full bg-primary/10 text-sm font-black text-primary">
+              <div className="grid gap-4 p-4 max-[520px]:grid-cols-2 max-[520px]:gap-2 max-[520px]:p-3 lg:grid-cols-[minmax(220px,1fr)_150px_150px] lg:items-center" key={user.id}>
+                <div className="flex min-w-0 items-center gap-3 max-[520px]:col-span-2 max-[520px]:gap-2">
+                  <span className="grid size-10 max-[520px]:size-8 shrink-0 place-items-center overflow-hidden rounded-full bg-primary/10 text-sm font-black text-primary">
                     {initials(user.displayName)}
                   </span>
                   <div className="min-w-0">
@@ -209,7 +209,7 @@ export function AdminUsersView() {
                   onValueChange={(value) => void updateUser(user, { role: value })}
                   value={role}
                 >
-                  <SelectTrigger aria-label={`Role for ${user.displayName}`}><SelectValue /></SelectTrigger>
+                  <SelectTrigger className="max-[520px]:h-11 max-[520px]:w-full max-[520px]:min-w-0 max-[520px]:text-xs" aria-label={`Role for ${user.displayName}`}><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="User"><span className="inline-flex items-center gap-2"><UserRound className="size-4" /> User</span></SelectItem>
                     <SelectItem value="Admin"><span className="inline-flex items-center gap-2"><ShieldCheck className="size-4" /> Admin</span></SelectItem>
@@ -220,16 +220,16 @@ export function AdminUsersView() {
                   onValueChange={(value) => void updateUser(user, { status: value as AdminUserStatus })}
                   value={user.status}
                 >
-                  <SelectTrigger aria-label={`Status for ${user.displayName}`}><SelectValue /></SelectTrigger>
+                  <SelectTrigger className={cn("max-[520px]:h-11 max-[520px]:w-full max-[520px]:min-w-0 max-[520px]:text-xs", statusStyles[user.status])} aria-label={`Status for ${user.displayName}`}><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="active">Active</SelectItem>
                     <SelectItem value="pending">Pending approval</SelectItem>
                     <SelectItem value="inactive">Inactive</SelectItem>
                   </SelectContent>
                 </Select>
-                <div className="flex flex-wrap items-center justify-end gap-2 lg:col-span-3">
-                  <Button size="sm" variant="outline" onClick={() => setSelectedUser({ id: user.id, preview: false })}><Settings className="size-4" /> Details</Button>
-                  <Button size="sm" variant="outline" onClick={() => setSelectedUser({ id: user.id, preview: true })}><Eye className="size-4" /> Preview</Button>
+                <div className="flex flex-wrap items-center justify-end gap-2 lg:col-span-3 max-[520px]:col-span-2 max-[520px]:gap-1.5">
+                  <Button className="max-[520px]:h-11 max-[520px]:flex-1 max-[520px]:px-2 max-[520px]:text-xs" size="sm" variant="outline" onClick={() => setSelectedUser({ id: user.id, preview: false })}><Settings className="size-4" /> Details</Button>
+                  <Button className="max-[520px]:h-11 max-[520px]:flex-1 max-[520px]:px-2 max-[520px]:text-xs" size="sm" variant="outline" onClick={() => setSelectedUser({ id: user.id, preview: true })}><Eye className="size-4" /> Preview</Button>
                   {user.status === 'pending' ? (
                     <Button
                       disabled={busy}
@@ -240,8 +240,9 @@ export function AdminUsersView() {
                       <ShieldCheck className="size-4" /> Approve
                     </Button>
                   ) : null}
-                  <Badge className={statusStyles[user.status]} variant="outline">{user.status}</Badge>
+                  <Badge className={cn(statusStyles[user.status], "max-[520px]:hidden")} variant="outline">{user.status}</Badge>
                   <Button
+                    className="max-[520px]:size-11 max-[520px]:shrink-0"
                     aria-label={`Revoke sessions for ${user.displayName}`}
                     disabled={busy}
                     onClick={() => void revokeSessions(user)}
@@ -257,7 +258,7 @@ export function AdminUsersView() {
           })}
         </div>
         {total > 0 ? (
-          <div className="flex items-center justify-between gap-3 border-t px-4 py-3 text-xs font-semibold text-muted-foreground">
+          <div className="flex items-center justify-between gap-3 border-t px-4 py-3 max-[520px]:px-3 max-[520px]:py-2 text-xs font-semibold text-muted-foreground">
             <span>{total} user{total === 1 ? '' : 's'}</span>
             <div className="flex items-center gap-2">
               <Button

@@ -1430,11 +1430,11 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp, isPh
   }
 
   return (
-    <div ref={phoneScreenRef} tabIndex={isPhone ? -1 : undefined} className="grid min-h-0 gap-4 pb-6 outline-none max-[520px]:gap-2 max-[520px]:scroll-mt-[calc(var(--top-bar-height)+0.5rem)]">
-      <div className="flex flex-wrap items-center justify-between gap-3 max-[520px]:flex-nowrap max-[520px]:gap-1.5 max-[520px]:px-1 max-[520px]:pt-1 max-[520px]:pb-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-3 max-[520px]:contents">
+    <div ref={phoneScreenRef} tabIndex={isPhone ? -1 : undefined} className="grid min-h-0 min-w-0 gap-0 rounded-xl bg-card ring-1 ring-foreground/10 outline-none max-[520px]:bg-transparent max-[520px]:ring-0 max-[520px]:gap-2 max-[520px]:scroll-mt-[calc(var(--top-bar-height)+0.5rem)]">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3 max-[520px]:border-0 max-[520px]:flex-nowrap max-[520px]:gap-1.5 max-[520px]:px-1 max-[520px]:pt-1 max-[520px]:pb-2">
+        <div className="contents">
           <Select onValueChange={handleSelectSemester} value={normalizeSemesterName(selectedSemester)}>
-            <SelectTrigger aria-label={dictionary.courseOverviewSemester} className="h-9 w-[164px] rounded-md text-sm font-semibold max-[520px]:order-2 max-[520px]:h-11 max-[520px]:w-[138px] max-[520px]:text-xs">
+            <SelectTrigger aria-label={dictionary.courseOverviewSemester} className="min-[521px]:order-2 min-[521px]:ml-auto h-9 w-[164px] rounded-md text-sm font-semibold max-[520px]:order-2 max-[520px]:h-11 max-[520px]:w-[138px] max-[520px]:text-xs">
               <SelectValue />
             </SelectTrigger>
             <SelectContent align="start">
@@ -1445,20 +1445,21 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp, isPh
               ))}
             </SelectContent>
           </Select>
-          <div className="flex min-w-0 items-center gap-2 max-[520px]:contents">
-            <BarChart3 aria-hidden="true" className="size-4 shrink-0 text-muted-foreground max-[520px]:order-1 max-[520px]:ml-3 max-[520px]:mr-auto max-[520px]:my-3 max-[520px]:size-5" />
-            <h1 className="truncate text-xl font-black text-foreground max-[520px]:sr-only">{dictionary.academyGradesTitle}</h1>
-            <Badge className="rounded-md max-[520px]:order-3" variant="secondary">
+          <div className="contents">
+            <BarChart3 aria-hidden="true" className="min-[521px]:order-1 size-4 shrink-0 text-muted-foreground max-[520px]:order-1 max-[520px]:ml-3 max-[520px]:mr-auto max-[520px]:my-3 max-[520px]:size-5" />
+            <h1 className="sr-only">{dictionary.academyGradesTitle}</h1>
+            <Badge className="rounded-md min-[521px]:order-4 max-[520px]:order-3" variant="secondary">
               <span>{visibleRows.length}<span className="max-[520px]:sr-only"> {courseCountLabel}</span></span>
             </Badge>
           </div>
         </div>
-        <Button aria-label={dictionary.academyGradesRefresh} title={dictionary.academyGradesRefresh} className="max-[520px]:order-4 max-[520px]:size-11 max-[520px]:shrink-0 max-[520px]:p-0" disabled={isLoading} onClick={() => void loadGrades()} size="sm" type="button" variant="outline">
+        <Button aria-label={dictionary.academyGradesRefresh} title={dictionary.academyGradesRefresh} className="min-[521px]:order-3 min-[521px]:size-9 min-[521px]:p-0 max-[520px]:order-4 max-[520px]:size-11 max-[520px]:shrink-0 max-[520px]:p-0" disabled={isLoading} onClick={() => void loadGrades()} size="sm" type="button" variant="outline">
           <RefreshCw className={cn('size-4', isLoading && 'animate-spin')} />
-          <span className="max-[520px]:sr-only">{dictionary.academyGradesRefresh}</span>
+          <span className="sr-only">{dictionary.academyGradesRefresh}</span>
         </Button>
       </div>
 
+      <div className="grid min-w-0 gap-3 p-4 max-[520px]:gap-2 max-[520px]:p-0">
       {isPhone ? canvasWarningAlert : canvasWarning ? (
         <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm max-[520px]:px-3 max-[520px]:py-2 max-[520px]:text-xs text-amber-700 dark:text-amber-200">
           {canvasWarning}
@@ -1605,6 +1606,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp, isPh
           <CardContent className="py-8 text-sm text-muted-foreground max-[520px]:py-3 max-[520px]:text-xs">{dictionary.academyGradesEmpty}</CardContent>
         </Card>
       )}
+      </div>
     </div>
   );
 }

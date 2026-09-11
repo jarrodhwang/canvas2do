@@ -1,4 +1,4 @@
-import { MoreHorizontal } from 'lucide-react';
+import { MoreHorizontal, UserRound, LogOut, Plus } from 'lucide-react';
 import { useLanguage } from '../context/LanguageContext';
 import { cn } from '../lib/utils';
 import type { SidebarItemConfig } from '../modes/types';
@@ -12,13 +12,16 @@ interface PhoneNavigationProps {
   items: SidebarItemConfig[];
   onSelectItem: (id: string) => void;
   onSelectTodo: () => void;
+  onOpenProfile: () => void;
+  onSignOut: () => void;
+  onOpenAddItem: () => void;
 }
 
 const primaryItemIds = ['dashboard', 'courses', 'grades'];
 const navigationButtonClass = 'mx-auto h-11 w-full max-w-16 rounded-xl p-0';
 
-export function PhoneNavigation({ activeItemId, isTodoActive, items, onSelectItem, onSelectTodo }: PhoneNavigationProps) {
-  const { language, translateItemLabel } = useLanguage();
+export function PhoneNavigation({ activeItemId, isTodoActive, items, onSelectItem, onSelectTodo, onOpenProfile, onSignOut, onOpenAddItem }: PhoneNavigationProps) {
+  const { dictionary, language, translateItemLabel } = useLanguage();
   const primaryItems = items.filter((item) => primaryItemIds.includes(item.id));
   const moreItems = items.filter((item) => !primaryItemIds.includes(item.id));
   const canShowTodo = items.some((item) => item.id === 'dashboard');
@@ -59,7 +62,7 @@ export function PhoneNavigation({ activeItemId, isTodoActive, items, onSelectIte
           <WorkspaceIcon className="size-5" name="list-checks" />
         </Button>
       ) : null}
-      {moreItems.length > 0 ? (
+      {(
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
@@ -73,6 +76,12 @@ export function PhoneNavigation({ activeItemId, isTodoActive, items, onSelectIte
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-56 max-w-[calc(100vw-2rem)] p-2" side="top" sideOffset={12}>
+            <DropdownMenuItem className="min-h-11 gap-3 rounded-lg" onSelect={onOpenProfile}>
+              <UserRound className="size-5" /> {language === 'ko' ? '프로필 및 보안' : 'Profile & security'}
+            </DropdownMenuItem>
+            <DropdownMenuItem className="min-h-11 gap-3 rounded-lg" onSelect={onOpenAddItem}>
+              <Plus className="size-5" /> {dictionary.add}
+            </DropdownMenuItem>
             {moreItems.map((item) => (
               <DropdownMenuItem
                 aria-current={activeItemId === item.id && !isTodoActive ? 'page' : undefined}
@@ -84,9 +93,12 @@ export function PhoneNavigation({ activeItemId, isTodoActive, items, onSelectIte
                 {translateItemLabel(item.id, item.label)}
               </DropdownMenuItem>
             ))}
+            <DropdownMenuItem className="min-h-11 gap-3 rounded-lg" onSelect={onSignOut} variant="destructive">
+              <LogOut className="size-5" /> {dictionary.signOut}
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-      ) : null}
+      )}
     </>
   );
 }

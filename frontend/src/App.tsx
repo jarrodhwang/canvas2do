@@ -2134,7 +2134,7 @@ function formatSelectedDayHeading(value: string, language: 'en' | 'ko') {
   }
 
   const date = new Date(year, month - 1, day);
-  const weekday = date.toLocaleDateString(language === 'ko' ? 'ko-KR' : 'en-CA', { weekday: 'long' });
+  const weekday = date.toLocaleDateString(language === 'ko' ? 'ko-KR' : 'en-CA', { weekday: language === 'ko' ? 'long' : 'short' });
 
   if (language === 'ko') {
     return {
@@ -2144,7 +2144,7 @@ function formatSelectedDayHeading(value: string, language: 'en' | 'ko') {
   }
 
   return {
-    primary: `${date.toLocaleDateString('en-CA', { month: 'long' })} ${day}, ${weekday}`,
+    primary: `${date.toLocaleDateString('en-US', { month: 'short' })} ${day}, ${weekday}`,
     year: String(year),
   };
 }
@@ -5452,19 +5452,6 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
     setAcademyPreferencesSaveError('');
   };
 
-  const handleThemeChange = (nextTheme: AppTheme) => {
-    const nextSettings = normalizeAcademyCalendarSettings({
-      ...academyCalendarSettingsRef.current,
-      themeMode: nextTheme,
-      themeTimerEnabled: false,
-    });
-
-    academyCalendarSettingsRef.current = nextSettings;
-    setAcademyCalendarSettings(nextSettings);
-    storeAcademyCalendarSettings(nextSettings);
-    void persistAcademyCalendarSettings(nextSettings);
-  };
-
   const handleToggleCalendarCourse = (courseId: string) => {
     const nextCourseIds = hiddenCalendarCourseIds.includes(courseId)
       ? hiddenCalendarCourseIds.filter((currentCourseId) => currentCourseId !== courseId)
@@ -7189,8 +7176,6 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
             defaultValue: academyCalendarSettings.topBarDefaultCollapsed,
             value: !effectiveTopBarCollapsed,
           })}
-          onThemeChange={handleThemeChange}
-          theme={academyEffectiveTheme}
         />
       )}
 
@@ -7300,12 +7285,12 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
           isAcademySettingsView &&
             'h-[calc(100vh_-_var(--top-bar-height))] grid-rows-1 items-stretch overflow-hidden max-[520px]:h-[calc(100dvh_-_var(--top-bar-height))]',
           shouldShowAcademyBottomNav && 'pb-20 max-[520px]:pb-24',
-          'max-[520px]:px-3 max-[520px]:pb-[calc(6rem+env(safe-area-inset-bottom))] max-[520px]:pt-2',
+          'max-[520px]:px-3 max-[520px]:pb-[calc(6rem+env(safe-area-inset-bottom))] max-[520px]:pt-[calc(0.5rem+env(safe-area-inset-top))]',
           mainGridColumnsClass,
         )}
         style={{
           '--top-bar-height': isPhoneAcademyMode
-            ? 'calc(56px + env(safe-area-inset-top))'
+            ? '0px'
             : shouldHideCompactAcademyTopBar
             ? '0px'
             : effectiveTopBarCollapsed
@@ -7614,6 +7599,12 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
             isTodoActive={isDashboardWorkspaceView && currentView === 'board'}
             items={filteredActiveMode.sidebar.flatMap((section) => section.items)}
             onSelectItem={handleSelectSidebarItem}
+            onOpenProfile={() => {
+              setAcademySettingsFocusSection('profile');
+              handleSelectSidebarItem('settings');
+            }}
+            onSignOut={signOut}
+            onOpenAddItem={openAcademyCourseworkDialog}
             onSelectTodo={() => {
               const navigateToTodo = () => {
                 handleMoveSelectedDayToToday();

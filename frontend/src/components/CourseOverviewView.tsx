@@ -3364,14 +3364,15 @@ function CourseDetailView({
           <CourseSidebarToggleIcon className="size-4 shrink-0" />
           <span className={cn(isCourseSidebarCollapsed && 'sr-only')}>{dictionary.sidebarCollapse}</span>
         </Button>
-        <Button aria-label={dictionary.courseDetailBack} title={dictionary.courseDetailBack} className={cn('mb-3 h-8 w-full justify-start rounded-md max-[520px]:h-11', isCourseSidebarCollapsed && 'lg:justify-center lg:px-0')} onClick={onBack} size="sm" variant="ghost">
+        <div className="max-[520px]:mb-2 max-[520px]:flex max-[520px]:items-start max-[520px]:gap-2">
+        <Button aria-label={dictionary.courseDetailBack} title={dictionary.courseDetailBack} className={cn('mb-3 h-8 w-full justify-start rounded-md max-[520px]:mb-0 max-[520px]:size-11 max-[520px]:shrink-0 max-[520px]:justify-center max-[520px]:p-0', isCourseSidebarCollapsed && 'lg:justify-center lg:px-0')} onClick={onBack} size="sm" variant="ghost">
           <ArrowLeft className="size-4 shrink-0" />
-          <span className={cn(isCourseSidebarCollapsed && 'lg:sr-only')}>{dictionary.courseDetailBack}</span>
+          <span className={cn('max-[520px]:sr-only', isCourseSidebarCollapsed && 'lg:sr-only')}>{dictionary.courseDetailBack}</span>
         </Button>
-        <div className={cn('mb-3 min-w-0 px-1', isCourseSidebarCollapsed && 'lg:hidden')}>
+        <div className={cn('mb-3 min-w-0 px-1 max-[520px]:mb-0 max-[520px]:flex-1 max-[520px]:px-0 max-[520px]:text-right', isCourseSidebarCollapsed && 'lg:hidden')}>
           <div
             className={cn(
-              'mb-2 inline-flex max-w-full items-center rounded-md border px-2 py-1 text-xs font-semibold',
+              'mb-2 inline-flex max-w-full items-center rounded-md border px-2 py-1 text-xs font-semibold max-[520px]:mb-1',
               badgeColorClasses[row.color],
             )}
           >
@@ -3382,7 +3383,8 @@ function CourseDetailView({
               {dictionary.courseOverviewNotPublished}
             </Badge>
           ) : null}
-          <h2 className="line-clamp-2 text-sm font-semibold text-foreground">{row.name}</h2>
+          <h2 className="line-clamp-2 text-sm font-semibold text-foreground" title={row.name}>{row.name}</h2>
+        </div>
         </div>
         {isCanvasLoading ? (
           <CanvasLoadingBanner className={cn('mb-3', isCourseSidebarCollapsed && 'lg:sr-only')} label={dictionary.courseDetailLoading} size="compact" />

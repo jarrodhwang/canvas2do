@@ -1,11 +1,9 @@
 import { useState } from 'react';
-import { Check, GraduationCap, Languages, LogOut, Maximize2, Minimize2, Moon, Pencil, Plus, Sun } from 'lucide-react';
+import { GraduationCap, LogOut, Maximize2, Minimize2, Pencil, Plus } from 'lucide-react';
 
 import type { AuthSession } from '../api/canvasToDoApi';
 import { useLanguage } from '../context/LanguageContext';
-import { languageOptions, type Language } from '../i18n';
 import { cn } from '../lib/utils';
-import type { AppTheme } from '../theme';
 import { Button } from './ui/button';
 import {
   DropdownMenu,
@@ -14,13 +12,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from './ui/select';
+
 
 interface TopBarProps {
   academyLogoSrc?: string;
@@ -31,8 +23,6 @@ interface TopBarProps {
   onOpenProfile?: () => void;
   onSignOut?: () => void;
   onToggleTopBarCollapsed?: () => void;
-  onThemeChange: (theme: AppTheme) => void;
-  theme: AppTheme;
 }
 
 function SchoolLogo({ src, compact = false }: { src: string; compact?: boolean }) {
@@ -103,43 +93,10 @@ export function TopBar({
   onOpenProfile,
   onSignOut,
   onToggleTopBarCollapsed,
-  onThemeChange,
-  theme,
 }: TopBarProps) {
-  const { dictionary, language, setLanguage } = useLanguage();
+  const { dictionary } = useLanguage();
 
-  if (isPhone) {
-    return (
-      <header className="sticky top-0 z-40 flex h-[calc(56px+env(safe-area-inset-top))] items-center gap-1 border-b bg-card/95 px-3 pt-[env(safe-area-inset-top)] backdrop-blur-xl">
-        <div className="mr-auto flex min-w-0 items-center" aria-label="Canvas To Do">
-          <SchoolLogo src={academyLogoSrc ?? ''} compact />
-          <h1 className="sr-only">Canvas To Do</h1>
-        </div>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button aria-label={dictionary.language} className="size-11 rounded-xl" title={dictionary.language} type="button" variant="ghost">
-              <Languages className="size-5" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            {languageOptions.map((option) => (
-              <DropdownMenuItem className="min-h-11" key={option.value} onSelect={() => setLanguage(option.value)}>
-                {option.label}
-                {option.value === language ? <Check className="ml-auto size-4" /> : null}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <Button aria-label={theme === 'dark' ? 'Use light theme' : 'Use dark theme'} className="size-11 rounded-xl" onClick={() => onThemeChange(theme === 'dark' ? 'light' : 'dark')} type="button" variant="ghost">
-          {theme === 'dark' ? <Moon className="size-5" /> : <Sun className="size-5" />}
-        </Button>
-        <Button aria-label={dictionary.add} className="size-11 rounded-xl" onClick={onOpenAddItem} title={dictionary.add} type="button">
-          <Plus className="size-5" />
-        </Button>
-        <AccountMenu authSession={authSession} compact onOpenProfile={onOpenProfile} onSignOut={onSignOut} />
-      </header>
-    );
-  }
+  if (isPhone) return null;
 
   if (isTopBarCollapsed) {
     return (
@@ -174,23 +131,6 @@ export function TopBar({
       </div>
 
       <div className="flex min-w-0 items-center justify-end gap-2">
-        <Select value={language} onValueChange={(value) => setLanguage(value as Language)}>
-          <SelectTrigger aria-label={dictionary.language} className="h-10 w-[78px] px-2 text-xs font-black max-[520px]:hidden">
-            <Languages className="mr-1 size-4" /><SelectValue />
-          </SelectTrigger>
-          <SelectContent align="end">
-            {languageOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.shortLabel}</SelectItem>)}
-          </SelectContent>
-        </Select>
-        <Button
-          aria-label={theme === 'dark' ? 'Use light theme' : 'Use dark theme'}
-          onClick={() => onThemeChange(theme === 'dark' ? 'light' : 'dark')}
-          size="icon"
-          type="button"
-          variant="outline"
-        >
-          {theme === 'dark' ? <Moon className="size-4" /> : <Sun className="size-4" />}
-        </Button>
         <Button className="font-black max-[520px]:hidden" onClick={onOpenAddItem} type="button">
           <Plus className="size-4" /> {dictionary.add}
         </Button>

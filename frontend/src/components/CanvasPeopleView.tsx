@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { canvasToDoApi } from '../api/canvasToDoApi';
 import type { AcademyPreferences, CanvasCourse, CanvasCourseUser } from '../api/canvasToDoApi';
 import { useLanguage } from '../context/LanguageContext';
+import { isCanvasCoursePublished } from '../lib/canvasCourseMigration';
 import { isColorToken } from '../lib/colorStyles';
 import { cn } from '../lib/utils';
 import type { ColorToken } from '../modes/types';
@@ -332,6 +333,11 @@ export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: Canva
   }, []);
 
   const loadCoursePeople = (courseId: string, options?: { force?: boolean }) => {
+    const course = courses.find((candidate) => candidate.id === courseId);
+    if (!course || !isCanvasCoursePublished(course)) {
+      return;
+    }
+
     const currentState = coursePeople[courseId];
 
     if (!options?.force && (currentState?.status === 'loading' || currentState?.status === 'loaded')) {
@@ -557,13 +563,16 @@ export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: Canva
                 const coursePeopleUrl = getCoursePeopleUrl(course);
                 const courseColor = getCourseColor(course, canvasLecturePreferences);
                 const isCollapsed = !expandedCourseIds.has(course.id);
-                const courseCountLabel = state.status === 'loaded'
-                  ? `${state.people.length} ${dictionary.academyPeopleCountLabel}`
-                  : state.status === 'loading'
-                    ? dictionary.academyPeopleLoading
-                    : state.status === 'failed'
-                      ? dictionary.academyPeopleUnavailable
-                      : dictionary.academyPeopleCountLabel;
+                const isUnpublished = !isCanvasCoursePublished(course);
+                const courseCountLabel = isUnpublished
+                  ? dictionary.courseOverviewNotPublished
+                  : state.status === 'loaded'
+                    ? `${state.people.length} ${dictionary.academyPeopleCountLabel}`
+                    : state.status === 'loading'
+                      ? dictionary.academyPeopleLoading
+                      : state.status === 'failed'
+                        ? dictionary.academyPeopleUnavailable
+                        : dictionary.academyPeopleCountLabel;
 
                 return (
                   <section className="overflow-hidden rounded-xl border bg-background" key={course.id}>
@@ -590,7 +599,7 @@ export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: Canva
                           </span>
                         </span>
                       </button>
-                      {onOpenCoursePeople ? (
+                      {onOpenCoursePeople && !isUnpublished ? (
                         <Button
                           className="rounded-md"
                           onClick={() => onOpenCoursePeople(`canvas:${course.id}`, coursePeopleUrl)}
@@ -604,7 +613,11 @@ export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: Canva
                       ) : null}
                     </div>
 
-                    {isCollapsed ? null : (loadStatus === 'loading' && people.length === 0) || state.status === 'loading' ? (
+                    {isCollapsed ? null : isUnpublished ? (
+                      <div className="p-4 text-sm font-bold text-muted-foreground">
+                        {dictionary.canvasCourseNotPublished}
+                      </div>
+                    ) : (loadStatus === 'loading' && people.length === 0) || state.status === 'loading' ? (
                       <div className="flex items-center gap-2 p-4 text-sm font-bold text-muted-foreground">
                         <LoaderCircle className="size-4 animate-spin text-primary" />
                         {dictionary.academyPeopleLoading}

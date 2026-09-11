@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 
 import { canvasToDoApi, type AcademyPreferences, type CanvasCourse, type CanvasInboxItem } from '../api/canvasToDoApi';
 import { useLanguage } from '../context/LanguageContext';
+import { isCanvasCoursePublished } from '../lib/canvasCourseMigration';
 import { isColorToken } from '../lib/colorStyles';
 import { cn } from '../lib/utils';
 import type { ColorToken } from '../modes/types';
@@ -542,6 +543,11 @@ export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasI
     };
   }, [hasLoadedAcademyPreferences]);
   const loadCourseInbox = (courseId: string, options?: { force?: boolean }) => {
+    const course = courses.find((candidate) => candidate.id === courseId);
+    if (!course || !isCanvasCoursePublished(course)) {
+      return;
+    }
+
     const currentState = courseInbox[courseId];
 
     if (!options?.force && (currentState?.status === 'loading' || currentState?.status === 'loaded')) {
@@ -808,13 +814,16 @@ export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasI
                     const courseColor = getCourseColor(group.course, canvasLecturePreferences);
                     const courseLabel = getCourseLabel(group.course, canvasLecturePreferences);
                     const isCollapsed = !expandedCourseIds.has(group.course.id);
-                    const countLabel = group.state.status === 'loaded'
-                      ? `${group.state.items.length}`
-                      : group.state.status === 'loading'
-                        ? dictionary.canvasInboxLoading
-                        : group.state.status === 'failed'
-                          ? dictionary.canvasInboxUnavailable
-                          : '0';
+                    const isUnpublished = !isCanvasCoursePublished(group.course);
+                    const countLabel = isUnpublished
+                      ? dictionary.courseOverviewNotPublished
+                      : group.state.status === 'loaded'
+                        ? `${group.state.items.length}`
+                        : group.state.status === 'loading'
+                          ? dictionary.canvasInboxLoading
+                          : group.state.status === 'failed'
+                            ? dictionary.canvasInboxUnavailable
+                            : '0';
 
                     return (
                     <section className="mb-3 last:mb-0" key={group.course.id}>
@@ -834,7 +843,11 @@ export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasI
                         <span className="truncate text-[10px] font-black text-muted-foreground">{countLabel}</span>
                       </button>
                       {!isCollapsed ? (
-                        group.state.status === 'loading' ? (
+                        isUnpublished ? (
+                          <div className="rounded-lg px-3 py-2 text-xs font-bold text-muted-foreground">
+                            {dictionary.canvasCourseNotPublished}
+                          </div>
+                        ) : group.state.status === 'loading' ? (
                           <div className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold text-muted-foreground">
                             <LoaderCircle className="size-4 animate-spin text-primary" />
                             {dictionary.canvasInboxLoading}

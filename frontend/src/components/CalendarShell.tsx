@@ -152,8 +152,8 @@ export function CalendarShell({
   const hasFilters = Boolean(courseFilterOptions?.length);
   const hasMonthControls = Boolean(onPreviousMonth && onNextMonth);
   const hasMonthControlsForView = view === 'month' && hasMonthControls;
-  const hasDayControls = (view === 'agenda' || view === 'board') && Boolean(onPreviousAgendaDay && onNextAgendaDay);
-  const hasWeekControls = (view === 'timetable' || (isPhone && view === 'month' && mobileCalendarScope === 'week')) && Boolean(onPreviousWeek && onNextWeek);
+  const hasDayControls = (isTodoOpen || view === 'agenda' || view === 'board') && Boolean(onPreviousAgendaDay && onNextAgendaDay);
+  const hasWeekControls = !isTodoOpen && (view === 'timetable' || (isPhone && view === 'month' && mobileCalendarScope === 'week')) && Boolean(onPreviousWeek && onNextWeek);
   const timetableDate = selectedDateIso ?? todayIso ?? `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`;
   const timetableWeek = getTimetableWeek(timetableDate);
   const weekLabel = timetableWeek[0].toLocaleDateString(language === 'ko' ? 'ko-KR' : 'en-US', { month: 'short', day: 'numeric' }) + ' – ' + timetableWeek[6].toLocaleDateString(language === 'ko' ? 'ko-KR' : 'en-US', { month: 'short', day: 'numeric', year: isPhone ? undefined : 'numeric' });
@@ -171,10 +171,10 @@ export function CalendarShell({
       ? (language === 'ko' ? '주간 보기' : 'Week view')
       : (language === 'ko' ? '월간 보기' : 'Month view');
   const isPhoneTodayDisabled = isSelectedDateToday && (
-    view !== 'month' || data.days.some((day) => !day.outsideMonth && (day.isToday || day.dateIso === todayIso))
+    isTodoOpen || view !== 'month' || data.days.some((day) => !day.outsideMonth && (day.isToday || day.dateIso === todayIso))
   );
   const headingLabel = isTodoOpen
-    ? { primary: (language === 'ko' ? '할 일' : 'To Do'), secondary: '' }
+    ? { primary: agendaDateLabel ?? '', secondary: '' }
     : view === 'timetable'
     ? { primary: weekLabel, secondary: '' }
     : hasDayControls && agendaDateLabel
@@ -182,7 +182,7 @@ export function CalendarShell({
     : monthHeading;
   const previousLabel = hasWeekControls ? (language === 'ko' ? '이전 주' : 'Previous week') : hasDayControls ? previousDayLabel : previousMonthLabel;
   const nextLabel = hasWeekControls ? (language === 'ko' ? '다음 주' : 'Next week') : hasDayControls ? nextDayLabel : nextMonthLabel;
-  const showDateControls = !isTodoOpen && (hasMonthControlsForView || hasDayControls || hasWeekControls);
+  const showDateControls = (hasMonthControlsForView || hasDayControls || hasWeekControls);
   const handlePreviousPeriod = () => {
     if (hasWeekControls) {
       onPreviousWeek?.();
@@ -345,7 +345,7 @@ export function CalendarShell({
           ) : null}
         </div>
         <div className="flex items-center gap-1">
-          {onToday && !isTodoOpen ? (
+          {onToday ? (
             <Button aria-label={todayLabel} className="size-11 rounded-lg" disabled={isPhoneTodayDisabled} onClick={onToday} title={todayLabel} type="button" variant="ghost">
               <CalendarCheck2 className="size-5" />
             </Button>
@@ -367,7 +367,7 @@ export function CalendarShell({
       </div>
 
 
-      <CardHeader className={cn("flex flex-row flex-wrap items-start justify-between gap-3 px-3 pb-2 pt-1 max-xl:flex-col max-[520px]:flex-row max-[520px]:items-center max-[520px]:gap-1 max-[520px]:px-1 max-[520px]:pb-1 max-[520px]:pt-0", isPhone && isTodoOpen && 'hidden')}>
+      <CardHeader className={cn("flex flex-row flex-wrap items-start justify-between gap-3 px-3 pb-2 pt-1 max-xl:flex-col max-[520px]:flex-row max-[520px]:items-center max-[520px]:gap-1 max-[520px]:px-1 max-[520px]:pb-1 max-[520px]:pt-0")}>
         <div className="min-w-0 max-[520px]:w-full">
           <div className="flex min-w-0 items-center gap-2 max-[520px]:w-full max-[520px]:justify-between">
             {showDateControls ? (

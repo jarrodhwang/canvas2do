@@ -6693,9 +6693,9 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
     };
   };
 
-  const renderDayTodoContent = (variant: 'card' | 'dialog' | 'mobile' = 'card') => (
+  const renderDayTodoContent = (variant: 'card' | 'dialog' | 'mobile' = 'card', showDateHeader = true) => (
     <>
-      <div className={cn(
+      {showDateHeader ? <div className={cn(
         'min-w-0 rounded-lg border bg-muted/25 p-3',
         variant === 'card' && 'mb-4',
         variant === 'mobile' && 'mb-3 border-0 bg-transparent px-1 py-0',
@@ -6772,7 +6772,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
           value={selectedDayProgress}
           valueLabel={selectedDayProgressInfo.label}
         />
-      </div>
+      </div> : null}
       <div className={cn(
         'min-h-0 flex-1 overflow-y-auto pr-1',
         variant === 'dialog' && 'max-h-[64vh]',
@@ -7446,7 +7446,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                   isTodoOpen={isPhoneAcademyMode && isMobileTodoOpen}
                   onOpenTodoTab={() => setIsMobileTodoOpen(true)}
                   mobileTodoContent={isPhoneAcademyMode ? (
-                    <div className="p-3">{renderDayTodoContent('mobile')}</div>
+                    <div className="p-3">{renderDayTodoContent('mobile', false)}</div>
                   ) : undefined}
                   isPhone={isPhoneAcademyMode}
                   mobileCalendarScope={academyCalendarSettings.mobileCalendarScope}

@@ -2392,7 +2392,7 @@ function DashboardRows({
     <DropdownMenuTrigger asChild>
       <Button
         aria-label={dictionary.moreActions}
-        className={cn(touchMenuButtonClassName, isPhone && 'size-11 rounded-lg')}
+        className={cn(touchMenuButtonClassName, isPhone && 'size-9 rounded-lg')}
         data-dashboard-row-action
         onClick={stopTouchMenuPropagation}
         onMouseDown={stopTouchMenuPropagation}
@@ -2911,7 +2911,7 @@ function DashboardRows({
               : dictionary.courseworkMarkDone}
           className={cn(
             'grid size-5 shrink-0 place-items-center rounded-[7px] border text-[11px] font-black leading-none transition-colors',
-            isPhone && 'size-11 rounded-lg',
+            isPhone && 'size-9 rounded-lg',
             row.isCompleted
               ? 'border-emerald-400/40 bg-emerald-500 text-white'
               : 'border-muted-foreground/30 bg-muted/70 text-muted-foreground hover:bg-muted',
@@ -2953,7 +2953,7 @@ function DashboardRows({
         <div
           className={cn(
             'min-w-0 border-t text-sm first:border-t-0',
-            isPhone ? 'flex flex-col gap-2 py-3' : 'grid grid-cols-[auto_minmax(0,1fr)] items-start gap-2 py-2 sm:grid-cols-[auto_minmax(0,1fr)_auto]',
+            isPhone ? 'flex flex-col gap-1 py-2' : 'grid grid-cols-[auto_minmax(0,1fr)] items-start gap-2 py-2 sm:grid-cols-[auto_minmax(0,1fr)_auto]',
             isCheckableRow && 'rounded-md px-1 transition-colors hover:bg-muted/45',
             isPhone && isCheckableRow && row.isCompleted &&
               'border-emerald-500/25 bg-emerald-500/10 hover:bg-emerald-500/15 dark:border-emerald-300/25 dark:bg-emerald-300/10 dark:hover:bg-emerald-300/15',
@@ -2980,12 +2980,12 @@ function DashboardRows({
           onPointerUp={clearCourseworkLongPress}
         >
           {isPhone && isCheckableRow ? <>
-            <div className="flex min-w-0 items-center justify-between gap-2">
-              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">{courseBadge}{typeBadges}{star}</div>
-              {touchActionMenu}
-            </div>
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">{courseBadge}{typeBadges}{star}</div>
             {titleContent}
-            <div className="flex min-w-0 items-center justify-between gap-2">{dueBadge}{completionButton}</div>
+            <div className="flex min-w-0 items-center justify-between gap-1.5">
+              {dueBadge}
+              <div className="ml-auto flex shrink-0 items-center gap-1">{completionButton}{touchActionMenu}</div>
+            </div>
           </> : <>
             {courseBadge}
             <div className="min-w-0">{titleContent}</div>
@@ -6516,7 +6516,7 @@ export function DashboardCards({
 	            <Card
 	              className={cn(
 	                'min-w-0 rounded-xl bg-card shadow-none',
-                    isPhone && 'gap-1 py-3',
+                    isPhone && 'gap-1 py-2',
 		                (isCompactCourseCard || isCompactCourseworkCard) && 'h-54 overflow-hidden',
 	                card.id === 'upcoming-coursework' &&
 	                  !compactAcademySummary &&
@@ -6528,7 +6528,7 @@ export function DashboardCards({
 	              size={isCompactCourseCard || isCompactCourseworkCard ? 'sm' : 'default'}
 	            >
               {isCompactHeaderHidden ? null : (
-                <CardHeader className={cn('gap-2 pb-3', isPhone && 'px-3 pb-1')}>
+                <CardHeader className={cn('gap-2 pb-3', isPhone && 'px-3 pb-0')}>
                   <div className="flex min-w-0 items-start justify-between gap-3">
                     {card.kicker ? (
                       <div className="text-[11px] font-black uppercase text-muted-foreground">

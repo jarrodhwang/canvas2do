@@ -4761,7 +4761,7 @@ export function CourseOverviewView({
     <Card className="phone-course-list flex h-full min-h-0 flex-col rounded-xl shadow-none max-[520px]:h-auto max-[520px]:min-h-0 max-[520px]:rounded-none max-[520px]:border-0 max-[520px]:bg-transparent max-[520px]:py-0" size="sm">
       <CardHeader className="shrink-0 border-b max-[520px]:grid-cols-[auto_minmax(0,1fr)] max-[520px]:gap-2 max-[520px]:rounded-none max-[520px]:border-b max-[520px]:px-1 max-[520px]:py-1">
         <div className="flex min-w-0 items-center gap-2 text-xs font-semibold uppercase text-muted-foreground">
-          <BookOpen aria-hidden="true" className="max-[520px]:m-3 max-[520px]:size-5" size={15} strokeWidth={2.3} />
+          <BookOpen aria-hidden="true" className="max-[520px]:m-2 max-[520px]:size-5" size={15} strokeWidth={2.3} />
           <span className="max-[520px]:sr-only">{dictionary.courseOverviewEyebrow}</span>
         </div>
         <CardTitle className="text-2xl font-semibold tracking-normal max-[520px]:sr-only">
@@ -4770,22 +4770,25 @@ export function CourseOverviewView({
         <CardDescription className="max-w-2xl font-medium max-[520px]:hidden">
           {dictionary.courseOverviewSubtitle}
         </CardDescription>
-        <CardAction className="flex flex-wrap items-center justify-end gap-2 max-[520px]:col-start-2 max-[520px]:row-span-1 max-[520px]:row-start-1 max-[520px]:gap-1.5">
+        <CardAction className="flex min-w-0 flex-wrap items-center justify-end gap-2 max-[520px]:col-start-2 max-[520px]:row-span-1 max-[520px]:row-start-1 max-[520px]:w-full max-[520px]:flex-nowrap max-[520px]:gap-1.5">
           {deletedManualRows.length > 0 ? (
             <Button
               aria-expanded={showDeletedManualCourses}
-              className="h-8 gap-1.5 rounded-md px-2.5 text-xs max-[520px]:h-11"
+              aria-label={`${dictionary.courseOverviewTrash} (${deletedManualRows.length})`}
+              className="relative size-8 shrink-0 rounded-md p-0 max-[520px]:size-11"
               onClick={() => setShowDeletedManualCourses((current) => !current)}
+              title={`${dictionary.courseOverviewTrash} (${deletedManualRows.length})`}
               type="button"
               variant={showDeletedManualCourses ? 'secondary' : 'outline'}
             >
-              <Trash2 aria-hidden="true" className="size-3.5" />
-              <span>{dictionary.courseOverviewTrash}</span>
-              <span>({deletedManualRows.length})</span>
+              <Trash2 aria-hidden="true" className="size-4 max-[520px]:size-5" />
+              <span aria-hidden="true" className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[9px] font-bold leading-none text-primary-foreground">
+                {deletedManualRows.length}
+              </span>
             </Button>
           ) : null}
           <Select onValueChange={handleSelectSemester} value={normalizeSemesterName(selectedSemester)}>
-            <SelectTrigger aria-label={dictionary.courseOverviewSemester} className="h-8 w-[150px] rounded-md text-xs font-semibold max-[520px]:h-11 max-[520px]:w-[138px] max-[520px]:text-xs">
+            <SelectTrigger aria-label={dictionary.courseOverviewSemester} className="h-8 w-[150px] min-w-0 rounded-md text-xs font-semibold max-[520px]:h-11 max-[520px]:w-auto max-[520px]:flex-1 max-[520px]:text-xs">
               <SelectValue aria-label={dictionary.courseOverviewSemester} />
             </SelectTrigger>
             <SelectContent align="end">
@@ -4797,7 +4800,7 @@ export function CourseOverviewView({
             </SelectContent>
           </Select>
           {courseLoadStatus === 'loading' ? (
-            <Badge className="gap-1.5" variant="outline">
+            <Badge className="gap-1.5 max-[520px]:hidden" variant="outline">
               <LoaderCircle aria-hidden="true" className="animate-spin text-primary" size={13} strokeWidth={2.4} />
               <span>{dictionary.canvasCoursesLoading}</span>
             </Badge>

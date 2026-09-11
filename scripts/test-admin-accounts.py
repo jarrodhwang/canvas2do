@@ -67,7 +67,7 @@ def main():
             Authentication__Admin__BootstrapEmail="admin@example.test", Authentication__Admin__BootstrapPassword="TestOnlyAdmin123!",
             Authentication__Google__ClientId="", Authentication__Facebook__ClientId="",
             Email__PublicFrontendBaseUrl=f"http://127.0.0.1:{api_port}", Email__Development__ExposeTokens="true",
-            Authentication__Canvas__AllowedOrigins="https://sfu.instructure.com,https://canvas.ubc.ca,https://canvas.usask.ca,https://canvas.uw.edu,https://canvas.stanford.edu,https://canvas.harvard.edu,https://canvas.example.edu",
+            Authentication__Canvas__AllowedOrigins="https://sfu.instructure.com,https://canvas.ubc.ca,https://canvas.usask.ca,https://canvas.uw.edu,https://canvas.stanford.edu,https://canvas.harvard.edu,https://q.utoronto.ca,https://lms.korea.ac.kr,https://canvas.example.edu",
             Authentication__Canvas__Schools__0__InstanceUrl="https://canvas.example.edu",
             Authentication__Canvas__Schools__0__Name="Example University",
             Authentication__Canvas__ManualTokenEnabled="true", DataProtection__KeysPath=str(root / "keys"),
@@ -153,6 +153,8 @@ def main():
                 'University of Washington': 'https://canvas.uw.edu',
                 'Stanford University': 'https://canvas.stanford.edu',
                 'Harvard University': 'https://canvas.harvard.edu',
+                'University of Toronto': 'https://q.utoronto.ca',
+                'Korea University': 'https://lms.korea.ac.kr',
                 'Example University': 'https://canvas.example.edu',
             }
             print("PASS school dropdown catalog follows allowed origins and configured school names")

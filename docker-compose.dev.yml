@@ -57,7 +57,7 @@ services:
       Email__Smtp__EnableSsl: ${SMTP_ENABLE_SSL:-true}
       Email__Smtp__TimeoutSeconds: ${SMTP_TIMEOUT_SECONDS:-15}
       Email__Development__ExposeTokens: ${EMAIL_DEVELOPMENT_EXPOSE_TOKENS:-false}
-      Authentication__Canvas__AllowedInstanceUrls: ${CANVAS_ALLOWED_INSTANCE_URLS:-https://sfu.instructure.com,https://canvas.ubc.ca,https://canvas.usask.ca,https://canvas.uw.edu,https://canvas.stanford.edu,https://canvas.harvard.edu}
+      Authentication__Canvas__AllowedInstanceUrls: ${CANVAS_ALLOWED_INSTANCE_URLS:-https://sfu.instructure.com,https://canvas.ubc.ca,https://canvas.usask.ca,https://canvas.uw.edu,https://canvas.stanford.edu,https://canvas.harvard.edu,https://q.utoronto.ca,https://bruinlearn.ucla.edu,https://bcourses.berkeley.edu,https://canvas.it.umich.edu,https://canvas.illinois.edu,https://canvas.umn.edu,https://canvas.virginia.edu,https://canvas.colorado.edu,https://canvas.upenn.edu,https://login.canvas.cornell.edu,https://etl.snu.ac.kr,https://lms.korea.ac.kr,https://icampus.skku.edu,https://canvas.suwon.ac.kr}
       Authentication__Canvas__OAuth__Enabled: ${CANVAS_OAUTH_ENABLED:-false}
       Authentication__Canvas__OAuth__ClientId: ${CANVAS_OAUTH_CLIENT_ID:-}
       Authentication__Canvas__OAuth__ClientSecret: ${CANVAS_OAUTH_CLIENT_SECRET:-}

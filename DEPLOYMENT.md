@@ -234,7 +234,7 @@ Guide screenshots are bundled locally; attribution and source URLs are in
 `npm run test:onboarding --prefix frontend`.
 
 The Canvas setup school dropdown is generated from the API's allowed instance URLs.
-SFU, UBC, Saskatchewan, Washington, Stanford, and Harvard are included in the bundled defaults. To add another institution, add
+The bundled defaults include 20 verified North American and South Korean university Canvas origins. To add another institution, add
 its HTTPS Canvas origin to `Authentication:Canvas:AllowedInstanceUrls` (or the
 existing `AllowedOrigins` override). Optionally set entries under
 `Authentication:Canvas:Schools` with `Name` and `InstanceUrl` to provide a friendly
@@ -253,6 +253,20 @@ Verified Canvas school defaults (2026-09-09):
 | University of Washington | `https://canvas.uw.edu` | [UW Canvas access instructions](https://education.uw.edu/sites/default/files/Student_Directions_Accessing_Your_Canvas_Course.pdf) |
 | Stanford University | `https://canvas.stanford.edu` | [Stanford Canvas support](https://gocanvas.stanford.edu/contact-us) |
 | Harvard University | `https://canvas.harvard.edu` | [Harvard Canvas login](https://atg.fas.harvard.edu/login-canvas) |
+| University of Toronto | `https://q.utoronto.ca` | [U of T Quercus student support](https://teaching.utoronto.ca/student-support/) |
+| University of California, Los Angeles | `https://bruinlearn.ucla.edu` | [UCLA Canvas security notice](https://ociso.ucla.edu/news/security-incident-instructure-canvas) |
+| University of California, Berkeley | `https://bcourses.berkeley.edu` | [UC Berkeley bCourses access](https://berkeley.service-now.com/kb_view.do?sysparm_article=KB0010836) |
+| University of Michigan | `https://canvas.it.umich.edu` | [U-M Canvas login](https://canvas.it.umich.edu/) |
+| University of Illinois Urbana-Champaign | `https://canvas.illinois.edu` | [Canvas@Illinois access](https://answers.uillinois.edu/illinois/page.php?id=112244) |
+| University of Minnesota | `https://canvas.umn.edu` | [UMN Canvas access](https://digitaled.umn.edu/get-help/new-teaching) |
+| University of Virginia | `https://canvas.virginia.edu` | [UVACanvas login](https://canvas.virginia.edu/connect-login) |
+| University of Colorado Boulder | `https://canvas.colorado.edu` | [Canvas at CU Boulder](https://canvas.colorado.edu/) |
+| University of Pennsylvania | `https://canvas.upenn.edu` | [Penn Canvas login guidance](https://infocanvas.upenn.edu/students/access-canvas-log-in-students/) |
+| Cornell University | `https://login.canvas.cornell.edu` | [Canvas@Cornell login](https://login.canvas.cornell.edu/) |
+| Seoul National University | `https://etl.snu.ac.kr` | [SNU eTL service information](https://www.snu.ac.kr/campuslife/aid/it) |
+| Korea University | `https://lms.korea.ac.kr` | [KU LMS manual](https://digital.korea.ac.kr/ic/etc/LMS_manual_top.do) |
+| Sungkyunkwan University | `https://icampus.skku.edu` | [SKKU Canvas notice](https://semi.skku.edu/summer/board/notice.do?article.offset=0&articleLimit=10&articleNo=158503&mode=view) |
+| The University of Suwon | `https://canvas.suwon.ac.kr` | [Suwon University CANVAS service](https://www.suwon.ac.kr/index.html?menuno=2170) |
 
 Each origin's Canvas profile API returned an authentication-required response without
 redirecting to another host during verification. Actual access still depends on the

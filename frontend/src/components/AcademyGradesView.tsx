@@ -6,7 +6,7 @@ import { canvasToDoApi } from '../api/canvasToDoApi';
 import type { AcademyPreferences, CanvasCourse, CanvasCourseContent } from '../api/canvasToDoApi';
 import { useLanguage } from '../context/LanguageContext';
 import { badgeColorClasses, dotColorClasses } from '../lib/colorStyles';
-import { shouldConvertCanvasCourseToManual } from '../lib/canvasCourseMigration';
+import { isCanvasCoursePublished, shouldConvertCanvasCourseToManual } from '../lib/canvasCourseMigration';
 import {
   defaultGradeProgressColorThresholds,
   getGradeProgressColor,
@@ -154,6 +154,7 @@ type CanvasAssessmentPreferences = Record<string, CanvasAssessmentPreference>;
 interface GradeCourseRow {
   id: string;
   canvasCourseId?: string;
+  isPublished?: boolean;
   source: 'canvas' | 'manual';
   name: string;
   courseCode: string;
@@ -362,6 +363,7 @@ function createCanvasRows(courses: CanvasCourse[], preferences: CanvasLecturePre
     return [{
       id: `canvas:${courseId}`,
       canvasCourseId: courseId,
+      isPublished: isCanvasCoursePublished(course),
       source: 'canvas',
       name: preference.friendlyName?.trim() || course.name,
       courseCode: preference.friendlyCourseCode?.trim() || course.courseCode?.trim() || course.id,
@@ -402,6 +404,7 @@ function createStoredCanvasRows(
     return [{
       id: `stored-canvas:${courseId}`,
       canvasCourseId: courseId,
+      isPublished: isCanvasCoursePublished(preference),
       source: 'canvas' as const,
       name: preference.friendlyName?.trim() ||
         preference.courseName?.trim() ||
@@ -1055,6 +1058,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp, isPh
     const expandedRowsToLoad = rows.filter((row) => (
       expandedRowIds.has(row.id) &&
       row.canvasCourseId &&
+      row.isPublished !== false &&
       !courseDetailsRef.current[row.id]?.status
     ));
 
@@ -1299,6 +1303,14 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp, isPh
     const detail = courseDetails[row.id];
 
     if (row.source === 'canvas') {
+      if (row.isPublished === false) {
+        return (
+          <div className="rounded-lg border bg-background/70 px-3 py-3 text-sm text-muted-foreground">
+            {dictionary.academyGradesNotPublished}
+          </div>
+        );
+      }
+
       if (detail?.status === 'loading') {
         return (
           <div className="flex items-center gap-2 rounded-lg border bg-background/70 px-3 py-3 text-sm text-muted-foreground">

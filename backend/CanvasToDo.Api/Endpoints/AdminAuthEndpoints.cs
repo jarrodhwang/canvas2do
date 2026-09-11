@@ -267,7 +267,7 @@ public static class AdminAuthEndpoints
         {
             return Results.Problem(
                 title: "Master account cannot be modified.",
-                detail: "This is the configured master administrator account. Update AUTH_ADMIN_BOOTSTRAP_EMAIL to another administrator before changing its role or status.",
+                detail: "This is the configured master administrator account. Not Available for deactivation or demotion.",
                 statusCode: StatusCodes.Status409Conflict);
         }
 
@@ -306,7 +306,7 @@ public static class AdminAuthEndpoints
         if (request.Email is not null && !string.Equals(target.Email, request.Email.Trim(), StringComparison.OrdinalIgnoreCase))
         {
             if (string.Equals(previousEmail, bootstrapEmail, StringComparison.OrdinalIgnoreCase))
-                return Results.Problem(statusCode: 409, detail: "Update AUTH_ADMIN_BOOTSTRAP_EMAIL before changing this administrator's email.");
+                return Results.Problem(statusCode: 409, detail: "Update ADMIN EMAIL before changing this administrator's email.");
             target.Email = request.Email.Trim().ToLowerInvariant();
             target.UserName = target.Email;
             // Approval to use an address is not proof of mailbox ownership.

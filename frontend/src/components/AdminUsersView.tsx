@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, RefreshCw, Search, ShieldCheck, UserRound, UserX, Eye, Settings } from 'lucide-react';
+import { ChevronLeft, ChevronRight, RefreshCw, Search, ShieldCheck, UserRound, UserX, Eye, Settings, MoreHorizontal } from 'lucide-react';
 import { AdminUserDetails } from './AdminUserDetails';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -12,6 +12,13 @@ import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Input } from './ui/input';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from './ui/dropdown-menu';
 import {
   Select,
   SelectContent,
@@ -42,7 +49,7 @@ function initials(name: string) {
 }
 
 export function AdminUsersView() {
-  const [selectedUser, setSelectedUser] = useState<{ id: string; preview: boolean } | null>(null);
+  const [selectedUser, setSelectedUser] = useState<{ id: string; preview: boolean; initialTab?: 'password' | 'canvas' } | null>(null);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(1);
@@ -136,25 +143,23 @@ export function AdminUsersView() {
     }
   };
 
-  if (selectedUser) return <AdminUserDetails key={selectedUser.id} userId={selectedUser.id} preview={selectedUser.preview}
+  if (selectedUser) return <AdminUserDetails key={selectedUser.id} userId={selectedUser.id} preview={selectedUser.preview} initialTab={selectedUser.initialTab}
     onClose={() => { setSelectedUser(null); void refresh(); }} onSaved={() => void refresh()} />;
 
   return (
-    <Card className="min-w-0 rounded-xl bg-card shadow-none max-[520px]:gap-2 max-[520px]:py-2">
-      <CardHeader className="gap-3 border-b md:flex-row md:items-center md:justify-between max-[520px]:flex max-[520px]:flex-row max-[520px]:items-center max-[520px]:gap-2 max-[520px]:px-3">
-        <div>
-          <ShieldCheck aria-hidden="true" className="hidden size-5 text-muted-foreground max-[520px]:block" />
-          <CardTitle className="text-xl font-black max-[520px]:sr-only">User management</CardTitle>
-          <p className="mt-1 text-sm font-semibold text-muted-foreground max-[520px]:hidden">
-            Manage profiles, account settings, Canvas connections, and password approvals.
-          </p>
+    <Card className="min-w-0 gap-0 overflow-hidden rounded-xl bg-card py-0 shadow-none">
+      <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3 border-b px-4 py-3 max-[520px]:flex-nowrap max-[520px]:gap-2 max-[520px]:px-3 max-[520px]:py-2">
+        <div className="flex shrink-0 items-center gap-2">
+          <ShieldCheck aria-hidden="true" className="size-4 text-muted-foreground" />
+          <CardTitle className="text-base font-semibold max-[520px]:sr-only">User management</CardTitle>
+          <Badge className="h-5 px-1.5 text-[11px] tabular-nums" variant="secondary" aria-label={`${total} users`}>{total}</Badge>
         </div>
         <div className="flex items-center gap-2 max-[520px]:min-w-0 max-[520px]:flex-1">
           <label className="relative min-w-0 max-[520px]:flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               aria-label="Search users"
-              className="w-[240px] max-w-[55vw] pl-9 max-[520px]:h-11 max-[520px]:w-full max-[520px]:max-w-full"
+              className="h-8 w-[230px] max-w-[55vw] text-sm pl-9 max-[520px]:h-11 max-[520px]:w-full max-[520px]:max-w-full"
               onChange={(event) => {
                 setPage(1);
                 setQuery(event.target.value);
@@ -163,108 +168,103 @@ export function AdminUsersView() {
               value={query}
             />
           </label>
-          <Button aria-label="Refresh users" className="max-[520px]:size-11" disabled={isLoading} onClick={() => void refresh()} size="icon" variant="outline">
+          <Button aria-label="Refresh users" className="size-8 shrink-0 max-[520px]:size-11" disabled={isLoading} onClick={() => void refresh()} size="icon" variant="outline">
             <RefreshCw className={cn('size-4', isLoading && 'animate-spin')} />
           </Button>
         </div>
       </CardHeader>
       <CardContent className="p-0">
         {error || message ? (
-          <div className={cn(
+          <div role={error ? 'alert' : 'status'} className={cn(
             'border-b px-4 py-2 text-sm font-semibold',
             error ? 'border-destructive/25 bg-destructive/10 text-destructive' : 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200',
           )}>
             {error || message}
           </div>
         ) : null}
-        <div className="divide-y">
-          {!isLoading && users.length === 0 ? (
-            <div className="p-8 text-center text-sm font-semibold text-muted-foreground">No users found.</div>
-          ) : null}
+        <div aria-hidden="true" className="hidden grid-cols-[minmax(220px,1fr)_230px_180px_80px] gap-4 border-b bg-muted/25 px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground xl:grid">
+          <span>User</span><span>Role / status</span><span>Activity</span><span className="text-right">Actions</span>
+        </div>
+        {isLoading && users.length === 0 ? <p role="status" className="px-4 py-6 text-center text-sm text-muted-foreground">Loading users…</p> : null}
+        {!isLoading && users.length === 0 ? (
+          <p className="px-4 py-6 text-center text-sm text-muted-foreground">{error ? 'User list unavailable. Try refreshing.' : query ? 'No users match your search.' : 'No users found.'}</p>
+        ) : null}
+        <ul aria-label="Users" aria-busy={isLoading} className="divide-y">
           {users.map((user) => {
             const busy = busyUserId === user.id;
             const role = user.role?.toLowerCase() === 'admin' ? 'Admin' : 'User';
+            const label = user.displayName || user.email;
+            const openDetails = () => setSelectedUser({ id: user.id, preview: false });
 
             return (
-              <div className="grid gap-4 p-4 max-[520px]:grid-cols-2 max-[520px]:gap-2 max-[520px]:p-3 lg:grid-cols-[minmax(220px,1fr)_150px_150px] lg:items-center" key={user.id}>
-                <div className="flex min-w-0 items-center gap-3 max-[520px]:col-span-2 max-[520px]:gap-2">
-                  <span className="grid size-10 max-[520px]:size-8 shrink-0 place-items-center overflow-hidden rounded-full bg-primary/10 text-sm font-black text-primary">
-                    {initials(user.displayName)}
+              <li className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 py-3 max-[520px]:px-3 xl:grid-cols-[minmax(220px,1fr)_230px_180px_80px] xl:gap-4 xl:py-2.5" key={user.id}>
+                <div className="col-start-1 row-start-1 flex min-w-0 items-start gap-2.5">
+                  <span aria-hidden="true" className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold text-muted-foreground">
+                    {initials(label)}
                   </span>
                   <div className="min-w-0">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span className="truncate font-black">{user.displayName}</span>
-                      {user.twoFactorEnabled ? <ShieldCheck aria-label="Two-step verification enabled" className="size-4 shrink-0 text-emerald-600" /> : null}
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <button className="min-w-0 truncate rounded-sm text-left text-sm font-semibold hover:underline focus-visible:outline-2 focus-visible:outline-ring" aria-label={`View details for ${label}`} title={label} onClick={openDetails} type="button">{label}</button>
+                      {user.twoFactorEnabled ? <ShieldCheck aria-label="Two-step verification enabled" className="size-3.5 shrink-0 text-emerald-600" /> : null}
                     </div>
-                    <div className="truncate text-xs font-semibold text-muted-foreground">{user.email}</div>
-                    {user.manualModeRequestPending && <div className="text-xs font-bold text-amber-700 dark:text-amber-200">Manual mode awaiting approval</div>}
-                    {user.passwordRequest?.status === 'pending' && <div className="text-xs font-bold text-amber-700 dark:text-amber-200">Password change awaiting approval</div>}
-                    {!user.emailConfirmed ? (
-                      <div className="mt-0.5 text-[11px] font-bold text-amber-700 dark:text-amber-200">Email not confirmed</div>
-                    ) : null}
-                    <div className="mt-0.5 text-[11px] font-semibold text-muted-foreground" title="Latest authenticated app request, recorded at most once per minute. Times are local.">Last active: {user.lastActiveAt ? formatDate(user.lastActiveAt) : 'Not recorded'}</div>
-                    <div className="mt-0.5 text-[11px] font-semibold text-muted-foreground">Last sign-in: {formatDate(user.lastLoginAt)}</div>
+                    <div className="truncate text-xs text-muted-foreground" title={user.email}>{user.email}</div>
+                    {(user.manualModeRequestPending || user.passwordRequest?.status === 'pending' || !user.emailConfirmed) && (
+                      <div className="mt-1 flex flex-wrap items-center gap-1">
+                        {user.manualModeRequestPending && <button className="rounded border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 hover:bg-amber-500/20 focus-visible:outline-2 focus-visible:outline-ring dark:text-amber-200" onClick={() => setSelectedUser({ id: user.id, preview: false, initialTab: 'canvas' })} type="button" aria-label={`Review manual mode request for ${label}`}>Manual mode approval</button>}
+                        {user.passwordRequest?.status === 'pending' && <button className="rounded border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 hover:bg-amber-500/20 focus-visible:outline-2 focus-visible:outline-ring dark:text-amber-200" onClick={() => setSelectedUser({ id: user.id, preview: false, initialTab: 'password' })} type="button" aria-label={`Review password request for ${label}`}>Password approval</button>}
+                        {!user.emailConfirmed && <span className="text-[10px] text-amber-700 dark:text-amber-200">Email unconfirmed</span>}
+                      </div>
+                    )}
                   </div>
                 </div>
-                <Select
-                  disabled={busy}
-                  onValueChange={(value) => void updateUser(user, { role: value })}
-                  value={role}
-                >
-                  <SelectTrigger className="max-[520px]:h-11 max-[520px]:w-full max-[520px]:min-w-0 max-[520px]:text-xs" aria-label={`Role for ${user.displayName}`}><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="User"><span className="inline-flex items-center gap-2"><UserRound className="size-4" /> User</span></SelectItem>
-                    <SelectItem value="Admin"><span className="inline-flex items-center gap-2"><ShieldCheck className="size-4" /> Admin</span></SelectItem>
-                  </SelectContent>
-                </Select>
-                <Select
-                  disabled={busy}
-                  onValueChange={(value) => void updateUser(user, { status: value as AdminUserStatus })}
-                  value={user.status}
-                >
-                  <SelectTrigger className={cn("max-[520px]:h-11 max-[520px]:w-full max-[520px]:min-w-0 max-[520px]:text-xs", statusStyles[user.status])} aria-label={`Status for ${user.displayName}`}><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="active">Active</SelectItem>
-                    <SelectItem value="pending">Pending approval</SelectItem>
-                    <SelectItem value="inactive">Inactive</SelectItem>
-                  </SelectContent>
-                </Select>
-                <div className="flex flex-wrap items-center justify-end gap-2 lg:col-span-3 max-[520px]:col-span-2 max-[520px]:gap-1.5">
-                  <Button className="max-[520px]:h-11 max-[520px]:flex-1 max-[520px]:px-2 max-[520px]:text-xs" size="sm" variant="outline" onClick={() => setSelectedUser({ id: user.id, preview: false })}><Settings className="size-4" /> Details</Button>
-                  <Button className="max-[520px]:h-11 max-[520px]:flex-1 max-[520px]:px-2 max-[520px]:text-xs" size="sm" variant="outline" onClick={() => setSelectedUser({ id: user.id, preview: true })}><Eye className="size-4" /> Preview</Button>
-                  {user.status === 'pending' ? (
-                    <Button
-                      disabled={busy}
-                      onClick={() => void updateUser(user, { status: 'active' })}
-                      size="sm"
-                      type="button"
-                    >
-                      <ShieldCheck className="size-4" /> Approve
-                    </Button>
-                  ) : null}
-                  <Badge className={cn(statusStyles[user.status], "max-[520px]:hidden")} variant="outline">{user.status}</Badge>
-                  <Button
-                    className="max-[520px]:size-11 max-[520px]:shrink-0"
-                    aria-label={`Revoke sessions for ${user.displayName}`}
-                    disabled={busy}
-                    onClick={() => void revokeSessions(user)}
-                    size="icon"
-                    title="Revoke active sessions"
-                    variant="outline"
-                  >
-                    <UserX className="size-4" />
-                  </Button>
+                <div className="col-span-2 col-start-1 row-start-2 grid min-w-0 grid-cols-2 gap-2 xl:col-span-1 xl:col-start-2 xl:row-start-1">
+                  <Select disabled={busy} onValueChange={(value) => void updateUser(user, { role: value })} value={role}>
+                    <SelectTrigger className="h-8 w-full min-w-0 text-xs max-[520px]:h-11" aria-label={`Role for ${label}`}><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="User"><span className="inline-flex items-center gap-2"><UserRound className="size-4" /> User</span></SelectItem>
+                      <SelectItem value="Admin"><span className="inline-flex items-center gap-2"><ShieldCheck className="size-4" /> Admin</span></SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Select disabled={busy} onValueChange={(value) => void updateUser(user, { status: value as AdminUserStatus })} value={user.status}>
+                    <SelectTrigger className={cn('h-8 w-full min-w-0 text-xs max-[520px]:h-11', statusStyles[user.status])} aria-label={`Status for ${label}`}><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="active">Active</SelectItem>
+                      <SelectItem value="pending">Pending</SelectItem>
+                      <SelectItem value="inactive">Inactive</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
-              </div>
+                <dl className="col-span-2 col-start-1 row-start-3 flex min-w-0 flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-muted-foreground xl:col-span-1 xl:col-start-3 xl:row-start-1 xl:block xl:space-y-1">
+                  <div title="Latest authenticated app request, recorded at most once per minute. Times are local."><dt className="inline">Active: </dt><dd className="inline text-foreground/80">{user.lastActiveAt ? formatDate(user.lastActiveAt) : 'Not recorded'}</dd></div>
+                  <div><dt className="inline">Sign-in: </dt><dd className="inline">{formatDate(user.lastLoginAt)}</dd></div>
+                </dl>
+                <div className="col-start-2 row-start-1 flex items-center justify-end gap-1 self-start xl:col-start-4 xl:self-center">
+                  <Button className="size-8 max-[520px]:size-11" size="icon" variant="ghost" aria-label={`Manage ${label}`} title="Account details" onClick={openDetails}><Settings className="size-4" /></Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button className="size-8 max-[520px]:size-11" size="icon" variant="ghost" disabled={busy} aria-label={`Actions for ${label}`} title="More actions"><MoreHorizontal className="size-4" /></Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-56" aria-label={`Actions for ${label}`}>
+                      <div aria-hidden="true" className="truncate px-2 py-1.5 text-xs font-semibold text-muted-foreground">{label}</div>
+                      <DropdownMenuItem onSelect={openDetails}><Settings className="size-4" />Account details</DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => setSelectedUser({ id: user.id, preview: true })}><Eye className="size-4" />Preview account</DropdownMenuItem>
+                      {user.status === 'pending' && <DropdownMenuItem disabled={busy} onSelect={() => void updateUser(user, { status: 'active' })}><ShieldCheck className="size-4" />Approve account</DropdownMenuItem>}
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem variant="destructive" disabled={busy} onSelect={() => void revokeSessions(user)}><UserX className="size-4" />Revoke sessions</DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              </li>
             );
           })}
-        </div>
+        </ul>
         {total > 0 ? (
-          <div className="flex items-center justify-between gap-3 border-t px-4 py-3 max-[520px]:px-3 max-[520px]:py-2 text-xs font-semibold text-muted-foreground">
-            <span>{total} user{total === 1 ? '' : 's'}</span>
+          <div className="flex items-center justify-between gap-3 border-t px-4 py-2 max-[520px]:px-3 text-xs font-semibold text-muted-foreground">
+            <span>{users.length ? (page - 1) * 50 + 1 : 0}–{Math.min(page * 50, total)} of {total}</span>
             <div className="flex items-center gap-2">
               <Button
                 aria-label="Previous user page"
+                className="size-7 max-[520px]:size-11"
                 disabled={isLoading || page <= 1}
                 onClick={() => setPage((current) => Math.max(1, current - 1))}
                 size="icon"
@@ -275,6 +275,7 @@ export function AdminUsersView() {
               <span>Page {page} of {pageCount}</span>
               <Button
                 aria-label="Next user page"
+                className="size-7 max-[520px]:size-11"
                 disabled={isLoading || page >= pageCount}
                 onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
                 size="icon"

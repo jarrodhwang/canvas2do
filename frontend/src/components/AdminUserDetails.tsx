@@ -5,7 +5,7 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 
 type Tab = 'profile' | 'password' | 'settings' | 'canvas' | 'preview';
-type Props = { userId: string; preview: boolean; onClose: () => void; onSaved: () => void };
+type Props = { userId: string; preview: boolean; initialTab?: 'password' | 'canvas'; onClose: () => void; onSaved: () => void };
 function object(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -29,9 +29,9 @@ function PreviewRecords({ title, rows }: { title: string; rows: unknown[] }) {
   </section>;
 }
 
-export function AdminUserDetails({ userId, preview, onClose, onSaved }: Props) {
+export function AdminUserDetails({ userId, preview, initialTab, onClose, onSaved }: Props) {
   const base = `/admin/users/${encodeURIComponent(userId)}`;
-  const [tab, setTab] = useState<Tab>(preview ? 'preview' : 'profile');
+  const [tab, setTab] = useState<Tab>(preview ? 'preview' : initialTab ?? 'profile');
   const [user, setUser] = useState<AdminUser | null>(null);
   const [preferences, setPreferences] = useState<AcademyPreferences | null>(null);
   const [token, setToken] = useState<CanvasTokenStatus | null>(null);
@@ -124,15 +124,16 @@ export function AdminUserDetails({ userId, preview, onClose, onSaved }: Props) {
     setBusy(false);
   };
 
-  return <section className="grid gap-4 rounded-xl border bg-card p-4 sm:p-6">
-    <div className="flex flex-wrap items-center justify-between gap-3">
-      <Button variant="outline" onClick={onClose}><ArrowLeft className="size-4" /> User management</Button>
-      <Button variant="outline" disabled={busy || loading} onClick={() => { setLoading(true); setRevision(value => value + 1); }}><RefreshCw className="size-4" /> Refresh details</Button>
-      <div className="text-right"><h2 className="text-xl font-black">{user?.displayName ?? 'Account details'}</h2><p className="text-sm text-muted-foreground">{user?.email}</p></div>
+  return <section className="grid min-w-0 gap-3 rounded-xl border bg-card p-3 sm:p-4">
+    <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3">
+      <Button className="h-8 gap-1.5 px-2 max-[520px]:size-11 max-[520px]:p-0" variant="outline" onClick={onClose} aria-label="Back to user management"><ArrowLeft className="size-4" /><span className="max-[520px]:hidden">Users</span></Button>
+      <div className="min-w-0"><h2 className="truncate text-base font-semibold" title={user?.displayName}>{user?.displayName ?? 'Account details'}</h2><p className="truncate text-xs text-muted-foreground" title={user?.email}>{user?.email}</p></div>
+      <Button className="size-8 max-[520px]:size-11" size="icon" variant="outline" aria-label="Refresh details" title="Refresh details" disabled={busy || loading} onClick={() => { setLoading(true); setRevision(value => value + 1); }}><RefreshCw className="size-4" /></Button>
     </div>
-    <nav className="flex flex-wrap gap-2" aria-label="User detail sections">
-      {(['profile', 'password', 'settings', 'canvas', 'preview'] as Tab[]).map(value => <Button key={value} variant={value === tab ? 'default' : 'outline'} onClick={() => { setTab(value); setError(''); setMessage(''); }}>
-        {value === 'preview' && <Eye className="size-4" />}{({ profile: 'Profile', password: 'Password & requests', settings: 'Settings', canvas: 'Canvas token', preview: 'Preview' })[value]}
+    <nav className="flex min-w-0 gap-1 overflow-x-auto border-b pb-2" aria-label="User detail sections">
+      {(['profile', 'password', 'settings', 'canvas', 'preview'] as Tab[]).map(value => <Button className="h-8 shrink-0 gap-1.5 px-2.5 text-xs max-[520px]:h-11" key={value} variant={value === tab ? 'secondary' : 'ghost'} aria-current={value === tab ? 'page' : undefined} onClick={() => { setTab(value); setError(''); setMessage(''); }}>
+        {value === 'preview' && <Eye className="size-3.5" />}{({ profile: 'Profile', password: 'Password', settings: 'Settings', canvas: 'Canvas', preview: 'Preview' })[value]}
+        {((value === 'password' && user?.passwordRequest?.status === 'pending') || (value === 'canvas' && user?.manualModeRequest?.status === 'pending')) && <span className="rounded bg-amber-500/15 px-1 text-[10px] text-amber-700 dark:text-amber-200">Pending</span>}
       </Button>)}
     </nav>
     {error && <p className="rounded-md border border-destructive/30 p-3 text-sm text-destructive" role="alert">{error}</p>}
@@ -189,11 +190,11 @@ export function AdminUserDetails({ userId, preview, onClose, onSaved }: Props) {
           </details>
         </>}
       </div>}
-      {user?.manualModeRequest && <section className="grid gap-3 rounded-lg border border-amber-500/40 p-4">
-        <h3 className="font-bold">Permanent manual mode: {user.manualModeRequest.status}</h3>
-        <p className="text-sm">Requested {new Date(user.manualModeRequest.requestedAt).toLocaleString()}. Approval permanently converts saved Canvas courses, removes the saved token and blocks reconnection.</p>
-        {user.manualModeRequest.status === 'pending' && <div className="flex gap-2">
-          {[true, false].map(approve => <Button key={String(approve)} disabled={busy} variant={approve ? 'destructive' : 'outline'} onClick={() => {
+      {tab === 'canvas' && user?.manualModeRequest && <section className="grid max-w-2xl gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+        <h3 className="text-sm font-semibold">Permanent manual mode: {user.manualModeRequest.status}</h3>
+        <p className="text-xs leading-relaxed text-muted-foreground">Requested {new Date(user.manualModeRequest.requestedAt).toLocaleString()}. Approval permanently converts saved Canvas courses, removes the saved token and blocks reconnection.</p>
+        {user.manualModeRequest.status === 'pending' && <div className="flex flex-wrap gap-2">
+          {[true, false].map(approve => <Button className="h-8 text-xs max-[520px]:h-11" key={String(approve)} disabled={busy} variant={approve ? 'destructive' : 'outline'} onClick={() => {
             if (approve && !window.confirm(`Permanently enable manual mode for ${user.email}? This cannot be reversed.`)) return;
             void run(async () => {
               const result = await canvasToDoApi.accountRequest<ManualModeRequest>(`${base}/manual-mode/review`, 'POST', { requestId: user.manualModeRequest!.id, approve });

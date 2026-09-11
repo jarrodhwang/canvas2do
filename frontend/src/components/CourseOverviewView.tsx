@@ -6,6 +6,7 @@ import {
   ArrowLeft,
   ArrowRight,
   BookOpen,
+  CalendarDays,
   ChevronLeft,
   ChevronRight,
   Eye,
@@ -4323,9 +4324,12 @@ export function CourseOverviewView({
           <BookOpen className="size-4" />
           <span>{dictionary.manualLectureOpenDetails}</span>
         </DropdownMenuItem>
-        {row.manualLecture && <DropdownMenuItem onSelect={() => runCourseAction(() => setCourseTermTarget(row.manualLecture!))}>
-          {dictionary.courseChangeTerm}
-        </DropdownMenuItem>}
+        {row.manualLecture && (
+          <DropdownMenuItem onSelect={() => runCourseAction(() => setCourseTermTarget(row.manualLecture!))}>
+            <CalendarDays className="size-4" aria-hidden="true" />
+            <span>{dictionary.courseChangeTerm}</span>
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem onSelect={() => runCourseAction(() => handleToggleCourseStar(row))}>
           <Star className={cn('size-4', row.starred && 'fill-amber-400 text-amber-500')} />
           <span>{row.starred ? dictionary.manualLectureUnstar : dictionary.manualLectureStar}</span>
@@ -4399,7 +4403,12 @@ export function CourseOverviewView({
         <BookOpen className="size-4" />
         <span>{dictionary.manualLectureOpenDetails}</span>
       </ContextMenuItem>
-      {row.manualLecture && <ContextMenuItem onSelect={() => setCourseTermTarget(row.manualLecture!)}>{dictionary.courseChangeTerm}</ContextMenuItem>}
+      {row.manualLecture && (
+        <ContextMenuItem onSelect={() => setCourseTermTarget(row.manualLecture!)}>
+          <CalendarDays className="size-4" aria-hidden="true" />
+          <span>{dictionary.courseChangeTerm}</span>
+        </ContextMenuItem>
+      )}
       <ContextMenuItem onSelect={() => handleToggleCourseStar(row)}>
         <Star className={cn('size-4', row.starred && 'fill-amber-400 text-amber-500')} />
         <span>{row.starred ? dictionary.manualLectureUnstar : dictionary.manualLectureStar}</span>

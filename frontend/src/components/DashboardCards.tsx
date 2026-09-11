@@ -3,6 +3,7 @@ import { CourseTermDialog } from './CourseTermDialog';
 import { useAcademyTerms } from '../lib/useAcademyTerms';
 import {
   BookOpen,
+  CalendarDays,
   CalendarPlus,
   CheckCircle2,
   ChevronDown,
@@ -2417,7 +2418,12 @@ function DashboardRows({
             <BookOpen className="size-4" />
             <span>{dictionary.manualLectureOpenDetails}</span>
           </DropdownMenuItem>
-          {row.manualLectureId && <DropdownMenuItem onSelect={() => runLectureAction(() => onChangeLectureTerm(row))}>{dictionary.courseChangeTerm}</DropdownMenuItem>}
+          {row.manualLectureId && (
+            <DropdownMenuItem onSelect={() => runLectureAction(() => onChangeLectureTerm(row))}>
+              <CalendarDays className="size-4" aria-hidden="true" />
+              <span>{dictionary.courseChangeTerm}</span>
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem onSelect={() => runLectureAction(() => onOpenLectureFriendlyName(row))}>
             <Pencil className="size-4" />
             <span>{dictionary.courseFriendlyNameSet}</span>
@@ -2637,7 +2643,12 @@ function DashboardRows({
             <BookOpen className="size-4" />
             <span>{dictionary.manualLectureOpenDetails}</span>
           </ContextMenuItem>
-          {row.manualLectureId && <ContextMenuItem onSelect={() => onChangeLectureTerm(row)}>{dictionary.courseChangeTerm}</ContextMenuItem>}
+          {row.manualLectureId && (
+            <ContextMenuItem onSelect={() => onChangeLectureTerm(row)}>
+              <CalendarDays className="size-4" aria-hidden="true" />
+              <span>{dictionary.courseChangeTerm}</span>
+            </ContextMenuItem>
+          )}
           <ContextMenuItem onSelect={() => onOpenLectureFriendlyName(row)}>
             <Pencil className="size-4" />
             <span>{dictionary.courseFriendlyNameSet}</span>

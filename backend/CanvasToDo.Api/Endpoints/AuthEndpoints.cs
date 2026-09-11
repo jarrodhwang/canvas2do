@@ -1,4 +1,3 @@
-using CanvasToDo.Api.Data;
 using CanvasToDo.Api.Domain.Identity;
 using CanvasToDo.Api.Infrastructure;
 using Microsoft.AspNetCore.Authentication;
@@ -520,7 +519,6 @@ public static class AuthEndpoints
         string? returnUrl,
         bool? rememberMe,
         HttpContext context,
-        CanvasToDoDbContext applicationDb,
         UserManager<ApplicationUser> userManager,
         SignInManager<ApplicationUser> signInManager,
         IAccountEmailSender emailSender,
@@ -613,12 +611,6 @@ public static class AuthEndpoints
             }
 
             await RecordSuccessfulLoginAsync(existingUser, userManager);
-            await CopyVerifiedLegacyDataAsync(
-                info,
-                existingUser,
-                applicationDb,
-                loggerFactory,
-                cancellationToken);
             await context.SignOutAsync(IdentityConstants.ExternalScheme);
             return Results.Redirect(safeReturnUrl);
         }
@@ -1235,25 +1227,6 @@ public static class AuthEndpoints
         // Facebook's normal profile/email response does not consistently carry a trustworthy
         // email-verification claim, so absence is deliberately treated as unverified.
         return bool.TryParse(claim?.Value, out var verified) && verified;
-    }
-
-    private static Task CopyVerifiedLegacyDataAsync(
-        ExternalLoginInfo info,
-        ApplicationUser user,
-        CanvasToDoDbContext applicationDb,
-        ILoggerFactory loggerFactory,
-        CancellationToken cancellationToken)
-    {
-        var verifiedEmail = NormalizeEmail(info.Principal.FindFirstValue(ClaimTypes.Email));
-
-        return IsProviderEmailVerified(info) && IsValidEmail(verifiedEmail)
-            ? VerifiedLegacyDataMigrator.CopyAsync(
-                applicationDb,
-                user.Id,
-                verifiedEmail,
-                loggerFactory.CreateLogger("VerifiedLegacyDataMigration"),
-                cancellationToken)
-            : Task.CompletedTask;
     }
 
     private static bool HasClientCredentials(IConfiguration configuration, string section) =>

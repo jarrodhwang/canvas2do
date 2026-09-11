@@ -14,12 +14,9 @@
     <title>Canvas To Do</title>
     <script>
       (() => {
-        // Preserve legacy preference keys so the product rename does not reset user settings.
-        const storedTheme = localStorage.getItem('canvas-to-do-theme')
-          ?? localStorage.getItem('incos-workspace-theme');
+        const storedTheme = localStorage.getItem('canvas-to-do-theme');
         const theme = storedTheme === 'light' || storedTheme === 'dark' ? storedTheme : 'dark';
-        const storedLanguage = localStorage.getItem('canvas-to-do-language')
-          ?? localStorage.getItem('incos-workspace-language');
+        const storedLanguage = localStorage.getItem('canvas-to-do-language');
         const language = storedLanguage === 'ko' ? 'ko' : 'en';
         document.documentElement.classList.toggle('dark', theme === 'dark');
         document.documentElement.style.colorScheme = theme;

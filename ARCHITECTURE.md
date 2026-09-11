@@ -152,55 +152,29 @@ an SFU username/password.
 ## Persistence and migrations
 
 `AuthDbContext` owns Identity users, roles, logins, tokens, lockouts, and migration
-history. `CanvasToDoDbContext` is intentionally narrow: it maps only the retained
-`user_settings` compatibility table used for encrypted Canvas connections and
-Academy preferences. Retired Workspace, Google, Microsoft, group, content, and image
-models/endpoints have been removed; existing unused database tables are not dropped
-automatically.
+history. `CanvasToDoDbContext` maps the `user_settings` table used for encrypted
+Canvas connections and Academy preferences. Settings are owned by `user:{guid}`
+keys derived from authenticated Identity accounts.
 
-Before compatibility-table initialization, Identity migrations, or administrator
+Before settings-table initialization, Identity migrations, or administrator
 bootstrap runs, startup acquires a PostgreSQL session advisory lock on a dedicated
 non-pooled connection. This serializes initialization across API replicas; acquisition
 times out after 120 seconds and fails that replica's startup rather than allowing
 concurrent schema/bootstrap work.
 
-Verified external login may idempotently copy only legacy `canvas.token` and
-`academy.preferences` rows to `user:{guid}` when the destination is absent. Password
-and unverified identities never claim data by email. The source row remains for
-rollback/support, so deletion should happen only after a separately verified
-migration.
+Theme and language use the `canvas-to-do-theme` and `canvas-to-do-language` browser
+storage keys. Academy records are stored server-side under the authenticated owner.
 
-Browser-only Academy values from older builds are deliberately left untouched:
-without a server-verifiable identity binding, silently uploading them to whichever
-public account signs in next could disclose one user's data to another. Theme and
-language values may remain local because they contain no account data.
+Connection configuration uses `ConnectionStrings:CanvasToDo`. The Data Protection
+key ring is mounted at `/var/lib/canvas-to-do/data-protection-keys`. Database and
+volume identifiers, the Data Protection application name, and protector purposes
+are persistent storage contracts; changing them can disconnect stored data or
+invalidate sessions and Canvas connections.
 
-Visible code and runtime names are Canvas To Do. These values remain legacy
-compatibility contracts until a coordinated data/crypto migration:
-
-```text
-Database/user:                 incos_workspace / incos
-Development DB fallback:      incos123 (local compatibility only)
-Persistent volume keys:       incos-postgres-data*
-                              incos-data-protection-keys*
-Data Protection app name:     Incos.Workspace
-Canvas token purpose:          incos.workspace.canvas-token.v1
-Canvas OAuth-state purpose:    incos.workspace.canvas-oauth-state.v1
-Connection-key fallback:       IncosWorkspace
-```
-
-New connection configuration uses `ConnectionStrings:CanvasToDo`. The legacy key is
-fallback-only. The Data Protection volume can be mounted at the new
-`/var/lib/canvas-to-do/...` path without changing its contents or cryptographic
-identity.
-
-Changing a Compose project name can create new empty volumes. Back up PostgreSQL and
-the key ring together, inspect actual volume names, and never use `down -v` during a
-rename. A later crypto migration must decrypt and re-protect every Canvas envelope
-before the legacy discriminator/purpose can be removed. That migration should also
-bind each new envelope to its normalized Identity owner; legacy v1 ciphertext is not
-owner-associated additional data, so database write access remains privileged until
-the coordinated rewrite is complete.
+Back up PostgreSQL and the key ring together, preserve the Compose project and
+volume names, and never use `down -v` when data must be retained. Canvas token
+ciphertext is not cryptographically bound to its account owner, so database write
+access remains privileged.
 
 The checked-in stack persists Data Protection keys but cannot select a
 deployment-specific certificate or KMS. Protect the key-ring volume with restrictive
@@ -258,4 +232,4 @@ build output. Local operational exports are ignored by Git.
 3. Add durable, observable Canvas synchronization snapshots before deadlines depend
    on live provider availability.
 4. Exercise backup/restore, key-ring recovery, accessibility, and rate-limit behavior
-   against a staging copy of legacy data.
+   against a staging copy of application data.

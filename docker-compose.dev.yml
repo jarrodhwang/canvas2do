@@ -6,8 +6,7 @@ services:
     environment:
       POSTGRES_DB: incos_workspace
       POSTGRES_USER: incos
-      # Retain the former local-only fallback so an existing development volume
-      # remains usable after the project rename. Production has no fallback.
+      # Local-only fallback; production requires an explicit password.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-incos123}
     ports:
       - "127.0.0.1:6060:5432"
@@ -34,7 +33,6 @@ services:
       AllowedHosts: ${ALLOWED_HOSTS:-localhost;127.0.0.1}
       DOTNET_USE_POLLING_FILE_WATCHER: "1"
       DOTNET_WATCH_RESTART_ON_RUDE_EDIT: "1"
-      # Legacy key/database identifiers preserve existing local data during the rename.
       ConnectionStrings__CanvasToDo: Host=postgres;Port=5432;Database=incos_workspace;Username=incos;Password=${POSTGRES_PASSWORD:-incos123}
       Database__EnsureCreated: "true"
       Database__MigrateAuth: "true"
@@ -105,7 +103,7 @@ services:
       - ./nginx/friendly-50x.html:/usr/share/nginx/html/friendly-50x.html:ro
 
 volumes:
-  # Legacy volume keys are intentional. See README.md before changing the Compose project name.
+  # Keep persistent volume keys stable so deployments reuse their database and key ring.
   incos-postgres-data-dev:
   incos-data-protection-keys-dev:
   canvas-to-do-nuget-cache-dev:

@@ -33,15 +33,8 @@ builder.WebHost.ConfigureKestrel(options =>
 
 if (string.IsNullOrWhiteSpace(connectionString))
 {
-    // Temporary fallback for existing deployments; new configuration uses CanvasToDo.
-    connectionString = builder.Configuration.GetConnectionString("IncosWorkspace");
-}
-
-if (string.IsNullOrWhiteSpace(connectionString))
-{
     throw new InvalidOperationException(
-        "Configure ConnectionStrings:CanvasToDo with a PostgreSQL connection string. " +
-        "The legacy ConnectionStrings:IncosWorkspace key is accepted during migration.");
+        "Configure ConnectionStrings:CanvasToDo with a PostgreSQL connection string.");
 }
 
 builder.Services.AddOpenApi();
@@ -76,7 +69,7 @@ builder.Services.Configure<AccountEmailOptions>(builder.Configuration.GetSection
 builder.Services.AddSingleton<IAccountEmailSender, SmtpAccountEmailSender>();
 builder.Services.AddScoped<PasswordChangeService>();
 
-// Keep the legacy discriminator until existing encrypted Canvas tokens have been re-protected.
+// Existing sessions and encrypted Canvas tokens depend on this application name.
 var dataProtectionBuilder = builder.Services.AddDataProtection()
     .SetApplicationName("Incos.Workspace");
 var dataProtectionKeysPath = builder.Configuration["DataProtection:KeysPath"];
@@ -462,15 +455,14 @@ static async Task InitializeDatabasesAsync(WebApplication app)
 
     try
     {
-        // Legacy schema creation remains opt-in and runs before Auth migrations for a brand-new database.
+        // Optional settings schema creation runs before Auth migrations for a brand-new database.
         if (app.Configuration.GetValue("Database:EnsureCreated", false))
         {
             await applicationDb.Database.EnsureCreatedAsync(cancellationToken);
         }
 
-        // user_settings predates the Identity migration history. Bootstrap it once at
-        // startup for both fresh and upgraded installations instead of executing DDL
-        // on every preference or Canvas-token request.
+        // Bootstrap user_settings once at startup instead of executing DDL on every
+        // preference or Canvas-token request; Identity migrations manage separate tables.
         await AcademyPreferenceEndpoints.EnsureTableAsync(applicationDb, cancellationToken);
 
         if (app.Configuration.GetValue("Database:MigrateAuth", true))

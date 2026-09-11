@@ -11,7 +11,6 @@ public static class AcademyPreferenceEndpoints
 {
     public const string SettingKey = "academy.preferences";
     private const string OwnerHeader = "X-Canvas-To-Do-Owner-Key";
-    private const string LegacyOwnerHeader = "X-Incos-Academy-Owner-Key";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public static IEndpointRouteBuilder MapAcademyPreferenceEndpoints(this IEndpointRouteBuilder app)
@@ -28,11 +27,9 @@ public static class AcademyPreferenceEndpoints
     }
 
     /// <summary>
-    /// Keeps the pre-Identity user_settings table available without claiming its lifecycle in
-    /// AuthDbContext migrations. That separate migration history cannot safely assume whether a
-    /// legacy schema or CanvasToDoDbContext.EnsureCreated created this data-bearing table, and a
-    /// rollback must never drop its encrypted Canvas data. Compatibility deployments may also run
-    /// with EnsureCreated disabled, so the IF NOT EXISTS bootstrap intentionally remains repeatable.
+    /// Ensures user_settings exists independently of AuthDbContext migrations, whose rollbacks
+    /// must not drop encrypted Canvas data. The repeatable bootstrap also supports deployments
+    /// with EnsureCreated disabled.
     /// </summary>
     public static Task EnsureTableAsync(
         CanvasToDoDbContext db,
@@ -286,12 +283,6 @@ public static class AcademyPreferenceEndpoints
     private static IResult? ValidateOwner(HttpContext context, string userKey)
     {
         var expected = context.Request.Headers[OwnerHeader].ToString().Trim();
-
-        if (string.IsNullOrWhiteSpace(expected))
-        {
-            // Migration fallback; remove after deployed clients use the canvas-to-do header.
-            expected = context.Request.Headers[LegacyOwnerHeader].ToString().Trim();
-        }
 
         return !string.IsNullOrWhiteSpace(expected) &&
                string.Equals(expected, userKey, StringComparison.OrdinalIgnoreCase)

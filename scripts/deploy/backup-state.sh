@@ -26,7 +26,7 @@ printf 'Exporting PostgreSQL...\n'
   > "$backup_directory/postgres.dump"
 
 key_volume="$(docker inspect "$api_container" --format \
-  '{{range .Mounts}}{{if or (eq .Destination "/var/lib/canvas-to-do/data-protection-keys") (eq .Destination "/var/lib/incos-workspace/data-protection-keys")}}{{.Name}}{{end}}{{end}}')"
+  '{{range .Mounts}}{{if eq .Destination "/var/lib/canvas-to-do/data-protection-keys"}}{{.Name}}{{end}}{{end}}')"
 if [[ -z "$key_volume" ]]; then
   printf 'Could not resolve the API Data Protection key-ring mount.\n' >&2
   exit 1

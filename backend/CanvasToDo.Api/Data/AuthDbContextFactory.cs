@@ -18,11 +18,6 @@ public sealed class AuthDbContextFactory : IDesignTimeDbContextFactory<AuthDbCon
 
         if (string.IsNullOrWhiteSpace(connectionString))
         {
-            connectionString = configuration.GetConnectionString("IncosWorkspace");
-        }
-
-        if (string.IsNullOrWhiteSpace(connectionString))
-        {
             throw new InvalidOperationException(
                 "Configure ConnectionStrings:CanvasToDo before running Entity Framework tools.");
         }

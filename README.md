@@ -74,7 +74,7 @@ To provision the first administrator, set `AUTH_ADMIN_BOOTSTRAP_EMAIL` and a str
 after the account exists. The bootstrapper will not silently promote a public,
 unverified account that already uses the configured email.
 
-Startup serializes compatibility-table initialization, Identity migrations, and
+Startup serializes settings-table initialization, Identity migrations, and
 administrator bootstrap across API replicas with a PostgreSQL session advisory lock.
 Lock acquisition times out after 120 seconds, so a waiting replica fails startup
 instead of running initialization concurrently.
@@ -235,37 +235,14 @@ cd frontend && npm ci && npm run build && npm run lint && npm run test:migration
   should additionally wrap keys with a certificate or managed KMS; the repository
   cannot choose that deployment-specific trust anchor safely.
 
-## Rename compatibility contracts
+## Persistent data
 
-Visible application, assembly, namespace, container, and path names are now Canvas
-To Do. A few internal identifiers intentionally retain their previous values so an
-upgrade does not lose the database or make existing encrypted Canvas tokens
-unreadable:
-
-- PostgreSQL database/user: `incos_workspace` / `incos`;
-- development-only PostgreSQL fallback password `incos123`, so an existing local
-  volume remains reachable (production has no password fallback);
-- PostgreSQL and Data Protection Compose volume keys beginning with `incos-`;
-- Data Protection application discriminator `Incos.Workspace`;
-- Canvas token protector purpose `incos.workspace.canvas-token.v1`;
-- the old `ConnectionStrings:IncosWorkspace` key as a temporary read-only fallback;
-  new configuration uses `ConnectionStrings:CanvasToDo`; and
-- the legacy Academy owner header as a temporary stale-session compatibility check;
-  credential-verified server rows can migrate to GUID ownership, while old browser
-  Academy data remains untouched because it cannot be safely attributed to a public
-  account.
-
-Before changing an existing Compose project name, inspect `docker volume ls`, back
-up PostgreSQL and the Data Protection key ring together, and never run
-`docker compose down -v`. Continue once with the original project name (for example,
-`docker compose -p incos-workspace ...`) or explicitly map the existing volumes.
-Changing the Data Protection discriminator, purpose, or key ring without a token
-re-protection migration invalidates stored Canvas connections.
-
-Two former local exports under `.codex-backups/` are now ignored and removed from
-version control, but prior Git commits can still contain them. Before making the
-repository public, rotate any affected credentials and use a reviewed Git history
-rewrite to remove those blobs from every ref.
+Configure PostgreSQL through `ConnectionStrings:CanvasToDo`. Keep the database,
+Compose volume names, Data Protection application name, and token protector
+purposes stable: stored data, sessions, and Canvas connections depend on them.
+Back up PostgreSQL and the Data Protection key ring together using the
+[deployment backup and restore workflow](DEPLOYMENT.md). Do not use
+`docker compose down -v` on a deployment whose data must be retained.
 
 ## Practical quality priorities
 
@@ -279,13 +256,12 @@ rewrite to remove those blobs from every ref.
   client chunk remains above Vite's 500 kB warning threshold, so further UI
   code-splitting is still warranted.
 - Maintainability: account, Canvas, calendar, and administration boundaries are
-  separate, with retired Workspace/Google/Microsoft implementations removed.
+  separate.
 - Compatibility and portability: callback/base URLs, SMTP, allowed hosts, proxy trust,
   and Canvas origins are explicit deployment settings.
 - Security and freedom from risk: use HTTPS, least-scope OAuth, secret stores,
   lockout/rate limits, CSRF defenses, encrypted tokens, audit logs, and regular
-  dependency audits. Owner-bound re-protection of legacy v1 Canvas token envelopes
-  is a future coordinated crypto migration; until then, database write access is a
-  privileged security boundary.
+  dependency audits. Canvas token envelopes are not cryptographically bound to an
+  account owner, so database write access is a privileged security boundary.
 - Usability and context coverage: test keyboard/screen-reader use, narrow screens,
   slow networks, expired sessions, provider outages, and revoked Canvas consent.

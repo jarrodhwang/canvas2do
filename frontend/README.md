@@ -23,12 +23,10 @@ npm run lint
 
 The product has one Academy mode: Calendar and Settings for standard users, plus
 User Administration when the authenticated session carries administrator access.
-There is no Workspace/Admin mode switch.
 
 PWA metadata and browser branding live in `index.html`,
 `public/manifest.webmanifest`, and `public/brand/`. The code-native Canvas To Do icon
-is shared by browser and install metadata so the retired organization brand is not
-shown.
+is shared by browser and install metadata.
 
 ## Quality notes
 

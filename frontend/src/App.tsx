@@ -7152,6 +7152,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
           (!isMainOnlyView || isAcademySettingsView) &&
           'h-screen overflow-hidden',
         isAcademySettingsView && 'h-screen overflow-hidden max-[520px]:h-dvh',
+        isCoursesView && 'lg:h-screen lg:overflow-hidden',
       )}
       style={
         {
@@ -7287,6 +7288,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
           shouldShowAcademyBottomNav && 'pb-20 max-[520px]:pb-24',
           'max-[520px]:px-3 max-[520px]:pb-[calc(6rem+env(safe-area-inset-bottom))] max-[520px]:pt-[calc(0.5rem+env(safe-area-inset-top))]',
           mainGridColumnsClass,
+          isCoursesView && 'lg:h-[calc(100vh_-_var(--top-bar-height))] lg:grid-rows-1 lg:items-stretch lg:overflow-hidden',
         )}
         style={{
           '--top-bar-height': isPhoneAcademyMode
@@ -7328,6 +7330,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                     ? 'grid-rows-[minmax(0,1fr)] overflow-hidden'
                     : 'grid-rows-[auto_minmax(0,1fr)] overflow-hidden'
                   : 'overflow-y-auto'),
+            isCoursesView && 'lg:h-full lg:grid-rows-[minmax(0,1fr)] lg:content-stretch lg:overflow-hidden',
           )}
         >
           <Suspense

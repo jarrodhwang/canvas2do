@@ -2151,7 +2151,7 @@ function CourseDetailView({
           : ExternalLink;
 
     return (
-      <div className="flex flex-col overflow-hidden rounded-lg border bg-background">
+      <div className="flex flex-col overflow-hidden rounded-lg border bg-background lg:h-full lg:min-h-0">
         <div className="flex shrink-0 items-center justify-between gap-3 border-b px-3 py-2">
           <div className="flex min-w-0 items-center gap-2">
             <span className="grid size-8 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
@@ -2169,7 +2169,7 @@ function CourseDetailView({
             </a>
           </Button>
         </div>
-        <div className="min-h-[320px] bg-background" style={{ height: manualEmbedHeight }}>
+        <div className="min-h-[320px] bg-background lg:min-h-0 lg:flex-1" style={{ height: manualEmbedHeight }}>
           {previewKind === 'image' ? (
             <div className="grid h-full place-items-center overflow-auto bg-muted/15 p-3">
               <img alt={label} className="max-h-full max-w-full rounded-md object-contain" src={url} />
@@ -2193,7 +2193,7 @@ function CourseDetailView({
         <div
           aria-label="Resize website window"
           aria-orientation="horizontal"
-          className="group flex h-5 shrink-0 cursor-row-resize touch-none items-center justify-center border-t bg-muted/35 transition-colors hover:bg-muted/60"
+          className="group flex h-5 shrink-0 cursor-row-resize touch-none items-center justify-center border-t bg-muted/35 transition-colors hover:bg-muted/60 lg:hidden"
           onKeyDown={handleManualEmbedResizeKeyDown}
           onPointerDown={handleManualEmbedResizePointerDown}
           role="separator"

@@ -114,6 +114,7 @@ interface ManualLectureDialogProps {
   onSaveLecture?: (lecture: ManualLecture) => void;
   selectedSemester?: string;
   semesterOptions?: string[];
+  termReadOnly?: boolean;
   submitLabel?: string;
   title?: string;
 }
@@ -578,6 +579,7 @@ export function ManualLectureDialog({
   onSaveLecture,
   selectedSemester,
   semesterOptions = [],
+  termReadOnly = Boolean(initialLecture),
   submitLabel,
   title,
 }: ManualLectureDialogProps) {
@@ -845,7 +847,7 @@ export function ManualLectureDialog({
               <Label className="text-xs font-black uppercase text-muted-foreground" htmlFor="manual-lecture-semester">
                 {dictionary.manualLectureSemester}
               </Label>
-              <Select onValueChange={setSemester} value={semester || selectedSemester}>
+              <Select disabled={termReadOnly} onValueChange={setSemester} value={semester || selectedSemester}>
                 <SelectTrigger id="manual-lecture-semester">
                   <SelectValue placeholder={dictionary.manualLectureSelectSemester} />
                 </SelectTrigger>

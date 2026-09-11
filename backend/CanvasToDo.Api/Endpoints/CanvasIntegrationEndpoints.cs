@@ -228,6 +228,9 @@ public static partial class CanvasIntegrationEndpoints
         UpdateCanvasTokenRequest request,
         CancellationToken cancellationToken)
     {
+        if (GetUserKey(context) is { } modeOwner && (await ManualModeEndpoints.GetAsync(db, modeOwner, cancellationToken))?.Status == "approved")
+            return Results.Conflict(new { detail = "Permanent manual mode is enabled. Canvas cannot be reconnected." });
+
         if (ValidateCanvasOwner(context) is { } ownerMismatch)
         {
             return ownerMismatch;
@@ -245,14 +248,21 @@ public static partial class CanvasIntegrationEndpoints
             return Results.Unauthorized();
         }
 
-        return await UpdateCanvasTokenForUserKeyAsync(
-            userKey,
-            httpClientFactory,
-            db,
-            dataProtectionProvider,
-            request,
-            cancellationToken,
-            configuration);
+        try
+        {
+            return await UpdateCanvasTokenForUserKeyAsync(
+                userKey,
+                httpClientFactory,
+                db,
+                dataProtectionProvider,
+                request,
+                cancellationToken,
+                configuration);
+        }
+        catch (CanvasOAuthRequestException exception)
+        {
+            return Results.Conflict(new { detail = exception.DisplayMessage });
+        }
     }
 
     internal static async Task<IResult> DeleteCanvasTokenAsync(
@@ -282,12 +292,16 @@ public static partial class CanvasIntegrationEndpoints
             configuration);
     }
 
-    private static IResult StartCanvasOAuthLoginAsync(
+    private static async Task<IResult> StartCanvasOAuthLoginAsync(
         HttpContext context,
         IConfiguration configuration,
         IDataProtectionProvider dataProtectionProvider,
+        CanvasToDoDbContext db,
+        CancellationToken cancellationToken,
         string? returnUrl)
     {
+        if (GetUserKey(context) is { } owner && (await ManualModeEndpoints.GetAsync(db, owner, cancellationToken))?.Status == "approved")
+            return Results.Conflict(new { detail = "Permanent manual mode is enabled. Canvas cannot be reconnected." });
         context.Response.Headers.CacheControl = "no-store";
         context.Response.Headers["Referrer-Policy"] = "no-referrer";
         var options = GetCanvasOAuthOptions(configuration);
@@ -348,6 +362,9 @@ public static partial class CanvasIntegrationEndpoints
         string? error_description,
         CancellationToken cancellationToken)
     {
+        if (GetUserKey(context) is { } modeOwner && (await ManualModeEndpoints.GetAsync(db, modeOwner, cancellationToken))?.Status == "approved")
+            return Results.Conflict(new { detail = "Permanent manual mode is enabled. Canvas cannot be reconnected." });
+
         context.Response.Headers.CacheControl = "no-store";
         context.Response.Headers["Referrer-Policy"] = "no-referrer";
         var userKey = GetUserKey(context);
@@ -1189,6 +1206,8 @@ public static partial class CanvasIntegrationEndpoints
         }
 
         var normalizedUserKey = userKey.Trim().ToLowerInvariant();
+        if ((await ManualModeEndpoints.GetAsync(db, normalizedUserKey, cancellationToken))?.Status == "approved")
+            return CanvasConnection.None() with { Status = "manual_mode" };
         configuration ??= _configuration;
         var snapshot = await ReadCanvasTokenSnapshotAsync(
             normalizedUserKey,
@@ -1682,6 +1701,10 @@ public static partial class CanvasIntegrationEndpoints
         var normalizedUserKey = userKey.Trim().ToLowerInvariant();
         var now = DateTimeOffset.UtcNow;
         var settingJson = SerializeStoredCanvasToken(dataProtectionProvider, tokenValues, now);
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await ManualModeEndpoints.LockAsync(db, normalizedUserKey, cancellationToken);
+        if ((await ManualModeEndpoints.GetAsync(db, normalizedUserKey, cancellationToken))?.Status == "approved")
+            throw new CanvasOAuthRequestException("Permanent manual mode is enabled. Canvas cannot be reconnected.");
 
         // A single database statement handles concurrent first writes without exposing either
         // plaintext token and gives normal last-write-wins behavior for later token rotations.
@@ -1696,6 +1719,7 @@ public static partial class CanvasIntegrationEndpoints
                 "SettingJson" = EXCLUDED."SettingJson";
             """,
             cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     private static bool ShouldRefreshCanvasOAuthToken(CanvasTokenValues tokenValues, DateTimeOffset now) =>
@@ -1731,7 +1755,8 @@ public static partial class CanvasIntegrationEndpoints
         {
             "pending" => "The stored Canvas API token has a future start date.",
             "expired" when connection.TokenSource == "oauth" => "The Canvas authorization expired and could not be refreshed. Connect Canvas again.",
-            "expired" => "The stored Canvas API token is expired. Update it in Academy Settings.",
+            "expired" => "Your Canvas API token expired. Generate a new token in Canvas Settings, then save it in Academy Settings.",
+            "manual_mode" => "Permanent manual mode is enabled.",
             "invalid" => "The stored Canvas connection is invalid, cannot be decrypted, or uses an institution that is not allowed.",
             _ => "Connect Canvas to view Academy calendar data.",
         };

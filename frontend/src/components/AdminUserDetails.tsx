@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ArrowLeft, Eye, RefreshCw, ShieldCheck } from 'lucide-react';
-import { canvasToDoApi, type AcademyPreferences, type AdminUser, type CanvasTokenStatus, type PasswordChangeStatus } from '../api/canvasToDoApi';
+import { canvasToDoApi, type AcademyPreferences, type AdminUser, type CanvasTokenStatus, type ManualModeRequest, type PasswordChangeStatus } from '../api/canvasToDoApi';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 
@@ -189,6 +189,21 @@ export function AdminUserDetails({ userId, preview, onClose, onSaved }: Props) {
           </details>
         </>}
       </div>}
+      {user?.manualModeRequest && <section className="grid gap-3 rounded-lg border border-amber-500/40 p-4">
+        <h3 className="font-bold">Permanent manual mode: {user.manualModeRequest.status}</h3>
+        <p className="text-sm">Requested {new Date(user.manualModeRequest.requestedAt).toLocaleString()}. Approval permanently converts saved Canvas courses, removes the saved token and blocks reconnection.</p>
+        {user.manualModeRequest.status === 'pending' && <div className="flex gap-2">
+          {[true, false].map(approve => <Button key={String(approve)} disabled={busy} variant={approve ? 'destructive' : 'outline'} onClick={() => {
+            if (approve && !window.confirm(`Permanently enable manual mode for ${user.email}? This cannot be reversed.`)) return;
+            void run(async () => {
+              const result = await canvasToDoApi.accountRequest<ManualModeRequest>(`${base}/manual-mode/review`, 'POST', { requestId: user.manualModeRequest!.id, approve });
+              setUser(current => current ? { ...current, manualModeRequest: result } : current);
+              setRevision(value => value + 1);
+              return approve ? 'Permanent manual mode approved.' : 'Manual mode request declined.';
+            });
+          }}>{approve ? 'Approve permanent manual mode' : 'Decline request'}</Button>)}
+        </div>}
+      </section>}
       {tab === 'canvas' && <div className="grid max-w-2xl gap-4">
         <p className="text-sm">Connection: {token?.status ?? 'unavailable'} · {token?.userName ?? 'No Canvas user'} · {token?.instanceUrl ?? 'No Canvas URL'}</p>
         <p className="text-xs text-muted-foreground">Saved tokens are encrypted and never displayed. You can validate and replace the token or disconnect this account.</p>
@@ -201,7 +216,7 @@ export function AdminUserDetails({ userId, preview, onClose, onSaved }: Props) {
           <label className="grid gap-1 text-sm">Replacement API token<Input type="password" autoComplete="new-password" required maxLength={8192} value={accessToken} onChange={e => setAccessToken(e.target.value)} /></label>
           <label className="grid gap-1 text-sm">Expires at (optional)<Input type="datetime-local" value={expiresAt} onChange={e => setExpiresAt(e.target.value)} /></label>
           {token?.manualTokenEnabled === false && <p className="text-sm">Manual tokens are disabled in the deployment configuration.</p>}
-          <Button disabled={busy || token?.manualTokenEnabled === false} type="submit">Validate and replace token</Button>
+          <Button disabled={busy || token?.manualTokenEnabled === false || token?.status === 'manual_mode'} type="submit">Validate and replace token</Button>
         </form>
         <Button variant="outline" disabled={busy || !token?.configured} onClick={() => {
           if (!window.confirm(`Disconnect Canvas for ${user.email}? The saved token will be removed.`)) return;

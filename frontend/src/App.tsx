@@ -1,3 +1,6 @@
+import { getDateBasedAcademySemester, normalizeAcademyTerm } from './lib/academyTerms';
+import { ManualModePanel } from './components/ManualModePanel';
+import { useAcademyTerms } from './lib/useAcademyTerms';
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent } from 'react';
 import {
   Activity,
@@ -831,25 +834,8 @@ function dispatchAcademyPreferencesUpdated() {
   }));
 }
 
-function getDateBasedAcademySemester(date = new Date()) {
-  const month = date.getMonth();
-  const term = month <= 3 ? 'Spring' : month <= 7 ? 'Summer' : 'Fall';
-
-  return `${term} ${date.getFullYear()}`;
-}
-
 function normalizeSemesterName(value?: string, fallback = defaultAcademySemester) {
-  const trimmedValue = value?.trim();
-
-  if (!trimmedValue) {
-    return fallback;
-  }
-
-  if (/^default term$/i.test(trimmedValue)) {
-    return defaultCanvasTermSemester;
-  }
-
-  return trimmedValue;
+  return normalizeAcademyTerm(value, fallback);
 }
 
 function semesterMatches(value: string | undefined, selectedSemester: string | undefined, fallback = defaultAcademySemester) {
@@ -3344,6 +3330,7 @@ function AcademySettingsView({
     }));
   };
   const canvasTokenStatusLabels: Record<string, string> = {
+    manual_mode: language === 'ko' ? '영구 수동 모드' : 'Permanent manual mode',
     connected: dictionary.canvasTokenStatusConnected,
     expired: dictionary.canvasTokenStatusExpired,
     invalid: dictionary.canvasTokenStatusInvalid,
@@ -3592,15 +3579,16 @@ function AcademySettingsView({
                 <span className="text-sm font-bold">
                   {language === 'ko' ? 'Canvas 토큰 연결 알림' : 'Canvas token reminders'}
                   <span className="mt-1 block text-xs font-normal text-muted-foreground">
-                    {language === 'ko' ? '로그인 시와 모바일 과목·성적 메뉴에서 Canvas 연결을 알립니다. 알림을 숨기려면 끄고 설정을 저장하세요.' : 'Show Canvas connection reminders at sign-in and in the mobile Courses and Grades menus. Turn off and save to hide these reminders.'}
+                    {language === 'ko' ? '수동 과목을 사용할 때 Canvas 연결 알림을 숨길 수 있습니다. 토큰 만료 알림은 계속 표시됩니다.' : 'Turn off and save to hide Canvas connection reminders when using manual courses. Expired token alerts still appear.'}
                   </span>
                 </span>
-                <Switch checked={settings.canvasTokenPromptEnabled} onCheckedChange={(checked) => updateSettings({ canvasTokenPromptEnabled: checked })} />
+                <Switch disabled={canvasTokenStatus?.status === 'manual_mode'} checked={canvasTokenStatus?.status === 'manual_mode' ? false : settings.canvasTokenPromptEnabled} onCheckedChange={(checked) => updateSettings({ canvasTokenPromptEnabled: checked })} />
               </label>
-              <Button onClick={onOpenCanvasSetup} type="button" variant="outline">
+              {(canvasTokenStatus?.configured || canvasTokenStatus?.status === 'manual_mode' || Object.keys(getStoredCanvasLecturePreferences()).length > 0) && <ManualModePanel />}
+              <Button disabled={canvasTokenStatus?.status === 'manual_mode'} onClick={onOpenCanvasSetup} type="button" variant="outline">
                 {language === 'ko' ? 'Canvas 연결 · 이미지로 토큰 발급 안내' : 'Connect Canvas · token setup guide'}
               </Button>
-              {canvasTokenStatus?.oauthConfigured && canvasTokenStatus.connectUrl ? (
+              {canvasTokenStatus?.status !== 'manual_mode' && canvasTokenStatus?.oauthConfigured && canvasTokenStatus.connectUrl ? (
                 <div className="flex flex-col gap-3 rounded-lg border border-primary/25 bg-primary/5 p-4 sm:flex-row sm:items-center sm:justify-between">
                   <div className="min-w-0">
                     <h4 className="text-sm font-black text-foreground">{dictionary.canvasOauthTitle}</h4>
@@ -3671,7 +3659,7 @@ function AcademySettingsView({
               </div>
             </div>
 
-            {canvasTokenStatus?.manualTokenEnabled !== false ? (
+            {canvasTokenStatus?.manualTokenEnabled !== false && canvasTokenStatus?.status !== 'manual_mode' ? (
             <form className="grid gap-3 rounded-lg border bg-card p-3" onSubmit={handleCanvasTokenSubmit}>
               <div>
                 <h4 className="text-xs font-black uppercase text-muted-foreground">
@@ -4787,12 +4775,18 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
     currentView === 'agenda' ||
     currentView === 'board'
   );
-  const selectedAcademySemester = normalizeSemesterName(academyCalendarSettings.selectedSemester);
+  const academyTerms = useAcademyTerms();
+  const storedAcademySemester = normalizeSemesterName(academyCalendarSettings.selectedSemester);
+  const selectedAcademySemester = academyTerms.ready && !academyTerms.options.includes(storedAcademySemester)
+    ? academyTerms.currentTerm : storedAcademySemester;
+  const quietCanvas = canvasTokenStatus?.status === 'manual_mode' || (
+    canvasTokenStatus?.status === 'needs_connection' && !academyCalendarSettings.canvasTokenPromptEnabled
+  );
   const shouldFetchLiveCanvasCalendar = selectedAcademySemester !== defaultCanvasTermSemester;
   const shouldLoadCanvasCalendar =
     authStatus === 'authenticated' &&
     isCalendarDataView &&
-    shouldFetchLiveCanvasCalendar;
+    shouldFetchLiveCanvasCalendar && !quietCanvas;
   const canvasCalendarPage = canvasCalendarPages[canvasCalendarMonthKey];
   const isCanvasCalendarPageLoaded = canvasCalendarPage?.status === 'loaded';
   const visibleCanvasCalendarItems = getCanvasCalendarItemsForMonthKeys(
@@ -4813,7 +4807,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
       : hasFailedAcademyPreferencesLoad
         ? 'failed'
         : canvasCalendarLoadStatus;
-  const canvasCalendarEmptyMessage = effectiveCanvasCalendarLoadStatus === 'failed'
+  const canvasCalendarEmptyMessage = effectiveCanvasCalendarLoadStatus === 'failed' && (!quietCanvas || hasFailedAcademyPreferencesLoad)
     ? hasFailedAcademyPreferencesLoad
       ? dictionary.academyPreferencesUnavailable
       : canvasCalendarPage?.errorMessage ?? dictionary.canvasCalendarUnavailable
@@ -7358,6 +7352,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
               <AdminUsersView />
             ) : isCoursesView ? (
               <CourseOverviewView
+                quietCanvas={quietCanvas}
                 canvasTokenRemindersEnabled={hasLoadedAcademyPreferences && academyCalendarSettings.canvasTokenPromptEnabled}
                 isPhone={isPhoneAcademyMode}
                 initialResourceUrl={selectedCourseOverviewResourceUrl}
@@ -7386,6 +7381,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                 >
                   {!isPhoneAcademyMode ? (
                     <DashboardCards
+                      quietCanvas={quietCanvas}
                       isPhone={isPhoneAcademyMode}
                       academyAutoRefreshIntervalMs={academyAutoRefreshIntervalMs}
                       compactAcademySummary={shouldUseCompactDashboardMonth}
@@ -7413,6 +7409,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                 >
                   {isPhoneAcademyMode ? (
                     <DashboardCards
+                      quietCanvas={quietCanvas}
                       isPhone={isPhoneAcademyMode}
                       academyAutoRefreshIntervalMs={academyAutoRefreshIntervalMs}
                       compactAcademySummary={false}

@@ -256,6 +256,86 @@ def main():
             assert admin.call(f"/api/admin/users/{ids['bob']}")['passwordRequest']['status'] == 'expired'
             assert admin.call(target)['passwordRequest']['id'] != pending['id']
             print("PASS seven-day expiry and user request ownership cannot be overridden")
+            restart()
+            bob.login('bob@example.test', 'OriginalTest123!')
+            mode_target = f"/api/admin/users/{ids['bob']}"
+            owner = {'X-Canvas-To-Do-Owner-Key': 'user:' + ids['bob']}
+            mode_path = '/api/canvas/manual-mode'
+            confirms = {'leavingCanvasPermanently': True, 'understandsIrreversible': True, 'understandsApprovalDelay': True}
+            anonymous.call(mode_path, expected=401)
+            bob.call(mode_path, expected=401, headers={'X-Canvas-To-Do-Owner-Key': 'user:' + ids['alice']})
+            assert bob.call(mode_path, headers=owner)['request'] is None
+            bob.call(mode_path, 'POST', confirms, 409, headers=owner)
+            fixtures = {
+                'manualLectures': [{'id': 'manual-1', 'name': 'Manual course', 'code': 'CMPT 100', 'semester': 'Fall 2026'}],
+                'manualCoursework': [
+                    {'id': 'manual-task', 'title': 'Essay', 'courseCode': 'CMPT 100', 'semester': 'Fall 2026'},
+                    {'id': 'different-term', 'title': 'Old essay', 'courseCode': 'CMPT 100', 'semester': 'Fall 2025'}],
+                'manualAssessments': [{'id': 'exam', 'courseCode': 'CMPT 100', 'semester': 'Fall 2026'}],
+                'canvasLecturePreferences': {'42': {'courseName': 'Saved Canvas course', 'originalCourseCode': 'CMPT 200',
+                    'lastSeenAt': '2026-09-11T01:00:00Z', 'semester': 'School Trimester B', 'currentScore': 85,
+                    'schedule': {'deliveryMode': 'inPerson', 'day': '', 'time': '', 'location': '', 'entries': []}}},
+                'canvasCourseworkPreferences': {'canvas-assignment-42-7': {'courseId': '42', 'title': 'Saved assignment', 'semester': 'School Trimester B', 'completed': True}},
+                'calendarSettings': {'selectedSemester': 'Fall 2026', 'canvasTokenPromptEnabled': False}}
+            admin.call(mode_target + '/data/preferences', 'PUT', fixtures)
+            before_mode = bob.call('/api/academy/preferences', headers=owner)
+            bob.call('/api/canvas/courses', expected=409, headers=owner)
+            assert bob.call('/api/academy/preferences', headers=owner) == before_mode, 'Missing token must never trigger conversion'
+            token_json = json.dumps({'instanceUrl': 'https://sfu.instructure.com', 'protectedAccessToken': 'invalid-test-ciphertext', 'tokenSource': 'user'})
+            sql(f'''INSERT INTO user_settings ("Id", "CreatedAt", "UpdatedAt", "UserKey", "SettingKey", "SettingJson")
+                VALUES (gen_random_uuid(), now(), now(), 'user:{ids['bob']}', 'canvas.token', '{token_json}'::jsonb);''')
+            assert bob.call('/api/canvas/token', headers=owner)['status'] == 'invalid'
+            bob.call('/api/canvas/courses', expected=409, headers=owner)
+            assert bob.call('/api/academy/preferences', headers=owner) == before_mode
+            term_path = '/api/academy/courses/manual-1/term'
+            anonymous.call(term_path, 'PUT', {'year': 2026, 'term': 'Winter'}, 401)
+            bob.call(term_path, 'PUT', {'year': 1999, 'term': 'Spring'}, 400, headers=owner)
+            bob.call(term_path, 'PUT', {'year': 3000, 'term': 'Spring'}, 400, headers=owner)
+            bob.call(term_path, 'PUT', {'year': 2026, 'term': 'Invalid'}, 400, headers=owner)
+            bob.call('/api/academy/courses/42/term', 'PUT', {'year': 2026, 'term': 'Winter'}, 409, headers=owner)
+            moved = bob.call(term_path, 'PUT', {'year': 2000, 'term': 'Winter'}, headers=owner)
+            assert moved['manualLectures'][0]['semester'] == 'Winter 2000'
+            assert moved['manualCoursework'][0]['semester'] == 'Winter 2000'
+            assert moved['manualAssessments'][0]['semester'] == 'Winter 2000'
+            assert moved['manualCoursework'][1]['semester'] == 'Fall 2025'
+            print('PASS manual term validation, atomic linked-item moves and Canvas course protection')
+            bob.call(mode_path, 'POST', {**confirms, 'understandsIrreversible': False}, 400, headers=owner)
+            pending = bob.call(mode_path, 'POST', confirms, headers=owner)
+            assert pending['status'] == 'pending'
+            assert bob.call(mode_path, 'POST', confirms, headers=owner)['id'] == pending['id']
+            assert bob.call('/api/academy/preferences', headers=owner)['canvasLecturePreferences']['42'].get('convertedToManualAt') is None
+            review_path = mode_target + '/manual-mode/review'
+            bob.call(review_path, 'POST', {'requestId': pending['id'], 'approve': True}, 403)
+            anonymous.call(review_path, 'POST', {'requestId': pending['id'], 'approve': True}, 401)
+            assert next(user for user in admin.call('/api/admin/users')['users'] if user['id'] == ids['bob'])['manualModeRequestPending']
+            declined = admin.call(review_path, 'POST', {'requestId': pending['id'], 'approve': False})
+            assert declined['status'] == 'rejected'
+            admin.call(review_path, 'POST', {'requestId': pending['id'], 'approve': True}, 409)
+            pending = bob.call(mode_path, 'POST', confirms, headers=owner)
+            restart()
+            assert bob.call(mode_path, headers=owner)['request']['id'] == pending['id'], 'Request persists across restart'
+            approved = admin.call(review_path, 'POST', {'requestId': pending['id'], 'approve': True})
+            assert approved['status'] == 'approved' and approved['reviewedBy'] == ids['admin']
+            saved = bob.call('/api/academy/preferences', headers=owner)
+            converted = next(course for course in saved['manualLectures'] if course['id'] == 'manual-canvas-42')
+            assert converted['name'] == 'Saved Canvas course' and converted['canvasGradeSummary']['score'] == 85
+            assert converted['semester'] == 'School Trimester B'
+            assert saved['canvasCourseworkPreferences']['canvas-assignment-42-7']['completed']
+            assert not saved['calendarSettings']['canvasTokenPromptEnabled']
+            assert sql(f'''SELECT count(*) FROM user_settings WHERE "UserKey" = 'user:{ids['bob']}' AND "SettingKey" = 'canvas.token';''') == '0'
+            assert bob.call('/api/canvas/token', headers=owner)['status'] == 'manual_mode'
+            bob.call('/api/canvas/token', 'PUT', {'instanceUrl': 'https://sfu.instructure.com', 'accessToken': 'never-send-this'}, 409, headers=owner)
+            admin.call(mode_target + '/data/canvas-token', 'PUT', {'instanceUrl': 'https://sfu.instructure.com', 'accessToken': 'never-send-this'}, 409)
+            bob.call('/api/canvas/oauth/login', expected=409)
+            bob.call('/api/canvas/courses', expected=409, headers=owner)
+            bob.call('/api/academy/preferences', 'PUT', fixtures, 409, headers=owner)
+            admin.call(review_path, 'POST', {'requestId': pending['id'], 'approve': True}, 409)
+            moved = bob.call('/api/academy/courses/manual-canvas-42/term', 'PUT', {'year': 2026, 'term': 'Summer'}, headers=owner)
+            assert next(course for course in moved['manualLectures'] if course['id'] == 'manual-canvas-42')['semester'] == 'Summer 2026'
+            assert moved['canvasCourseworkPreferences']['canvas-assignment-42-7']['semester'] == 'Summer 2026'
+            restart()
+            assert bob.call('/api/canvas/token', headers=owner)['status'] == 'manual_mode'
+            print('PASS permanent manual mode confirmations, ownership, approval, persistence, retained grades/tasks, stale writes and reconnection guards')
             print("All account-management integration checks passed.")
         finally:
             if process and process.poll() is None:

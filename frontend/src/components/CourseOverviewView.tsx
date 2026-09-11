@@ -1,3 +1,6 @@
+import { getDateBasedAcademySemester, normalizeAcademyTerm } from '../lib/academyTerms';
+import { CourseTermDialog } from './CourseTermDialog';
+import { useAcademyTerms } from '../lib/useAcademyTerms';
 /* eslint-disable react-hooks/set-state-in-effect, react-hooks/refs, react-hooks/purity, react-hooks/exhaustive-deps -- This restored stateful course browser resets related resource state as navigation changes. */
 import {
   ArrowLeft,
@@ -55,7 +58,6 @@ import {
   normalizeGradeProgressColorThresholds,
   type GradeProgressColorThresholds,
 } from '../lib/gradeProgress';
-import { compareSemestersNewestFirst } from '../lib/semesterSort';
 import { cn } from '../lib/utils';
 import { usePersistentBoolean } from '../lib/usePersistentBoolean';
 import type { ColorToken } from '../modes/types';
@@ -263,13 +265,6 @@ const lectureChipColorVariantPages: ColorToken[][] = [
   ['purple', 'lilac', 'plum', 'mauve', 'fuchsia', 'magenta', 'pink', 'slate', 'zinc', 'neutral', 'stone', 'graphite', 'cocoa', 'sand', 'gray'],
 ];
 
-function getDateBasedAcademySemester(date = new Date()) {
-  const month = date.getMonth();
-  const term = month <= 3 ? 'Spring' : month <= 7 ? 'Summer' : 'Fall';
-
-  return `${term} ${date.getFullYear()}`;
-}
-
 function readStoredJson<T>(_key: string, fallback: T): T {
   return fallback;
 }
@@ -336,17 +331,7 @@ function getGradeProgressThresholdsFromAcademyPreferences(
 }
 
 function normalizeSemesterName(value?: string, fallback = defaultAcademySemester) {
-  const trimmedValue = value?.trim();
-
-  if (!trimmedValue) {
-    return fallback;
-  }
-
-  if (/^default term$/i.test(trimmedValue)) {
-    return noTermSemester;
-  }
-
-  return trimmedValue;
+  return normalizeAcademyTerm(value, fallback);
 }
 
 function normalizeCanvasSemesterName(value?: string) {
@@ -3518,18 +3503,21 @@ function CourseDetailView({
 
 export function CourseOverviewView({
   canvasTokenRemindersEnabled = true,
+  quietCanvas = false,
   initialResourceUrl,
   isPhone = false,
   initialSelectedCourseRowId,
   selectedSemester: selectedSemesterProp,
 }: {
   canvasTokenRemindersEnabled?: boolean;
+  quietCanvas?: boolean;
   initialResourceUrl?: string | null;
   isPhone?: boolean;
   initialSelectedCourseRowId?: string | null;
   selectedSemester?: string;
 } = {}) {
   const { dictionary } = useLanguage();
+  const [courseTermTarget, setCourseTermTarget] = useState<ManualLecture | null>(null);
   const [canvasCourses, setCanvasCourses] = useState<CanvasCourse[]>([]);
   const [canvasCourseListIsComplete, setCanvasCourseListIsComplete] = useState(false);
   const [canvasLecturePreferences, setCanvasLecturePreferences] = useState<CanvasLecturePreferences>(() => getStoredCanvasLecturePreferences());
@@ -3902,17 +3890,7 @@ export function CourseOverviewView({
       selectedSemester,
     ],
   );
-  const semesterOptions = useMemo(() => {
-    const semesters = new Set<string>();
-
-    allRows.forEach((row) => {
-      semesters.add(normalizeSemesterName(row.semester));
-    });
-    semesters.add(normalizeSemesterName(selectedSemester));
-    semesters.add(defaultAcademySemester);
-
-    return Array.from(semesters.values()).sort(compareSemestersNewestFirst);
-  }, [allRows, selectedSemester]);
+  const { options: semesterOptions } = useAcademyTerms();
   const rows = useMemo(
     () => allRows.filter((row) => normalizeSemesterName(row.semester) === normalizeSemesterName(selectedSemester)),
     [allRows, selectedSemester],
@@ -3940,11 +3918,11 @@ export function CourseOverviewView({
       )
     : undefined;
   const isLoading = (
-    courseLoadStatus === 'loading' ||
+    (courseLoadStatus === 'loading' && !quietCanvas) ||
     (academyPreferencesLoadStatus !== 'failed' && !hasLoadedAcademyPreferences)
   ) && rows.length === 0;
   const isUnavailable = (
-    courseLoadStatus === 'failed' ||
+    (courseLoadStatus === 'failed' && !quietCanvas) ||
     academyPreferencesLoadStatus === 'failed'
   ) && rows.length === 0;
   const chipColorLabels: Partial<Record<ColorToken, string>> = {
@@ -4175,7 +4153,7 @@ export function CourseOverviewView({
 
     const course = canvasCourses.find((canvasCourse) => String(canvasCourse.id ?? '') === selectedCanvasCourseId);
     const currentPreference = canvasLecturePreferences[selectedCanvasCourseId] ?? {};
-    const nextSemester = normalizeSemesterName(updatedLecture.semester, selectedSemester);
+    const nextSemester = normalizeSemesterName(currentPreference.semester ?? course?.termName, selectedSemester);
     const nextCanvasLecturePreferences = {
       ...canvasLecturePreferences,
       [selectedCanvasCourseId]: {
@@ -4193,7 +4171,7 @@ export function CourseOverviewView({
           updatedLecture.code,
         schedule: updatedLecture.schedule,
         semester: nextSemester,
-        semesterSource: 'manual' as const,
+        semesterSource: currentPreference.semesterSource ?? 'canvas' as const,
         termName: nextSemester,
         tutorialSection: updatedLecture.tutorialSection,
       },
@@ -4345,6 +4323,9 @@ export function CourseOverviewView({
           <BookOpen className="size-4" />
           <span>{dictionary.manualLectureOpenDetails}</span>
         </DropdownMenuItem>
+        {row.manualLecture && <DropdownMenuItem onSelect={() => runCourseAction(() => setCourseTermTarget(row.manualLecture!))}>
+          {dictionary.courseChangeTerm}
+        </DropdownMenuItem>}
         <DropdownMenuItem onSelect={() => runCourseAction(() => handleToggleCourseStar(row))}>
           <Star className={cn('size-4', row.starred && 'fill-amber-400 text-amber-500')} />
           <span>{row.starred ? dictionary.manualLectureUnstar : dictionary.manualLectureStar}</span>
@@ -4418,6 +4399,7 @@ export function CourseOverviewView({
         <BookOpen className="size-4" />
         <span>{dictionary.manualLectureOpenDetails}</span>
       </ContextMenuItem>
+      {row.manualLecture && <ContextMenuItem onSelect={() => setCourseTermTarget(row.manualLecture!)}>{dictionary.courseChangeTerm}</ContextMenuItem>}
       <ContextMenuItem onSelect={() => handleToggleCourseStar(row)}>
         <Star className={cn('size-4', row.starred && 'fill-amber-400 text-amber-500')} />
         <span>{row.starred ? dictionary.manualLectureUnstar : dictionary.manualLectureStar}</span>
@@ -4780,7 +4762,7 @@ export function CourseOverviewView({
               ))}
             </SelectContent>
           </Select>}
-          {courseLoadStatus === 'loading' && !isMobileTrashView ? (
+          {courseLoadStatus === 'loading' && !quietCanvas && !isMobileTrashView ? (
             <Badge className="gap-1.5 max-[520px]:hidden" variant="outline">
               <LoaderCircle aria-hidden="true" className="animate-spin text-primary" size={13} strokeWidth={2.4} />
               <span>{dictionary.canvasCoursesLoading}</span>
@@ -4793,7 +4775,7 @@ export function CourseOverviewView({
       </CardHeader>
 
       <CardContent className="min-h-0 min-w-0 flex-1 space-y-2 overflow-y-auto max-[520px]:max-h-[calc(100dvh-12rem-env(safe-area-inset-bottom))] max-[520px]:overflow-y-auto max-[520px]:overscroll-contain max-[520px]:px-0 max-[520px]:py-1">
-        {courseLoadStatus === 'loading' && !isMobileTrashView ? (
+        {courseLoadStatus === 'loading' && !quietCanvas && !isMobileTrashView ? (
           <CanvasLoadingBanner label={dictionary.canvasCoursesLoading} size="compact" />
         ) : null}
 
@@ -4967,6 +4949,7 @@ export function CourseOverviewView({
         ) : null}
       </CardContent>
     </Card>
+    {courseTermTarget && <CourseTermDialog key={courseTermTarget.id} course={courseTermTarget} onClose={() => setCourseTermTarget(null)} />}
     <ManualLectureDialog
       key={selectedManualLecture?.id ?? 'manual-course-closed'}
       initialLecture={selectedManualLecture}
@@ -4991,6 +4974,7 @@ export function CourseOverviewView({
       semesterOptions={semesterOptions}
     />
     <ManualLectureDialog
+      termReadOnly
       description={dictionary.canvasLectureEditDescription}
       key={selectedCanvasLecture?.id ?? 'canvas-course-closed'}
       initialLecture={selectedCanvasLecture}

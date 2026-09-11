@@ -3,6 +3,7 @@
 using System.Net;
 using System.Security.Claims;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using CanvasToDo.Api.Contracts;
 using CanvasToDo.Api.Data;
 using CanvasToDo.Api.Domain.Entities;
@@ -80,6 +81,37 @@ foreach (var scenario in new[] { "healthy", "calendar-only", "duplicate-sources"
     }
     Check(factory.AssignmentRequests > 0, $"{scenario}: course assignments must be attempted");
     Console.WriteLine($"PASS {scenario}");
+}
+
+// Expired credentials are authentication errors, even when reminders are disabled.
+{
+    using var factory = new FakeCanvasFactory("healthy");
+    using var cache = new MemoryCache(new MemoryCacheOptions());
+    await using var db = new CanvasToDoDbContext(new DbContextOptionsBuilder<CanvasToDoDbContext>()
+        .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
+    var protection = new EphemeralDataProtectionProvider();
+    var userId = Guid.NewGuid();
+    var owner = $"user:{userId:D}";
+    db.UserSettings.Add(new UserSetting { UserKey = owner, SettingKey = "canvas.token", SettingJson = JsonSerializer.Serialize(new {
+        instanceUrl = "https://sfu.instructure.com", tokenSource = "user", expiresAt = DateTimeOffset.UtcNow.AddDays(-1),
+        protectedAccessToken = protection.CreateProtector("incos.workspace.canvas-token.v1").Protect("expired-test-token") }) });
+    var original = """{"canvasLecturePreferences":{"42":{"courseName":"Course","semester":"School term","currentScore":88}},"calendarSettings":{"canvasTokenPromptEnabled":false}}""";
+    db.UserSettings.Add(new UserSetting { UserKey = owner, SettingKey = AcademyPreferenceEndpoints.SettingKey, SettingJson = original });
+    await db.SaveChangesAsync();
+    using var services = new ServiceCollection().AddSingleton<IHttpClientFactory>(factory).BuildServiceProvider();
+    var context = new DefaultHttpContext { RequestServices = services,
+        User = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, userId.ToString())], "test")) };
+    context.Request.Headers["X-Canvas-To-Do-Owner-Key"] = owner;
+    var response = await CanvasIntegrationEndpoints.GetCanvasCoursesAsync(factory, context, db, app.Configuration, protection, cache, 100, CancellationToken.None);
+    Check(response is IValueHttpResult { Value: ProblemDetails { Status: 409 } problem } && problem.Detail!.Contains("Generate a new token"), "Expired token gives regeneration guidance");
+    Check(factory.AssignmentRequests == 0 && (await db.UserSettings.SingleAsync(s => s.SettingKey == AcademyPreferenceEndpoints.SettingKey)).SettingJson == original,
+        "Expired token neither fetches assignments nor converts courses");
+    var converted = ManualModeEndpoints.ConvertSavedCourses(original, DateTimeOffset.UtcNow);
+    var root = JsonNode.Parse(converted)!;
+    Check(root["manualLectures"]![0]!["canvasGradeSummary"]!["score"]!.GetValue<int>() == 88, "Approval retains saved grades");
+    Check(JsonNode.Parse(ManualModeEndpoints.ConvertSavedCourses(converted, DateTimeOffset.UtcNow))!["manualLectures"]!.AsArray().Count == 1, "Conversion retries do not duplicate courses");
+    Check(!AcademyPreferenceEndpoints.MoveManualCourse(JsonNode.Parse(original)!.AsObject(), "42", "Summer 2026"), "Canvas course cannot change term");
+    Console.WriteLine("PASS expired token authentication and idempotent saved-course conversion");
 }
 
 static void Check(bool condition, string description)

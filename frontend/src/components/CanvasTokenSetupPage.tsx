@@ -60,7 +60,7 @@ export function CanvasTokenSetupPage({ status, onConnected, onContinue }: {
       <p id="canvas-token-setup-description" className="text-sm text-muted-foreground">
         {ko ? 'Canvas를 연결해 과목과 할 일을 가져오세요. 나중에 계속할 수 있으며, 설정에서 Canvas 토큰 연결 알림을 끌 수 있습니다.' : 'Connect Canvas to bring in your courses and tasks. Continue for now, or turn off Canvas token reminders in Settings if you prefer manual courses.'}
       </p>
-      {status?.status === 'expired' || status?.status === 'invalid' ? <p role="status" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">{ko ? '저장된 토큰을 갱신해 Canvas를 다시 연결하세요.' : 'Your saved token needs to be replaced to reconnect Canvas.'}</p> : null}
+      {status?.status === 'expired' || status?.status === 'invalid' ? <p role="status" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">{ko ? '저장된 토큰을 갱신해 Canvas를 다시 연결하세요.' : 'Generate a new token in Canvas Settings, then save it here to reconnect. Your courses remain linked to Canvas.'}</p> : null}
       {status?.oauthConfigured && status.connectUrl ? (
         <Button className="justify-self-start" onClick={() => {
           const url = new URL(status.connectUrl!, window.location.origin);

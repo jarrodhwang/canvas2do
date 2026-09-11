@@ -1,3 +1,5 @@
+import { getDateBasedAcademySemester, normalizeAcademyTerm } from '../lib/academyTerms';
+import { useAcademyTerms } from '../lib/useAcademyTerms';
 /* eslint-disable react-hooks/set-state-in-effect -- This restored integration view synchronizes selection and request state in effects. */
 import { ArrowLeft, BarChart3, ChevronDown, ChevronRight, LoaderCircle, RefreshCw, TrendingUp } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
@@ -13,7 +15,6 @@ import {
   normalizeGradeProgressColorThresholds,
   type GradeProgressColorThresholds,
 } from '../lib/gradeProgress';
-import { compareSemestersNewestFirst } from '../lib/semesterSort';
 import { cn } from '../lib/utils';
 import type { ColorToken } from '../modes/types';
 import { calculateManualGradeSummary, ManualGradeEditor } from './ManualGradeEditor';
@@ -196,13 +197,6 @@ function dispatchAcademyPreferencesSnapshot(preferences: AcademyPreferences) {
   }));
 }
 
-function getDateBasedAcademySemester(date = new Date()) {
-  const month = date.getMonth();
-  const term = month <= 3 ? 'Spring' : month <= 7 ? 'Summer' : 'Fall';
-
-  return `${term} ${date.getFullYear()}`;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -232,17 +226,7 @@ function getGradeProgressThresholdsFromAcademyPreferences(
 }
 
 function normalizeSemesterName(value?: string, fallback = defaultAcademySemester) {
-  const trimmedValue = value?.trim();
-
-  if (!trimmedValue) {
-    return fallback;
-  }
-
-  if (/^default term$/i.test(trimmedValue)) {
-    return noTermSemester;
-  }
-
-  return trimmedValue;
+  return normalizeAcademyTerm(value, fallback);
 }
 
 function normalizeCanvasSemesterName(value?: string) {
@@ -1152,15 +1136,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp, isPh
     });
   }, [academyPreferences, dictionary.academyGradesDetailUnavailable, expandedRowIds, rows]);
 
-  const semesterOptions = useMemo(() => {
-    const semesters = new Set<string>();
-
-    rows.forEach((row) => semesters.add(normalizeSemesterName(row.semester)));
-    semesters.add(normalizeSemesterName(selectedSemester));
-    semesters.add(defaultAcademySemester);
-
-    return Array.from(semesters.values()).sort(compareSemestersNewestFirst);
-  }, [rows, selectedSemester]);
+  const { options: semesterOptions } = useAcademyTerms();
 
   const hasLoadedAcademyPreferences = Boolean(academyPreferences);
   const visibleRows = useMemo(

@@ -74,7 +74,7 @@ public static class AdminAuthEndpoints
         }
     }
 
-    private static async Task<IResult> GetUserDetailsAsync(Guid id, UserManager<ApplicationUser> users, PasswordChangeService passwords)
+    private static async Task<IResult> GetUserDetailsAsync(Guid id, UserManager<ApplicationUser> users, PasswordChangeService passwords, CanvasToDoDbContext settingsDb, CancellationToken cancellationToken)
     {
         var user = await users.FindByIdAsync(id.ToString());
         if (user is null) return Results.NotFound();
@@ -84,6 +84,7 @@ public static class AdminAuthEndpoints
             role = await users.IsInRoleAsync(user, ApplicationRoles.Admin) ? ApplicationRoles.Admin : ApplicationRoles.User,
             user.CreatedAt, user.LastActiveAt, user.LastLoginAt, user.TwoFactorEnabled, lockedUntil = user.LockoutEnd,
             hasPassword = await users.HasPasswordAsync(user), passwordRequest = await passwords.GetAsync(user),
+            manualModeRequest = await ManualModeEndpoints.GetAsync(settingsDb, UserOwnerKeys.FromId(user.Id), cancellationToken),
         });
     }
 
@@ -95,6 +96,7 @@ public static class AdminAuthEndpoints
         int? page,
         int? pageSize,
         AuthDbContext db,
+        CanvasToDoDbContext settingsDb,
         CancellationToken cancellationToken)
     {
         var currentPage = Math.Clamp(page ?? 1, 1, 1_000_000);
@@ -131,6 +133,14 @@ public static class AdminAuthEndpoints
             })
             .ToArrayAsync(cancellationToken);
         var userIds = users.Select(user => user.Id).ToArray();
+        var ownerKeys = userIds.Select(UserOwnerKeys.FromId).ToArray();
+        var modeRows = await settingsDb.UserSettings.AsNoTracking()
+            .Where(s => ownerKeys.Contains(s.UserKey) && s.SettingKey == ManualModeEndpoints.SettingKey)
+            .ToDictionaryAsync(s => s.UserKey, s => s.SettingJson, cancellationToken);
+        var pendingModeOwners = modeRows.Where(pair => {
+            using var document = System.Text.Json.JsonDocument.Parse(pair.Value);
+            return document.RootElement.GetProperty("status").GetString() == "pending";
+        }).Select(pair => pair.Key).ToHashSet();
         var passwordRows = await db.UserTokens.AsNoTracking().Where(token => userIds.Contains(token.UserId) &&
             token.LoginProvider == PasswordChangeService.Provider && token.Name == PasswordChangeService.TokenName)
             .ToDictionaryAsync(token => token.UserId, token => token.Value, cancellationToken);
@@ -155,6 +165,7 @@ public static class AdminAuthEndpoints
 
             return new
             {
+                manualModeRequestPending = pendingModeOwners.Contains(UserOwnerKeys.FromId(user.Id)),
                 id = user.Id,
                 email = user.Email,
                 displayName = user.DisplayName,

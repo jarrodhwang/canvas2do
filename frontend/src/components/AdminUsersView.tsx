@@ -197,6 +197,7 @@ export function AdminUsersView() {
                       {user.twoFactorEnabled ? <ShieldCheck aria-label="Two-step verification enabled" className="size-4 shrink-0 text-emerald-600" /> : null}
                     </div>
                     <div className="truncate text-xs font-semibold text-muted-foreground">{user.email}</div>
+                    {user.manualModeRequestPending && <div className="text-xs font-bold text-amber-700 dark:text-amber-200">Manual mode awaiting approval</div>}
                     {user.passwordRequest?.status === 'pending' && <div className="text-xs font-bold text-amber-700 dark:text-amber-200">Password change awaiting approval</div>}
                     {!user.emailConfirmed ? (
                       <div className="mt-0.5 text-[11px] font-bold text-amber-700 dark:text-amber-200">Email not confirmed</div>

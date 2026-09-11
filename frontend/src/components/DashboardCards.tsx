@@ -1,3 +1,6 @@
+import { getDateBasedAcademySemester, normalizeAcademyTerm } from '../lib/academyTerms';
+import { CourseTermDialog } from './CourseTermDialog';
+import { useAcademyTerms } from '../lib/useAcademyTerms';
 import {
   BookOpen,
   CalendarPlus,
@@ -24,7 +27,6 @@ import { useLanguage } from '../context/LanguageContext';
 import { useWorkspaceMode } from '../context/WorkspaceModeContext';
 import { shouldConvertCanvasCourseToManual } from '../lib/canvasCourseMigration';
 import type { ColorToken, DashboardCardConfig } from '../modes/types';
-import { compareSemestersNewestFirst } from '../lib/semesterSort';
 import { cn } from '../lib/utils';
 import { dotColorClasses } from '../lib/colorStyles';
 import { DateTimeField } from './DateTimeField';
@@ -355,13 +357,6 @@ function normalizeCourseCode(value: string) {
   return value.replace(/\s+/g, '').toLowerCase();
 }
 
-function getDateBasedAcademySemester(date = new Date()) {
-  const month = date.getMonth();
-  const term = month <= 3 ? 'Spring' : month <= 7 ? 'Summer' : 'Fall';
-
-  return `${term} ${date.getFullYear()}`;
-}
-
 function getCourseCodeRoot(value: string) {
   const match = value.match(/[a-z]{2,}\s*\d{2,4}[a-z]?/i);
 
@@ -384,17 +379,7 @@ function codesMatch(firstCode?: string, secondCode?: string) {
 }
 
 function normalizeSemesterName(value?: string, fallback = defaultAcademySemester) {
-  const trimmedValue = value?.trim();
-
-  if (!trimmedValue) {
-    return fallback;
-  }
-
-  if (/^default term$/i.test(trimmedValue)) {
-    return noTermSemester;
-  }
-
-  return trimmedValue;
+  return normalizeAcademyTerm(value, fallback);
 }
 
 function normalizeCanvasSemesterName(value?: string) {
@@ -2057,6 +2042,7 @@ interface DashboardRowsProps {
   onOpenCourseworkLink: (row: RenderableDashboardRow) => void;
   onOpenLecture: (row: RenderableDashboardRow) => void;
   onOpenLectureDetails: (row: RenderableDashboardRow) => void;
+  onChangeLectureTerm: (row: RenderableDashboardRow) => void;
   onOpenLectureFriendlyName: (row: RenderableDashboardRow) => void;
   onRequestDeleteLecture: (row: RenderableDashboardRow) => void;
   onRenameCoursework: (row: RenderableDashboardRow, title: string) => void;
@@ -2086,6 +2072,7 @@ function DashboardRows({
   onOpenCourseworkLink,
   onOpenLecture,
   onOpenLectureDetails,
+  onChangeLectureTerm,
   onOpenLectureFriendlyName,
   onRequestDeleteLecture,
   onRenameCoursework,
@@ -2430,6 +2417,7 @@ function DashboardRows({
             <BookOpen className="size-4" />
             <span>{dictionary.manualLectureOpenDetails}</span>
           </DropdownMenuItem>
+          {row.manualLectureId && <DropdownMenuItem onSelect={() => runLectureAction(() => onChangeLectureTerm(row))}>{dictionary.courseChangeTerm}</DropdownMenuItem>}
           <DropdownMenuItem onSelect={() => runLectureAction(() => onOpenLectureFriendlyName(row))}>
             <Pencil className="size-4" />
             <span>{dictionary.courseFriendlyNameSet}</span>
@@ -2649,6 +2637,7 @@ function DashboardRows({
             <BookOpen className="size-4" />
             <span>{dictionary.manualLectureOpenDetails}</span>
           </ContextMenuItem>
+          {row.manualLectureId && <ContextMenuItem onSelect={() => onChangeLectureTerm(row)}>{dictionary.courseChangeTerm}</ContextMenuItem>}
           <ContextMenuItem onSelect={() => onOpenLectureFriendlyName(row)}>
             <Pencil className="size-4" />
             <span>{dictionary.courseFriendlyNameSet}</span>
@@ -3092,9 +3081,9 @@ function DashboardRows({
               compact
               label={row.label}
             />
-          ) : (
+          ) : row.id === 'loading' ? (
             <RefreshCw className="size-4 shrink-0 animate-spin text-muted-foreground" />
-          )}
+          ) : null}
           {compactCourseRows ? null : (
             <strong className="min-w-0 flex-1 truncate">{row.value}</strong>
           )}
@@ -3689,6 +3678,7 @@ function AssessmentDialog({
 }
 
 interface DashboardCardsProps {
+  quietCanvas?: boolean;
   courseworkOnly?: boolean;
   isPhone?: boolean;
   academyAutoRefreshIntervalMs?: number;
@@ -3704,6 +3694,7 @@ interface DashboardCardsProps {
 }
 
 export function DashboardCards({
+  quietCanvas = false,
   courseworkOnly = false,
   isPhone = false,
   academyAutoRefreshIntervalMs = defaultAcademyAutoRefreshIntervalMs,
@@ -3719,6 +3710,7 @@ export function DashboardCards({
 }: DashboardCardsProps) {
   const { activeMode } = useWorkspaceMode();
   const { dictionary, language, translateDashboardCard, translateModeName } = useLanguage();
+  const [courseTermTarget, setCourseTermTarget] = useState<ManualLecture | null>(null);
   const [dashboardSnackbar, setDashboardSnackbar] = useState<DashboardSnackbar | null>(null);
   const [canvasCourses, setCanvasCourses] = useState<CanvasCourse[] | null>(null);
   const [canvasCourseListIsComplete, setCanvasCourseListIsComplete] = useState(false);
@@ -3971,54 +3963,7 @@ export function DashboardCards({
     selectedManualAssessment?.courseCode,
     selectedManualCoursework?.courseCode,
   ]);
-  const courseSemesterOptions = useMemo(() => {
-    const semesterSet = new Set<string>();
-    const addSemester = (semester?: string) => {
-      semesterSet.add(normalizeSemesterName(semester, fallbackCourseSemester));
-    };
-
-    canvasCourses?.forEach((course) => {
-      addSemester(getCanvasCourseSemester(course, canvasLecturePreferences, fallbackCourseSemester));
-    });
-    Object.values(canvasLecturePreferences).forEach((preference) => {
-      addSemester(preference.semester ?? preference.termName);
-    });
-    manualLectures.forEach((lecture) => {
-      addSemester(lecture.semester);
-    });
-    manualCoursework.forEach((coursework) => {
-      addSemester(coursework.semester);
-    });
-    manualAssessments.forEach((assessment) => {
-      addSemester(assessment.semester);
-    });
-    Object.values(canvasCourseworkPreferences).forEach((preference) => {
-      addSemester(preference.semester);
-    });
-    Object.values(canvasAssessmentPreferences).forEach((preference) => {
-      addSemester(preference.semester);
-    });
-    addSemester(selectedCourseSemester);
-    addSemester(selectedSemesterFromProps);
-    if (reportedCanvasSemester) {
-      addSemester(reportedCanvasSemester);
-    }
-    addSemester(defaultAcademySemester);
-
-    return Array.from(semesterSet.values()).sort(compareSemestersNewestFirst);
-  }, [
-    canvasAssessmentPreferences,
-    canvasCourses,
-    canvasCourseworkPreferences,
-    canvasLecturePreferences,
-    fallbackCourseSemester,
-    manualAssessments,
-    manualCoursework,
-    manualLectures,
-    reportedCanvasSemester,
-    selectedCourseSemester,
-    selectedSemesterFromProps,
-  ]);
+  const { options: courseSemesterOptions } = useAcademyTerms();
 
   useEffect(() => {
     manualAssessmentsRef.current = manualAssessments;
@@ -4143,7 +4088,7 @@ export function DashboardCards({
 
     if (
       translatedCard.id === 'semester-lectures' &&
-      (canvasCourseLoadStatus === 'idle' || canvasCourseLoadStatus === 'loading')
+      !quietCanvas && (canvasCourseLoadStatus === 'idle' || canvasCourseLoadStatus === 'loading')
     ) {
       return {
         ...translatedCard,
@@ -4189,7 +4134,7 @@ export function DashboardCards({
         ...regularManualRows,
       ];
 
-      if (canvasCourseLoadStatus === 'failed') {
+      if (canvasCourseLoadStatus === 'failed' && !quietCanvas) {
         return {
           ...translatedCard,
           pill: activeCourseSemester ?? translatedCard.pill,
@@ -4205,7 +4150,7 @@ export function DashboardCards({
           pill: activeCourseSemester ?? translatedCard.pill,
           rows: persistedRows.length > 0
             ? persistedRows.slice(0, maxRows)
-            : createMessageRows(dictionary.canvasCoursesEmpty),
+            : createMessageRows(quietCanvas ? dictionary.manualCoursesEmpty : dictionary.canvasCoursesEmpty),
         };
       }
 
@@ -5224,7 +5169,8 @@ export function DashboardCards({
       selectedCanvasCourse?.courseCode?.trim() ||
       selectedCanvasCourse?.id ||
       updatedLecture.code;
-    const nextSemester = normalizeSemesterName(updatedLecture.semester, activeCourseSemester);
+    const currentPreference = canvasLecturePreferencesRef.current[selectedCanvasCourseId] ?? {};
+    const nextSemester = normalizeSemesterName(currentPreference.semester ?? currentPreference.termName, activeCourseSemester);
 
     updateStoredCanvasLecturePreferences((currentPreferences) => ({
       ...currentPreferences,
@@ -5240,7 +5186,7 @@ export function DashboardCards({
         originalCourseCode,
         schedule: updatedLecture.schedule,
         semester: nextSemester,
-        semesterSource: 'manual',
+        semesterSource: currentPreference.semesterSource ?? 'canvas',
         termName: nextSemester,
         tutorialSection: updatedLecture.tutorialSection,
       },
@@ -6596,6 +6542,7 @@ export function DashboardCards({
                   onOpenCourseworkLink={handleOpenCourseworkLink}
                   onOpenLecture={handleOpenLecture}
                   onOpenLectureDetails={handleOpenLectureDetails}
+                  onChangeLectureTerm={row => setCourseTermTarget(manualLecturesRef.current.find(lecture => lecture.id === row.manualLectureId) ?? null)}
                   onOpenLectureFriendlyName={handleOpenLectureFriendlyName}
                   onRequestDeleteLecture={handleRequestDeleteLecture}
                   onMoveAssessmentDueDate={handleMoveAssessmentDueDate}
@@ -6654,6 +6601,7 @@ export function DashboardCards({
       >
         <RefreshCw className={cn('size-5', isAcademyDashboardRefreshing && 'animate-spin')} />
       </Button>
+      {courseTermTarget && <CourseTermDialog key={courseTermTarget.id} course={courseTermTarget} onClose={() => setCourseTermTarget(null)} />}
       <ManualLectureDialog
         key={isManualLectureDialogOpen ? 'add-lecture-open' : 'add-lecture-closed'}
         onAddLecture={handleAddManualLecture}
@@ -6769,6 +6717,7 @@ export function DashboardCards({
         semesterOptions={courseSemesterOptions}
       />
       <ManualLectureDialog
+        termReadOnly
         description={dictionary.canvasLectureEditDescription}
         initialLecture={selectedCanvasLecture}
         key={selectedCanvasLecture?.id ?? 'canvas-lecture-closed'}

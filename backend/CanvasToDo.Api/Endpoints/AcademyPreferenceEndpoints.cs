@@ -4,6 +4,7 @@ using CanvasToDo.Api.Domain.Entities;
 using CanvasToDo.Api.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace CanvasToDo.Api.Endpoints;
 
@@ -23,7 +24,63 @@ public static class AcademyPreferenceEndpoints
         preferences.MapPut("", SaveAsync)
             .WithName("SaveAcademyPreferences");
 
+        app.MapPut("/api/academy/courses/{id}/term", ChangeTermAsync).RequireAuthorization();
         return app;
+    }
+
+    public sealed record ChangeTerm(int Year, string Term);
+
+    internal static async Task<IResult> ChangeTermAsync(string id, ChangeTerm request, HttpContext context,
+        CanvasToDoDbContext db, CancellationToken cancellationToken)
+    {
+        var owner = GetUserKey(context);
+        if (owner is null) return Results.Unauthorized();
+        if (ValidateOwner(context, owner) is { } mismatch) return mismatch;
+        if (request.Year < 2000 || request.Year > DateTimeOffset.UtcNow.Year ||
+            request.Term is not ("Spring" or "Summer" or "Fall" or "Winter"))
+            return Results.BadRequest(new { detail = "Choose a year from 2000 through the current year and Spring, Summer, Fall or Winter." });
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await ManualModeEndpoints.LockAsync(db, owner, cancellationToken);
+        var row = await db.UserSettings.SingleOrDefaultAsync(s => s.UserKey == owner && s.SettingKey == SettingKey, cancellationToken);
+        if (row is null) return Results.NotFound();
+        var root = JsonNode.Parse(row.SettingJson)!.AsObject();
+        if (!MoveManualCourse(root, id, $"{request.Term} {request.Year}"))
+            return Results.Conflict(new { detail = "Only saved manual courses can change term. Refresh your courses and try again." });
+        row.SettingJson = root.ToJsonString();
+        row.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return Results.Ok(ToDto(row.SettingJson, true));
+    }
+
+    internal static bool MoveManualCourse(JsonObject root, string id, string term)
+    {
+        var lecture = (root["manualLectures"] as JsonArray)?.OfType<JsonObject>()
+            .FirstOrDefault(c => c["id"]?.GetValue<string>() == id && c["deleted"]?.GetValue<bool>() != true);
+        if (lecture is null) return false;
+        var previousTerm = lecture["semester"]?.GetValue<string>();
+        var codes = new[] { lecture["code"]?.GetValue<string>(), lecture["friendlyCourseCode"]?.GetValue<string>() }
+            .Where(code => !string.IsNullOrWhiteSpace(code)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var archivedId = (root["canvasLecturePreferences"] as JsonObject)?.FirstOrDefault(pair =>
+            pair.Value?["archivedAsManualLectureId"]?.GetValue<string>() == id || $"manual-canvas-{pair.Key}" == id).Key;
+        foreach (var key in new[] { "manualCoursework", "manualAssessments", "canvasCourseworkPreferences", "canvasAssessmentPreferences" })
+        {
+            IEnumerable<JsonObject> items = root[key] switch {
+                JsonArray array => array.OfType<JsonObject>(),
+                JsonObject map => map.Select(pair => pair.Value).OfType<JsonObject>(),
+                _ => []
+            };
+            foreach (var item in items)
+            {
+                var courseId = item["courseId"]?.GetValue<string>() ?? item["retainedFromCanvasCourseId"]?.GetValue<string>();
+                var exactMatch = item["manualLectureId"]?.GetValue<string>() == id || (archivedId is not null && courseId == archivedId);
+                var codeMatch = courseId is null && codes.Contains(item["courseCode"]?.GetValue<string>() ?? "") &&
+                    item["semester"]?.GetValue<string>() == previousTerm;
+                if (exactMatch || codeMatch) item["semester"] = term;
+            }
+        }
+        lecture["semester"] = term;
+        return true;
     }
 
     /// <summary>
@@ -103,6 +160,11 @@ public static class AcademyPreferenceEndpoints
             cancellationToken);
 
         var existingSetting = await FindAsync(db, normalizedUserKey, cancellationToken);
+        if ((await ManualModeEndpoints.GetAsync(db, normalizedUserKey, cancellationToken))?.Status == "approved" &&
+            request.CanvasLecturePreferences.ValueKind == JsonValueKind.Object &&
+            request.CanvasLecturePreferences.EnumerateObject().Any(p => p.Value.ValueKind == JsonValueKind.Object &&
+                !p.Value.TryGetProperty("convertedToManualAt", out _)))
+            return Results.Conflict(new { detail = "Permanent manual mode was approved. Refresh before saving your courses." });
         var storageUserKey = existingSetting?.UserKey ?? normalizedUserKey;
         var settingJson = Serialize(request, existingSetting?.SettingJson);
 

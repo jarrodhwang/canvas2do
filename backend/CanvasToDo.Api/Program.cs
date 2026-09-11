@@ -388,6 +388,7 @@ app.MapAuthEndpoints();
 app.MapAdminAuthEndpoints();
 app.MapCanvasIntegrationEndpoints();
 app.MapAcademyPreferenceEndpoints();
+app.MapManualModeEndpoints();
 app.MapGet("/api/health", () => Results.Ok(new
 {
     service = "canvas-to-do API",
@@ -552,6 +553,11 @@ static bool IsStandardUserApiAllowed(HttpRequest request)
     {
         return true;
     }
+
+    if (path.Equals(new PathString("/api/canvas/manual-mode")))
+        return HttpMethods.IsGet(request.Method) || HttpMethods.IsPost(request.Method);
+    if (HttpMethods.IsPut(request.Method) && System.Text.RegularExpressions.Regex.IsMatch(
+            path.Value ?? "", "^/api/academy/courses/[^/]+/term$")) return true;
 
     return HttpMethods.IsGet(request.Method) &&
            (path.Equals(new PathString("/api/canvas/calendar-items")) ||

@@ -10,7 +10,8 @@
     "test:canvas-identity": "node --experimental-strip-types scripts/test-canvas-item-identity.mjs",
     "test:migration": "node --experimental-strip-types scripts/test-canvas-course-migration.mjs",
     "preview": "vite preview",
-    "test:onboarding": "node --experimental-strip-types scripts/test-canvas-onboarding.mjs"
+    "test:onboarding": "node --experimental-strip-types scripts/test-canvas-onboarding.mjs",
+    "test:terms": "node --experimental-strip-types scripts/test-academy-terms.mjs"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.9",

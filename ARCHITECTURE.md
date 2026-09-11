@@ -133,6 +133,28 @@ and other connection errors are not treated as lost enrollment. Previously gener
 manual copies are suppressed while the same Canvas course is accessible, without
 deleting the retained manual backup.
 
+Manual accounts use Spring (January–April), Summer (May–August), and Fall
+(September–December). The shared term store includes the current term plus terms
+with at least one non-deleted course; hidden courses still count. Canvas accounts
+retain provider term names and existing saved course allocations. A manual course's
+**Change term** dialog accepts years 2000 through the current year and Spring,
+Summer, Fall, or Winter. The owner-scoped API moves the course and associated saved
+coursework/assessments under the same transaction lock used for preference writes.
+Canvas course detail forms cannot change terms.
+
+Disabling Canvas token reminders hides missing-connection notices in the course
+summary and calendar. Expired/invalid credentials continue to prompt regeneration
+and never authorize course conversion. Permanent manual mode is a separate,
+explicit request under `canvas.manual-mode`, outside user-editable preferences.
+Three confirmations precede the request. Administrators can approve or decline it
+from user details; pending requests are marked in the user list. Approval atomically
+converts saved course snapshots, retains grades/schedules/tasks, removes the saved
+token, and records the reviewer and time. Canvas reconnection is permanently blocked
+on both token and OAuth paths, including a token-save race with approval. Stale
+clients attempting to save unconverted course preferences must refresh. Approval
+cannot recover provider data that was never saved locally. No schema migration or
+background provider call is needed for this workflow.
+
 Active student-course discovery explicitly requests both published and unpublished
 courses. Unpublished enrollments remain Canvas-linked and visible with a publication
 warning, but the client does not request Canvas course content or expose Canvas-only

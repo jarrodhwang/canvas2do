@@ -3,7 +3,7 @@ import { shouldPromptForCanvasToken, canvasSettingsUrl, canvasSchoolLogo } from 
 
 for (const status of ['needs_connection', 'expired', 'invalid']) {
   assert.equal(shouldPromptForCanvasToken({ status, connected: false }, true, false), true, status);
-  assert.equal(shouldPromptForCanvasToken({ status, connected: false }, false, false), false, 'Opt-out wins');
+  assert.equal(shouldPromptForCanvasToken({ status, connected: false }, false, false), status !== 'needs_connection', 'Opt-out hides setup nudges, authentication errors remain actionable');
   assert.equal(shouldPromptForCanvasToken({ status, connected: false }, true, true), false, 'Dismissal lasts this session');
 }
 assert.equal(shouldPromptForCanvasToken(null, true, false), false, 'Unknown status must not prompt');

@@ -1,3 +1,5 @@
+import { ApiError } from '../lib/apiError';
+import { academyTermStore } from '../lib/academyTermStore';
 import { normalizeCanvasItemPreferences } from '../lib/canvasItemIdentity';
 import { appPath } from '../lib/appPath';
 
@@ -18,15 +20,7 @@ interface AcademyPreferenceRequestScope {
   version: number;
 }
 
-export class ApiError extends Error {
-  readonly status: number;
-
-  constructor(message: string, status: number) {
-    super(message);
-    this.name = 'ApiError';
-    this.status = status;
-  }
-}
+export { ApiError } from '../lib/apiError';
 
 async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
   const method = (init.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
@@ -62,6 +56,7 @@ function setAcademyPreferenceOwnerKey(value?: string | null) {
 
   canvasCalendarRequests.forEach(({ controller }) => controller.abort());
   canvasCalendarRequests.clear();
+  academyTermStore.reset();
   academyPreferenceOwnerKey = nextOwnerKey;
   academyPreferenceOwnerVersion += 1;
 }
@@ -375,6 +370,15 @@ export interface AdminUser {
   lockedUntil?: string;
   hasPassword?: boolean;
   passwordRequest?: PasswordChangeStatus | null;
+  manualModeRequest?: ManualModeRequest | null;
+  manualModeRequestPending?: boolean;
+}
+
+export interface ManualModeRequest {
+  id: string;
+  status: 'pending' | 'approved' | 'rejected';
+  requestedAt: string;
+  reviewedAt?: string;
 }
 
 export interface PasswordChangeStatus {
@@ -411,7 +415,7 @@ export interface CanvasSchool {
 export interface CanvasTokenStatus {
   configured: boolean;
   connected: boolean;
-  status: 'connected' | 'needs_connection' | 'pending' | 'expired' | 'invalid';
+  status: 'connected' | 'needs_connection' | 'pending' | 'expired' | 'invalid' | 'manual_mode';
   instanceUrl?: string;
   tokenSource: 'user' | 'environment' | 'none' | string;
   startsAt?: string;
@@ -1081,6 +1085,35 @@ export const canvasToDoApi = {
   },
 
 
+  async manualModeRequest(confirm = false): Promise<ManualModeRequest | null> {
+    const scope = getAcademyPreferenceRequestScope();
+    const response = await apiFetch(`${apiBaseUrl}/canvas/manual-mode`, {
+      credentials: 'include', method: confirm ? 'POST' : 'GET',
+      headers: { 'Content-Type': 'application/json', [academyPreferenceOwnerHeader]: scope.ownerKey },
+      body: confirm ? JSON.stringify({ leavingCanvasPermanently: true, understandsIrreversible: true, understandsApprovalDelay: true }) : undefined,
+    });
+    assertCurrentAcademyPreferenceScope(scope);
+    if (!response.ok) throw new ApiError((await readErrorResponse(response, 'Unable to load manual mode request.')).message, response.status);
+    const result = await response.json() as ManualModeRequest | { request: ManualModeRequest | null };
+    assertCurrentAcademyPreferenceScope(scope);
+    return 'request' in result ? result.request : result;
+  },
+
+  async changeManualCourseTerm(id: string, year: number, term: string): Promise<AcademyPreferences> {
+    const scope = getAcademyPreferenceRequestScope();
+    const response = await apiFetch(`${apiBaseUrl}/academy/courses/${encodeURIComponent(id)}/term`, {
+      credentials: 'include', method: 'PUT',
+      headers: { 'Content-Type': 'application/json', [academyPreferenceOwnerHeader]: scope.ownerKey },
+      body: JSON.stringify({ year, term }),
+    });
+    assertCurrentAcademyPreferenceScope(scope);
+    if (!response.ok) throw new ApiError((await readErrorResponse(response, 'Unable to change term.')).message, response.status);
+    const result = await response.json() as AcademyPreferences;
+    assertCurrentAcademyPreferenceScope(scope);
+    academyTermStore.preferences(result);
+    return result;
+  },
+
   async getCanvasTokenStatus() {
     const scope = getAcademyPreferenceRequestScope();
     const response = await apiFetch(`${apiBaseUrl}/canvas/token`, {
@@ -1097,6 +1130,7 @@ export const canvasToDoApi = {
 
     const result = await response.json() as CanvasTokenStatus;
     assertCurrentAcademyPreferenceScope(scope);
+    academyTermStore.connection(result.status, result.configured);
     return result;
   },
 
@@ -1121,6 +1155,7 @@ export const canvasToDoApi = {
 
     const result = await response.json() as CanvasTokenStatus;
     assertCurrentAcademyPreferenceScope(scope);
+    academyTermStore.connection(result.status, result.configured);
     window.dispatchEvent(new Event('canvas-token-updated'));
     return result;
   },
@@ -1142,6 +1177,7 @@ export const canvasToDoApi = {
 
     const result = await response.json() as CanvasTokenStatus;
     assertCurrentAcademyPreferenceScope(scope);
+    academyTermStore.connection(result.status, result.configured);
     window.dispatchEvent(new Event('canvas-token-updated'));
     return result;
   },
@@ -1149,11 +1185,13 @@ export const canvasToDoApi = {
 
   async getCanvasCourses(pageSize = 5) {
     const params = new URLSearchParams({ pageSize: String(Math.min(Math.max(pageSize, 1), 100)) });
-    return fetchCanvasScopedJson<CanvasCourses>(
+    const result = await fetchCanvasScopedJson<CanvasCourses>(
       `/canvas/courses?${params.toString()}`,
       'Unable to load Canvas courses.',
       'Canvas courses took too long to respond. Try again in a moment.',
     );
+    academyTermStore.courses(result.courses, result.termName);
+    return result;
   },
 
   async getCanvasCourseContent(courseId: string, section?: CanvasCourseContentSection) {
@@ -1376,6 +1414,7 @@ export const canvasToDoApi = {
 
     const result = await response.json() as AcademyPreferences;
     assertCurrentAcademyPreferenceScope(scope);
+    academyTermStore.preferences(result);
     return {
       ...result,
       canvasCourseworkPreferences: normalizeCanvasItemPreferences(result.canvasCourseworkPreferences ?? {}),
@@ -1408,6 +1447,7 @@ export const canvasToDoApi = {
 
     const result = await response.json() as AcademyPreferences;
     assertCurrentAcademyPreferenceScope(scope);
+    academyTermStore.preferences(result);
     return {
       ...result,
       canvasCourseworkPreferences: normalizeCanvasItemPreferences(result.canvasCourseworkPreferences ?? {}),

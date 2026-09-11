@@ -266,8 +266,8 @@ public static class AdminAuthEndpoints
              !string.Equals(requestedRole, ApplicationRoles.Admin, StringComparison.OrdinalIgnoreCase)))
         {
             return Results.Problem(
-                title: "Bootstrap administrator protected.",
-                detail: "Change Authentication:Admin:BootstrapEmail before demoting or deactivating this account.",
+                title: "Master account cannot be modified.",
+                detail: "This is the configured master administrator account. Update AUTH_ADMIN_BOOTSTRAP_EMAIL to another administrator before changing its role or status.",
                 statusCode: StatusCodes.Status409Conflict);
         }
 

@@ -2889,9 +2889,16 @@ function DashboardRows({
           value={row.value}
         />
       ) : isPhone && isCheckableRow ? (
-        <button type="button" className="block w-full min-w-0 rounded-md text-left text-sm font-bold leading-snug [overflow-wrap:anywhere] outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        <button type="button" className="line-clamp-2 w-full min-w-0 rounded-md text-left text-sm font-bold leading-snug [overflow-wrap:anywhere] outline-none focus-visible:ring-2 focus-visible:ring-ring"
           title={row.value || dictionary.boardAddTodoItem}
-          onClick={() => row.assessmentKey && !row.courseworkKey ? onOpenAssessment(row) : onOpenCoursework(row)}>
+          aria-pressed={Boolean(row.isCompleted)}
+          disabled={row.isCanvasSubmitted}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (row.assessmentKey && !row.courseworkKey) onToggleAssessmentDone(row);
+            else onToggleCourseworkDone(row);
+          }}>
           {row.value || dictionary.boardAddTodoItem}
         </button>
       ) : (
@@ -2953,14 +2960,22 @@ function DashboardRows({
         <div
           className={cn(
             'min-w-0 border-t text-sm first:border-t-0',
-            isPhone ? 'flex flex-col gap-1 py-2' : 'grid grid-cols-[auto_minmax(0,1fr)] items-start gap-2 py-2 sm:grid-cols-[auto_minmax(0,1fr)_auto]',
+            isPhone ? 'flex flex-col gap-1 py-1.5' : 'grid grid-cols-[auto_minmax(0,1fr)] items-start gap-2 py-2 sm:grid-cols-[auto_minmax(0,1fr)_auto]',
             isCheckableRow && 'rounded-md px-1 transition-colors hover:bg-muted/45',
+            isPhone && isCheckableRow && !row.isCanvasSubmitted && 'cursor-pointer',
             isPhone && isCheckableRow && row.isCompleted &&
               'border-emerald-500/25 bg-emerald-500/10 hover:bg-emerald-500/15 dark:border-emerald-300/25 dark:bg-emerald-300/10 dark:hover:bg-emerald-300/15',
           )}
           role={isPhone && isCheckableRow ? 'article' : undefined}
           aria-label={isPhone && isCheckableRow ? row.value : undefined}
           key={`${card.id}-${row.label}-${row.value}`}
+          onClick={(event) => {
+            if (!isPhone || !isCheckableRow || row.isCanvasSubmitted || isRenamingRow ||
+              isDashboardRowActionTarget(event.target) || courseworkLongPressTriggeredRef.current) return;
+            event.stopPropagation();
+            if (row.assessmentKey && !row.courseworkKey) onToggleAssessmentDone(row);
+            else onToggleCourseworkDone(row);
+          }}
           onDoubleClick={(event) => {
             if (!isCheckableRow) {
               return;
@@ -2980,8 +2995,10 @@ function DashboardRows({
           onPointerUp={clearCourseworkLongPress}
         >
           {isPhone && isCheckableRow ? <>
-            <div className="flex min-w-0 flex-wrap items-center gap-1.5">{courseBadge}{typeBadges}{star}</div>
-            {titleContent}
+            <div className="flex min-w-0 items-start justify-between gap-2">
+              <div className="min-w-0 flex-1">{titleContent}</div>
+              <div className="flex min-w-0 max-w-[45%] flex-wrap items-center justify-end gap-1">{courseBadge}{typeBadges}{star}</div>
+            </div>
             <div className="flex min-w-0 items-center justify-between gap-1.5">
               {dueBadge}
               <div className="ml-auto flex shrink-0 items-center gap-1">{completionButton}{touchActionMenu}</div>
@@ -5820,7 +5837,7 @@ export function DashboardCards({
       updateStoredCanvasCourseworkPreferences((currentPreferences) => {
         const currentItemPreferences = currentPreferences[row.canvasCourseworkId!] ?? {};
         const liveItem = canvasCourseworkItems.find((item) => item.id === row.canvasCourseworkId);
-        const nextCompleted = !currentItemPreferences.completed;
+        const nextCompleted = !row.isCompleted;
 
         clearProtectedCanvasSubmissionStatus(
           protectedCanvasSubmissionStatusesRef.current,
@@ -5851,8 +5868,8 @@ export function DashboardCards({
       coursework.id === row.manualCourseworkId
         ? {
             ...coursework,
-            completed: !coursework.completed,
-            completedAt: coursework.completed ? undefined : checkedAt,
+            completed: !row.isCompleted,
+            completedAt: row.isCompleted ? undefined : checkedAt,
           }
         : coursework
     )));
@@ -5869,7 +5886,7 @@ export function DashboardCards({
       updateStoredCanvasAssessmentPreferences((currentPreferences) => {
         const currentItemPreferences = currentPreferences[row.canvasAssessmentId!] ?? {};
         const liveItem = canvasCourseworkItems.find((item) => item.id === row.canvasAssessmentId);
-        const nextCompleted = !currentItemPreferences.completed;
+        const nextCompleted = !row.isCompleted;
 
         clearProtectedCanvasSubmissionStatus(
           protectedCanvasSubmissionStatusesRef.current,
@@ -5900,8 +5917,8 @@ export function DashboardCards({
       assessment.id === row.manualAssessmentId
         ? {
             ...assessment,
-            completed: !assessment.completed,
-            completedAt: assessment.completed ? undefined : checkedAt,
+            completed: !row.isCompleted,
+            completedAt: row.isCompleted ? undefined : checkedAt,
           }
         : assessment
     )));

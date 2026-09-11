@@ -263,7 +263,7 @@ export function CalendarShell({
     >
     <Card
       className={cn(
-        'gap-0 rounded-xl bg-card py-2 shadow-none transition-all duration-300 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col max-[520px]:rounded-none max-[520px]:border-0 max-[520px]:bg-transparent max-[520px]:py-0',
+        'gap-0 rounded-xl bg-card py-2 shadow-none transition-all duration-300 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col max-[520px]:rounded-none max-[520px]:border-0 max-[520px]:ring-0 max-[520px]:bg-transparent max-[520px]:py-0',
         fillHeight && 'flex min-h-0 flex-1 flex-col',
       )}
     >
@@ -289,6 +289,84 @@ export function CalendarShell({
           </span>
         </button>
       ) : null}
+      <div aria-label={language === 'ko' ? '캘린더 도구' : 'Calendar tools'} className="mb-2 hidden items-center justify-between gap-2 rounded-xl border bg-card/80 p-1 max-[520px]:flex" role="group">
+        <div className="flex items-center gap-1">
+          {mode.views.includes('month') ? (
+            <Button
+              aria-label={phoneCalendarScopeLabel}
+              aria-pressed={!isCourseworkOpen && view === 'month'}
+              className="size-11 rounded-lg text-muted-foreground aria-pressed:bg-primary/15 aria-pressed:text-primary"
+              disabled={!onMobileCalendarScopeChange}
+              onClick={() => {
+                if (!isCourseworkOpen && view === 'month') {
+                  onMobileCalendarScopeChange?.(mobileCalendarScope === 'week' ? 'month' : 'week');
+                }
+                onViewChange('month');
+              }}
+              title={phoneCalendarScopeLabel}
+              type="button"
+              variant="ghost"
+            >
+              {mobileCalendarScope === 'week' ? <CalendarRange aria-hidden="true" className="size-5" /> : <CalendarDays aria-hidden="true" className="size-5" />}
+            </Button>
+          ) : null}
+          {onOpenCoursework ? (
+            <Button
+              aria-label={dictionary.courseworkCardSettingsTitle}
+              aria-pressed={isCourseworkOpen}
+              className="size-11 rounded-lg text-muted-foreground aria-pressed:bg-primary/15 aria-pressed:text-primary"
+              onClick={onOpenCoursework}
+              title={dictionary.courseworkCardSettingsTitle}
+              type="button"
+              variant="ghost"
+            >
+              <ListChecks aria-hidden="true" className="size-5" />
+            </Button>
+          ) : null}
+          {mode.views.includes('agenda') ? (
+            <Button
+              aria-label={getViewLabel(language, 'agenda')}
+              aria-pressed={!isCourseworkOpen && view === 'agenda'}
+              className="size-11 rounded-lg text-muted-foreground aria-pressed:bg-primary/15 aria-pressed:text-primary"
+              onClick={() => onViewChange('agenda')}
+              title={getViewLabel(language, 'agenda')}
+              type="button"
+              variant="ghost"
+            >
+              <Clock aria-hidden="true" className="size-5" />
+            </Button>
+          ) : null}
+          {mode.views.includes('timetable') ? (
+            <Button aria-label={getViewLabel(language, 'timetable')} aria-pressed={!isCourseworkOpen && view === 'timetable'}
+              className="size-11 rounded-lg text-muted-foreground aria-pressed:bg-primary/15 aria-pressed:text-primary"
+              onClick={() => onViewChange('timetable')} title={getViewLabel(language, 'timetable')} type="button" variant="ghost">
+              <WorkspaceIcon name="calendar-range" size={20} />
+            </Button>
+          ) : null}
+        </div>
+        <div className="flex items-center gap-1">
+          {onToday && !isCourseworkOpen ? (
+            <Button aria-label={todayLabel} className="size-11 rounded-lg" disabled={isPhoneTodayDisabled} onClick={onToday} title={todayLabel} type="button" variant="ghost">
+              <CalendarCheck2 className="size-5" />
+            </Button>
+          ) : null}
+          {hasFilters && !isCourseworkOpen ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button aria-label={dictionary.boardCourseMenu} className="relative size-11 rounded-lg" title={dictionary.boardCourseMenu} type="button" variant="ghost">
+                  <SlidersHorizontal className="size-5" />
+                  {courseFilterOptions?.some((option) => !option.checked) ? <span className="absolute right-2 top-2 size-1.5 rounded-full bg-primary" /> : null}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-72 max-w-[calc(100vw-2rem)] p-2">
+                <FilterPanel courseOptions={courseFilterOptions ?? []} onToggleCourseOption={onToggleCourseFilter} />
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+        </div>
+      </div>
+
+
       <CardHeader className={cn("flex flex-row flex-wrap items-start justify-between gap-3 px-3 pb-2 pt-1 max-xl:flex-col max-[520px]:flex-row max-[520px]:items-center max-[520px]:gap-1 max-[520px]:px-1 max-[520px]:pb-1 max-[520px]:pt-0", isPhone && isCourseworkOpen && 'hidden')}>
         <div className="min-w-0 max-[520px]:w-full">
           <div className="flex min-w-0 items-center gap-2 max-[520px]:w-full max-[520px]:justify-between">
@@ -386,82 +464,6 @@ export function CalendarShell({
         </div>
       </CardHeader>
 
-      <div aria-label={language === 'ko' ? '캘린더 도구' : 'Calendar tools'} className="mb-2 hidden items-center justify-between gap-2 rounded-xl border bg-card/80 p-1 max-[520px]:flex" role="group">
-        <div className="flex items-center gap-1">
-          {mode.views.includes('month') ? (
-            <Button
-              aria-label={phoneCalendarScopeLabel}
-              aria-pressed={!isCourseworkOpen && view === 'month'}
-              className="size-11 rounded-lg text-muted-foreground aria-pressed:bg-primary/15 aria-pressed:text-primary"
-              disabled={!onMobileCalendarScopeChange}
-              onClick={() => {
-                if (!isCourseworkOpen && view === 'month') {
-                  onMobileCalendarScopeChange?.(mobileCalendarScope === 'week' ? 'month' : 'week');
-                }
-                onViewChange('month');
-              }}
-              title={phoneCalendarScopeLabel}
-              type="button"
-              variant="ghost"
-            >
-              {mobileCalendarScope === 'week' ? <CalendarRange aria-hidden="true" className="size-5" /> : <CalendarDays aria-hidden="true" className="size-5" />}
-            </Button>
-          ) : null}
-          {onOpenCoursework ? (
-            <Button
-              aria-label={dictionary.courseworkCardSettingsTitle}
-              aria-pressed={isCourseworkOpen}
-              className="size-11 rounded-lg text-muted-foreground aria-pressed:bg-primary/15 aria-pressed:text-primary"
-              onClick={onOpenCoursework}
-              title={dictionary.courseworkCardSettingsTitle}
-              type="button"
-              variant="ghost"
-            >
-              <ListChecks aria-hidden="true" className="size-5" />
-            </Button>
-          ) : null}
-          {mode.views.includes('agenda') ? (
-            <Button
-              aria-label={getViewLabel(language, 'agenda')}
-              aria-pressed={!isCourseworkOpen && view === 'agenda'}
-              className="size-11 rounded-lg text-muted-foreground aria-pressed:bg-primary/15 aria-pressed:text-primary"
-              onClick={() => onViewChange('agenda')}
-              title={getViewLabel(language, 'agenda')}
-              type="button"
-              variant="ghost"
-            >
-              <Clock aria-hidden="true" className="size-5" />
-            </Button>
-          ) : null}
-          {mode.views.includes('timetable') ? (
-            <Button aria-label={getViewLabel(language, 'timetable')} aria-pressed={!isCourseworkOpen && view === 'timetable'}
-              className="size-11 rounded-lg text-muted-foreground aria-pressed:bg-primary/15 aria-pressed:text-primary"
-              onClick={() => onViewChange('timetable')} title={getViewLabel(language, 'timetable')} type="button" variant="ghost">
-              <WorkspaceIcon name="calendar-range" size={20} />
-            </Button>
-          ) : null}
-        </div>
-        <div className="flex items-center gap-1">
-          {onToday && !isCourseworkOpen ? (
-            <Button aria-label={todayLabel} className="size-11 rounded-lg" disabled={isPhoneTodayDisabled} onClick={onToday} title={todayLabel} type="button" variant="ghost">
-              <CalendarCheck2 className="size-5" />
-            </Button>
-          ) : null}
-          {hasFilters && !isCourseworkOpen ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button aria-label={dictionary.boardCourseMenu} className="relative size-11 rounded-lg" title={dictionary.boardCourseMenu} type="button" variant="ghost">
-                  <SlidersHorizontal className="size-5" />
-                  {courseFilterOptions?.some((option) => !option.checked) ? <span className="absolute right-2 top-2 size-1.5 rounded-full bg-primary" /> : null}
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-72 max-w-[calc(100vw-2rem)] p-2">
-                <FilterPanel courseOptions={courseFilterOptions ?? []} onToggleCourseOption={onToggleCourseFilter} />
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : null}
-        </div>
-      </div>
 
       {mobileCourseworkContent ? (
         <div className={cn(!isCourseworkOpen && 'hidden')}>{mobileCourseworkContent}</div>

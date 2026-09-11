@@ -3944,6 +3944,7 @@ export function CourseOverviewView({
     () => createDeletedManualRows(manualLectures).sort(sortRows),
     [manualLectures],
   );
+  const isMobileTrashView = isPhone && showDeletedManualCourses && deletedManualRows.length > 0;
   const selectedCourseRow = selectedCourseRowId
     ? allRows.find((row) => row.id === selectedCourseRowId)
     : undefined;
@@ -4758,7 +4759,7 @@ export function CourseOverviewView({
   return (
     <>
     {connectionReminder}
-    <Card className="phone-course-list flex h-full min-h-0 flex-col rounded-xl shadow-none max-[520px]:h-auto max-[520px]:min-h-0 max-[520px]:rounded-none max-[520px]:border-0 max-[520px]:bg-transparent max-[520px]:py-0" size="sm">
+    <Card className="phone-course-list flex h-full min-h-0 min-w-0 max-w-full flex-col rounded-xl shadow-none max-[520px]:h-auto max-[520px]:min-h-0 max-[520px]:rounded-none max-[520px]:border-0 max-[520px]:bg-transparent max-[520px]:py-0" size="sm">
       <CardHeader className="shrink-0 border-b max-[520px]:grid-cols-[auto_minmax(0,1fr)] max-[520px]:gap-2 max-[520px]:rounded-none max-[520px]:border-b max-[520px]:px-1 max-[520px]:py-1">
         <div className="flex min-w-0 items-center gap-2 text-xs font-semibold uppercase text-muted-foreground">
           <BookOpen aria-hidden="true" className="max-[520px]:m-2 max-[520px]:size-5" size={15} strokeWidth={2.3} />
@@ -4774,6 +4775,7 @@ export function CourseOverviewView({
           {deletedManualRows.length > 0 ? (
             <Button
               aria-expanded={showDeletedManualCourses}
+              aria-pressed={showDeletedManualCourses}
               aria-label={`${dictionary.courseOverviewTrash} (${deletedManualRows.length})`}
               className="relative size-8 shrink-0 rounded-md p-0 max-[520px]:size-11"
               onClick={() => setShowDeletedManualCourses((current) => !current)}
@@ -4787,7 +4789,9 @@ export function CourseOverviewView({
               </span>
             </Button>
           ) : null}
-          <Select onValueChange={handleSelectSemester} value={normalizeSemesterName(selectedSemester)}>
+          {isMobileTrashView ? (
+            <span className="min-w-0 flex-1 truncate text-sm font-semibold">{dictionary.courseOverviewTrash}</span>
+          ) : <Select onValueChange={handleSelectSemester} value={normalizeSemesterName(selectedSemester)}>
             <SelectTrigger aria-label={dictionary.courseOverviewSemester} className="h-8 w-[150px] min-w-0 rounded-md text-xs font-semibold max-[520px]:h-11 max-[520px]:w-auto max-[520px]:flex-1 max-[520px]:text-xs">
               <SelectValue aria-label={dictionary.courseOverviewSemester} />
             </SelectTrigger>
@@ -4798,25 +4802,25 @@ export function CourseOverviewView({
                 </SelectItem>
               ))}
             </SelectContent>
-          </Select>
-          {courseLoadStatus === 'loading' ? (
+          </Select>}
+          {courseLoadStatus === 'loading' && !isMobileTrashView ? (
             <Badge className="gap-1.5 max-[520px]:hidden" variant="outline">
               <LoaderCircle aria-hidden="true" className="animate-spin text-primary" size={13} strokeWidth={2.4} />
               <span>{dictionary.canvasCoursesLoading}</span>
             </Badge>
           ) : null}
           <Badge variant="secondary">
-            <span>{rows.length}<span className="max-[520px]:sr-only"> {dictionary.courseOverviewCountLabel}</span></span>
+            <span>{isMobileTrashView ? deletedManualRows.length : rows.length}<span className="max-[520px]:sr-only"> {dictionary.courseOverviewCountLabel}</span></span>
           </Badge>
         </CardAction>
       </CardHeader>
 
-      <CardContent className="min-h-0 flex-1 space-y-2 overflow-y-auto max-[520px]:overflow-visible max-[520px]:px-0 max-[520px]:py-1">
-        {courseLoadStatus === 'loading' ? (
+      <CardContent className="min-h-0 min-w-0 flex-1 space-y-2 overflow-y-auto max-[520px]:max-h-[calc(100dvh-12rem-env(safe-area-inset-bottom))] max-[520px]:overflow-y-auto max-[520px]:overscroll-contain max-[520px]:px-0 max-[520px]:py-1">
+        {courseLoadStatus === 'loading' && !isMobileTrashView ? (
           <CanvasLoadingBanner label={dictionary.canvasCoursesLoading} size="compact" />
         ) : null}
 
-        {isLoading ? (
+        {isLoading && !isMobileTrashView ? (
           <div className="space-y-2">
             {Array.from({ length: 5 }, (_, index) => (
               <CourseSkeletonRow key={index} />
@@ -4824,15 +4828,15 @@ export function CourseOverviewView({
           </div>
         ) : null}
 
-        {isUnavailable ? (
+        {isUnavailable && !isMobileTrashView ? (
           <div className="rounded-lg border border-dashed bg-muted/30 p-6 text-sm font-medium text-muted-foreground">
             {dictionary.courseOverviewUnavailable}
           </div>
         ) : null}
 
-        {!isLoading && !isUnavailable ? (
+        {(!isLoading && !isUnavailable) || isMobileTrashView ? (
           <div className="space-y-2.5">
-            {rows.map((row) => {
+            {(isMobileTrashView ? [] : rows).map((row) => {
               const detailItems = getCourseDetailItems(row, dictionary);
               const summaryLabel = row.grade !== '--' ? row.grade : row.semester;
 
@@ -4943,14 +4947,14 @@ export function CourseOverviewView({
               );
             })}
             {showDeletedManualCourses && deletedManualRows.length > 0 ? (
-              <section className="mt-5 space-y-2 border-t pt-4" aria-label={dictionary.courseOverviewTrash}>
-                <div>
-                  <h3 className="text-sm font-semibold text-foreground">{dictionary.courseOverviewTrash}</h3>
+              <section className={cn('space-y-2', isMobileTrashView ? 'min-w-0' : 'mt-5 border-t pt-4')} aria-label={dictionary.courseOverviewTrash}>
+                <div className={cn(isMobileTrashView && 'px-1 pb-1')}>
+                  {!isMobileTrashView ? <h3 className="text-sm font-semibold text-foreground">{dictionary.courseOverviewTrash}</h3> : null}
                   <p className="text-xs text-muted-foreground">{dictionary.courseOverviewTrashDescription}</p>
                 </div>
                 {deletedManualRows.map((row) => (
                   <article
-                    className="flex min-w-0 items-center gap-3 rounded-lg border border-dashed bg-muted/20 px-3 py-3"
+                    className="flex min-w-0 items-center gap-3 rounded-lg border border-dashed bg-muted/20 px-3 py-3 max-[520px]:gap-2 max-[520px]:rounded-xl max-[520px]:px-2 max-[520px]:py-2"
                     key={`deleted-${row.id}`}
                   >
                     <span className={cn('size-2.5 shrink-0 rounded-full opacity-60', dotColorClasses[row.color])} />
@@ -4962,11 +4966,12 @@ export function CourseOverviewView({
                       <p className="truncate text-xs text-muted-foreground">{row.name}</p>
                     </div>
                     <div className="flex shrink-0 items-center gap-1.5">
-                      <Button className="gap-1.5" onClick={() => handleRestoreManualCourse(row)} size="sm" type="button" variant="outline">
+                      <Button className="gap-1.5 max-[520px]:size-11 max-[520px]:p-0" title={dictionary.courseOverviewRestore} onClick={() => handleRestoreManualCourse(row)} size="sm" type="button" variant="outline">
                         <RotateCcw aria-hidden="true" className="size-3.5" />
                         <span className="max-[520px]:sr-only">{dictionary.courseOverviewRestore}</span>
                       </Button>
                       <Button
+                        className="max-[520px]:size-11"
                         aria-label={dictionary.courseOverviewDeletePermanently}
                         onClick={() => setCoursePendingPermanentDelete(row)}
                         size="icon-sm"

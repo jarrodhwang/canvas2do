@@ -11,7 +11,6 @@ import {
   FileText,
   GraduationCap,
   Home,
-  Image,
   Layers,
   Link2,
   ListChecks,
@@ -25,7 +24,6 @@ import {
   Star,
   Trash2,
   Users,
-  Video,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent, type TouchEvent } from 'react';
 
@@ -2142,33 +2140,9 @@ function CourseDetailView({
   const renderEmbeddedManualLink = (url: string, label: string, forcedPreviewKind?: ReturnType<typeof getFilePreviewKind>) => {
     const previewKind = forcedPreviewKind ?? getPreviewKindFromUrl(url);
     const previewUrl = previewKind === 'office' ? getOfficePreviewUrl(url) : url;
-    const PreviewIcon = previewKind === 'image'
-      ? Image
-      : previewKind === 'video' || previewKind === 'audio'
-        ? Video
-        : previewKind === 'pdf' || previewKind === 'office' || previewKind === 'text'
-          ? FileText
-          : ExternalLink;
 
     return (
       <div className={cn('flex flex-col overflow-hidden rounded-lg border bg-background lg:h-full lg:min-h-0', isPhone && 'h-full min-h-0')}>
-        {!isPhone ? <div className="flex shrink-0 items-center justify-between gap-3 border-b px-3 py-2">
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="grid size-8 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
-              <PreviewIcon className="size-4" />
-            </span>
-            <div className="min-w-0">
-              <div className="truncate text-sm font-semibold text-foreground">{label}</div>
-              <div className="truncate text-xs font-medium text-muted-foreground">{url}</div>
-            </div>
-          </div>
-          <Button asChild className="h-8 shrink-0 rounded-md" size="sm" variant="outline">
-            <a href={url} rel="noreferrer" target="_blank">
-              <ExternalLink className="size-4" />
-              {dictionary.courseOverviewOpenCanvas}
-            </a>
-          </Button>
-        </div> : null}
         <div className={cn('min-h-[320px] bg-background lg:min-h-0 lg:flex-1', isPhone && 'min-h-0 flex-1')} style={{ height: manualEmbedHeight }}>
           {previewKind === 'image' ? (
             <div className="grid h-full place-items-center overflow-auto bg-muted/15 p-3">

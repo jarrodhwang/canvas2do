@@ -114,6 +114,40 @@ foreach (var scenario in new[] { "healthy", "calendar-only", "duplicate-sources"
     Console.WriteLine("PASS expired token authentication and idempotent saved-course conversion");
 }
 
+// Permanent deletion wins over delayed course snapshots, including an old manual copy.
+{
+    var beforeDeletion = """
+        {"manualLectures":[{"id":"manual-canvas-42","name":"Converted"},{"id":"archived-43","name":"Archived"},{"id":"manual-1","name":"Keep"}],
+         "canvasLecturePreferences":{"42":{"convertedToManualAt":"2026-09-01","deleted":true},"43":{"archivedAsManualLectureId":"archived-43"},"44":{"courseName":"Keep Canvas"}},
+         "manualCoursework":[{"id":"work-1","courseCode":"CMPT 310"}],"calendarSettings":{"selectedSemester":"Fall 2026"}}
+        """;
+    var deletion = JsonSerializer.Deserialize<SaveAcademyPreferencesRequest>("""
+        {"manualLectures":[{"id":"manual-1","name":"Keep"}],
+         "canvasLecturePreferences":{"42":{"convertedToManualAt":"2026-09-01","permanentlyDeletedAt":"2026-09-12"},"43":{"archivedAsManualLectureId":"archived-43","permanentlyDeletedAt":"2026-09-12"},"44":{"courseName":"Keep Canvas"}}}
+        """, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+    var saved = AcademyPreferenceEndpoints.Serialize(deletion, beforeDeletion);
+    var staleRequest = JsonSerializer.Deserialize<SaveAcademyPreferencesRequest>(beforeDeletion, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+    var afterStaleSave = AcademyPreferenceEndpoints.Serialize(staleRequest, saved);
+    var root = JsonNode.Parse(afterStaleSave)!;
+    Check(root["manualLectures"]!.AsArray().Count == 1 && root["manualLectures"]![0]!["id"]!.GetValue<string>() == "manual-1",
+        "A stale save cannot reinsert either kind of converted course");
+    foreach (var id in new[] { "42", "43" })
+    {
+        var course = root["canvasLecturePreferences"]![id]!;
+        Check(course["permanentlyDeletedAt"]!.GetValue<string>() == "2026-09-12" &&
+            course["deleted"]!.GetValue<bool>() && course["hidden"]!.GetValue<bool>(), "Deletion marker and visibility survive stale saves");
+    }
+    Check(root["manualCoursework"]!.AsArray().Count == 1, "Course deletion preserves coursework");
+    Check(root["canvasLecturePreferences"]!["44"]!["courseName"]!.GetValue<string>() == "Keep Canvas", "Unrelated Canvas preferences survive");
+    var partialRequest = JsonSerializer.Deserialize<SaveAcademyPreferencesRequest>("""{"canvasLecturePreferences":{}}""", new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+    var afterPartialSave = JsonNode.Parse(AcademyPreferenceEndpoints.Serialize(partialRequest, afterStaleSave))!;
+    Check(afterPartialSave["canvasLecturePreferences"]!["42"]!["permanentlyDeletedAt"] is not null &&
+        afterPartialSave["manualLectures"]!.AsArray().Count == 1, "Omitted course entries cannot erase permanent deletion");
+    var manualMode = JsonNode.Parse(ManualModeEndpoints.ConvertSavedCourses(afterStaleSave, DateTimeOffset.UtcNow))!;
+    Check(manualMode["manualLectures"]!.AsArray().Count == 2, "Manual-mode approval converts only the remaining Canvas course");
+    Console.WriteLine("PASS durable permanent course deletion, delayed saves and retained coursework");
+}
+
 static void Check(bool condition, string description)
 {
     if (!condition) throw new InvalidOperationException(description);

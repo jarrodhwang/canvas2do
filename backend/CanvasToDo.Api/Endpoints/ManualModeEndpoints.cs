@@ -129,6 +129,7 @@ public static class ManualModeEndpoints
         foreach (var (courseId, node) in courses)
         {
             if (node is not JsonObject course) continue;
+            if (course["permanentlyDeletedAt"] is not null) continue;
             var manualId = course["archivedAsManualLectureId"]?.GetValue<string>() ?? $"manual-canvas-{courseId}";
             if (!manual.OfType<JsonObject>().Any(c => c["id"]?.GetValue<string>() == manualId))
             {

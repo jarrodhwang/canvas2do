@@ -8,7 +8,7 @@ import { canvasToDoApi } from '../api/canvasToDoApi';
 import type { AcademyPreferences, CanvasCourse, CanvasCourseContent } from '../api/canvasToDoApi';
 import { useLanguage } from '../context/LanguageContext';
 import { badgeColorClasses, dotColorClasses } from '../lib/colorStyles';
-import { isCanvasCoursePublished, shouldConvertCanvasCourseToManual } from '../lib/canvasCourseMigration';
+import { canRestoreConvertedCanvasCourse, isCanvasCoursePublished, isConvertedCanvasCourseDeleted, shouldConvertCanvasCourseToManual } from '../lib/canvasCourseMigration';
 import {
   defaultGradeProgressColorThresholds,
   getGradeProgressColor,
@@ -53,6 +53,7 @@ interface CanvasLecturePreference {
   currentGrade?: string;
   currentScore?: number;
   convertedToManualAt?: string;
+  permanentlyDeletedAt?: string;
   deleted?: boolean;
   friendlyCourseCode?: string;
   friendlyName?: string;
@@ -328,11 +329,10 @@ function createCanvasRows(courses: CanvasCourse[], preferences: CanvasLecturePre
     const courseId = String(course.id ?? '');
     const preference = getCanvasPreferenceForCourse(course, preferences);
 
-    const restoreAccessibleConversion = Boolean(
-      preference.convertedToManualAt && course.accessClosed !== true,
-    );
+    const restoreAccessibleConversion = canRestoreConvertedCanvasCourse(course, preference);
 
     if (
+      preference.permanentlyDeletedAt ||
       course.accessClosed ||
       (!restoreAccessibleConversion && (preference.hidden || preference.deleted))
     ) {
@@ -371,6 +371,7 @@ function createStoredCanvasRows(
   return Object.entries(preferences).flatMap(([courseId, preference]) => {
     if (
       liveCourseIds.has(courseId) ||
+      preference.permanentlyDeletedAt ||
       preference.hidden ||
       preference.deleted ||
       !(
@@ -625,6 +626,21 @@ function migrateClosedCanvasCourses(
     }
 
     const isAlreadyConverted = Boolean(preference.convertedToManualAt);
+    const manualLectureId = `manual-canvas-${courseId}`;
+    const manualLectureIndex = nextManualLectures.findIndex((lecture) => lecture.id === manualLectureId);
+
+    if (isConvertedCanvasCourseDeleted(preference, manualLectureIndex !== -1)) {
+      if (!preference.permanentlyDeletedAt) {
+        nextCanvasLecturePreferences[courseId] = {
+          ...preference,
+          permanentlyDeletedAt: nowIso,
+          deleted: true,
+          hidden: true,
+        };
+        changed = true;
+      }
+      return;
+    }
 
     if (!shouldConvertCanvasCourseToManual(courseById.get(courseId), now, {
       courseListIsComplete,
@@ -633,9 +649,7 @@ function migrateClosedCanvasCourses(
       return;
     }
 
-    const manualLectureId = `manual-canvas-${courseId}`;
     let courseChanged = false;
-    const manualLectureIndex = nextManualLectures.findIndex((lecture) => lecture.id === manualLectureId);
 
     if (manualLectureIndex === -1) {
       nextManualLectures.push(createManualLectureFromCanvasPreference(courseId, preference, fallbackSemester));

@@ -26,7 +26,7 @@ import { useEffect, useEffectEvent, useMemo, useRef, useState, type FormEvent, t
 import { canvasToDoApi, type AcademyPreferences, type CanvasCalendarItem, type CanvasCourse, type SaveAcademyPreferencesRequest } from '../api/canvasToDoApi';
 import { useLanguage } from '../context/LanguageContext';
 import { useWorkspaceMode } from '../context/WorkspaceModeContext';
-import { shouldConvertCanvasCourseToManual } from '../lib/canvasCourseMigration';
+import { canRestoreConvertedCanvasCourse, shouldConvertCanvasCourseToManual } from '../lib/canvasCourseMigration';
 import type { ColorToken, DashboardCardConfig } from '../modes/types';
 import { cn } from '../lib/utils';
 import { dotColorClasses } from '../lib/colorStyles';
@@ -155,6 +155,7 @@ type CanvasLecturePreferences = Record<string, {
   currentGrade?: string;
   currentScore?: number;
   convertedToManualAt?: string;
+  permanentlyDeletedAt?: string;
   deleted?: boolean;
   friendlyCourseCode?: string;
   friendlyName?: string;
@@ -746,11 +747,9 @@ function createCanvasLectureRows(
   return courses
     .filter((course) => {
       const preference = preferences[course.id] ?? {};
-      const restoreAccessibleConversion = Boolean(
-        preference.convertedToManualAt && course.accessClosed !== true,
-      );
+      const restoreAccessibleConversion = canRestoreConvertedCanvasCourse(course, preference);
 
-      return course.accessClosed !== true &&
+      return !preference.permanentlyDeletedAt && course.accessClosed !== true &&
         (restoreAccessibleConversion || (!preference.hidden && !preference.deleted));
     })
     .sort((firstCourse, secondCourse) => (
@@ -794,6 +793,7 @@ function createStoredCanvasLectureRows(
       !liveCourseIds.has(courseId) &&
       !preference.hidden &&
       !preference.deleted &&
+      !preference.permanentlyDeletedAt &&
       Boolean(
         preference.friendlyCourseCode?.trim() ||
         preference.originalCourseCode?.trim() ||
@@ -2098,11 +2098,11 @@ function DashboardRows({
   const suppressLectureOpenTimeoutRef = useRef<number | null>(null);
   const [dropdownColorVariantPage, setDropdownColorVariantPage] = useState(0);
   const [contextColorVariantPage, setContextColorVariantPage] = useState(0);
-  const rows = card.id === 'upcoming-coursework'
+  const rows = card.id === 'upcoming-coursework' || card.id === 'semester-lectures'
     ? card.rows
     : card.rows.slice(0, card.maxRows ?? card.rows.length);
   const rowOrderKey = rows.map((row) => row.courseworkKey ?? row.assessmentKey ?? row.id).join('|');
-  const compactRowsMaxHeightClassName = 'max-h-64';
+  const compactRowsMaxHeightClassName = 'max-h-55';
   const chipColorLabels: Partial<Record<ColorToken, string>> = {
     blue: dictionary.manualLectureChipColorBlue,
     sky: dictionary.manualLectureChipColorSky,
@@ -3046,6 +3046,7 @@ function DashboardRows({
           aria-label={isLectureRow ? dictionary.manualLectureOpenDetails : undefined}
           className={cn(
             'flex min-w-0 items-center border-t py-2 text-sm first:border-t-0',
+            card.id === 'semester-lectures' && (isPhone ? 'h-14 py-1' : 'h-11 py-1'),
             compactCourseRows ? 'justify-between gap-2' : 'gap-3',
             isLectureRow && 'cursor-pointer rounded-md px-1 transition-colors hover:bg-muted/45',
           )}
@@ -3108,9 +3109,14 @@ function DashboardRows({
       return renderLectureContextMenu(row, rowElement);
     });
 
-    return compactCourseRows
+    return card.id === 'semester-lectures'
       ? (
-          <div className={cn('overflow-y-auto pr-1', compactRowsMaxHeightClassName)}>
+          <div
+            aria-label={card.title}
+            className={cn('overflow-y-auto overscroll-contain', isPhone ? 'max-h-70' : 'max-h-55')}
+            role="region"
+            tabIndex={rows.length > 5 ? 0 : undefined}
+          >
             {renderedRows}
           </div>
         )
@@ -4064,7 +4070,6 @@ export function DashboardCards({
 
   const dashboardCards: RenderableDashboardCard[] = activeMode.dashboardCards.map((card) => {
     const translatedCard = translateDashboardCard(activeMode.id, card);
-    const maxRows = translatedCard.maxRows ?? 5;
     const isWaitingForAcademyPreferences = !hasLoadedAcademyPreferences;
 
     if (isWaitingForAcademyPreferences) {
@@ -4150,7 +4155,7 @@ export function DashboardCards({
           ...translatedCard,
           pill: activeCourseSemester ?? translatedCard.pill,
           rows: persistedRows.length > 0
-            ? persistedRows.slice(0, maxRows)
+            ? persistedRows
             : createMessageRows(dictionary.canvasCoursesUnavailable),
         };
       }
@@ -4160,7 +4165,7 @@ export function DashboardCards({
           ...translatedCard,
           pill: activeCourseSemester ?? translatedCard.pill,
           rows: persistedRows.length > 0
-            ? persistedRows.slice(0, maxRows)
+            ? persistedRows
             : createMessageRows(quietCanvas ? dictionary.manualCoursesEmpty : dictionary.canvasCoursesEmpty),
         };
       }
@@ -4175,7 +4180,7 @@ export function DashboardCards({
           ...regularCanvasRows,
           ...regularStoredCanvasRows,
           ...regularManualRows,
-        ].slice(0, maxRows),
+        ],
       };
     }
 
@@ -4802,7 +4807,7 @@ export function DashboardCards({
     let changed = false;
 
     Object.entries(currentPreferences).forEach(([courseId, preference]) => {
-      if (preference.archivedAsManualLectureId || preference.convertedToManualAt) {
+      if (preference.archivedAsManualLectureId || preference.convertedToManualAt || preference.deleted || preference.permanentlyDeletedAt) {
         return;
       }
 
@@ -6491,7 +6496,7 @@ export function DashboardCards({
 	              className={cn(
 	                'min-w-0 rounded-xl bg-card shadow-none',
                     isPhone && 'gap-1 py-2',
-		                (isCompactCourseCard || isCompactCourseworkCard) && 'h-54 overflow-hidden',
+		                (isCompactCourseCard || isCompactCourseworkCard) && 'h-61 overflow-hidden',
 	                card.id === 'upcoming-coursework' &&
 	                  !compactAcademySummary &&
 	                  (effectiveWideSummaryCards === undefined

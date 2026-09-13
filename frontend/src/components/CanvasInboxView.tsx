@@ -1,3 +1,4 @@
+import { canRestoreConvertedCanvasCourse } from '../lib/canvasCourseMigration';
 /* eslint-disable react-hooks/set-state-in-effect -- This restored integration view synchronizes request and selection state in effects. */
 import { ArrowLeft, ArrowRight, ChevronDown, ChevronRight, ExternalLink, Inbox, LoaderCircle, RefreshCw } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
@@ -52,6 +53,7 @@ function normalizeCanvasSemesterName(value?: string) {
 interface CanvasLecturePreference {
   chipColor?: ColorToken;
   convertedToManualAt?: string;
+  permanentlyDeletedAt?: string;
   courseId?: string;
   courseCode?: string;
   courseName?: string;
@@ -361,11 +363,10 @@ function getCourseLabel(course: CanvasCourse, preferences: CanvasLecturePreferen
 
 function isCourseHidden(course: CanvasCourse, preferences: CanvasLecturePreferences) {
   const preference = getCoursePreference(course, preferences);
-  const restoreAccessibleConversion = Boolean(
-    preference?.convertedToManualAt && course.accessClosed !== true,
-  );
+  const restoreAccessibleConversion = canRestoreConvertedCanvasCourse(course, preference);
 
-  return !restoreAccessibleConversion && Boolean(preference?.hidden || preference?.deleted);
+  return Boolean(preference?.permanentlyDeletedAt) ||
+    (!restoreAccessibleConversion && Boolean(preference?.hidden || preference?.deleted));
 }
 
 function getCanvasCourseSemester(course: CanvasCourse, preferences: CanvasLecturePreferences) {

@@ -31,7 +31,6 @@ export const defaultModeConfigs: WorkspaceModeConfig[] = [
         title: 'Courses',
         color: 'green',
         layout: 'agenda',
-        maxRows: 5,
         rows: [],
       },
       {

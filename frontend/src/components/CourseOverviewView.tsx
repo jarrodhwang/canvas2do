@@ -33,7 +33,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEven
 
 import { canvasToDoApi } from '../api/canvasToDoApi';
 import { isCanvasConnectionError } from '../lib/canvasOnboarding';
-import { isCanvasCoursePublished, shouldConvertCanvasCourseToManual } from '../lib/canvasCourseMigration';
+import { canRestoreConvertedCanvasCourse, isCanvasCoursePublished, markConvertedCanvasCoursePermanentlyDeleted, shouldConvertCanvasCourseToManual } from '../lib/canvasCourseMigration';
 import { CanvasNoticeDialog } from './CanvasNoticeDialog';
 import type {
   AcademyPreferences,
@@ -129,6 +129,7 @@ interface CanvasLecturePreference {
   currentGrade?: string;
   currentScore?: number;
   convertedToManualAt?: string;
+  permanentlyDeletedAt?: string;
   deleted?: boolean;
   friendlyCourseCode?: string;
   friendlyName?: string;
@@ -584,11 +585,9 @@ function createCanvasRows(
       ? normalizeSemesterName(preference.semester ?? preference.termName)
       : reportedSemester;
 
-    const restoreAccessibleConversion = Boolean(
-      preference.convertedToManualAt && course.accessClosed !== true,
-    );
+    const restoreAccessibleConversion = canRestoreConvertedCanvasCourse(course, preference);
 
-    if (course.accessClosed || (preference.deleted && !restoreAccessibleConversion)) {
+    if (preference.permanentlyDeletedAt || course.accessClosed || (preference.deleted && !restoreAccessibleConversion)) {
       return [];
     }
 
@@ -673,6 +672,7 @@ function createStoredCanvasRows(
     .filter(([courseId, preference]) => (
       !liveCourseIds.has(courseId) &&
       !preference.deleted &&
+      !preference.permanentlyDeletedAt &&
       Boolean(
         preference.friendlyCourseCode?.trim() ||
         preference.originalCourseCode?.trim() ||
@@ -3806,6 +3806,7 @@ export function CourseOverviewView({
       if (
         preference.archivedAsManualLectureId ||
         preference.convertedToManualAt ||
+        preference.permanentlyDeletedAt ||
         preference.deleted ||
         !shouldConvertCanvasCourseToManual(courseById.get(courseId), now, {
           courseListIsComplete: canvasCourseListIsComplete,
@@ -4099,9 +4100,14 @@ export function CourseOverviewView({
     }
 
     const nextManualLectures = manualLectures.filter((lecture) => lecture.id !== row.manualLecture?.id);
+    const nextCanvasLecturePreferences = markConvertedCanvasCoursePermanentlyDeleted(
+      row.manualLecture.id,
+      canvasLecturePreferences,
+    );
 
     setManualLectures(nextManualLectures);
-    saveCoursePreferences(nextManualLectures, canvasLecturePreferences);
+    setCanvasLecturePreferences(nextCanvasLecturePreferences);
+    saveCoursePreferences(nextManualLectures, nextCanvasLecturePreferences);
     setCoursePendingPermanentDelete(null);
   };
   const handleToggleCourseStar = (row: CourseOverviewRow) => {

@@ -32,12 +32,12 @@ export function getAcademyTermOptions(preferences: unknown, courses: unknown[] =
     seen.add(id);
     const preference = record(saved[id]);
     const restoredConversion = preference.convertedToManualAt && course.accessClosed !== true;
-    if (course.accessClosed || (preference.deleted && !restoredConversion)) continue;
+    if (preference.permanentlyDeletedAt || course.accessClosed || (preference.deleted && !restoredConversion)) continue;
     terms.add(normalizeAcademyTerm(preference.semester ?? preference.termName ?? course.termName, 'Default Term'));
   }
   for (const [id, value] of Object.entries(saved)) {
     const course = record(value);
-    if (seen.has(id) || course.deleted || course.convertedToManualAt || course.archivedAsManualLectureId) continue;
+    if (seen.has(id) || course.deleted || course.permanentlyDeletedAt || course.convertedToManualAt || course.archivedAsManualLectureId) continue;
     if (!course.lastSeenAt && !course.courseName && !course.originalCourseCode) continue;
     terms.add(normalizeAcademyTerm(course.semester ?? course.termName, currentTerm));
   }

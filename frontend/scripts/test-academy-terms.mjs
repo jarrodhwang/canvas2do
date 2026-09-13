@@ -27,3 +27,10 @@ assert.deepEqual(getAcademyTermOptions({ canvasLecturePreferences: { 1: { conver
 console.log('PASS seasonal boundaries, current and populated terms, Canvas names, deleted courses and orphan items');
 
 assert.deepEqual(getAcademyTermOptions({ canvasLecturePreferences: { 1: { deleted: true, convertedToManualAt: 'now', semester: 'Fall 2025' } }, manualLectures: [{ id: 'manual-canvas-1', semester: 'Winter 2024' }] }, [{ id: '1', termName: 'Fall 2025', accessClosed: false }], 'Fall 2026'), ['Fall 2026', 'Fall 2025']);
+
+for (const courses of [[], [{ id: '1', termName: 'Fall 2025', accessClosed: false }]]) {
+  assert.deepEqual(getAcademyTermOptions({
+    canvasLecturePreferences: { 1: { permanentlyDeletedAt: 'now', convertedToManualAt: 'earlier', semester: 'Fall 2025' } },
+    manualLectures: [],
+  }, courses, 'Fall 2026'), ['Fall 2026'], 'permanently deleted courses never repopulate the term menu');
+}

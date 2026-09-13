@@ -163,7 +163,8 @@ public static class AcademyPreferenceEndpoints
         if ((await ManualModeEndpoints.GetAsync(db, normalizedUserKey, cancellationToken))?.Status == "approved" &&
             request.CanvasLecturePreferences.ValueKind == JsonValueKind.Object &&
             request.CanvasLecturePreferences.EnumerateObject().Any(p => p.Value.ValueKind == JsonValueKind.Object &&
-                !p.Value.TryGetProperty("convertedToManualAt", out _)))
+                !p.Value.TryGetProperty("convertedToManualAt", out _) &&
+                !p.Value.TryGetProperty("permanentlyDeletedAt", out _)))
             return Results.Conflict(new { detail = "Permanent manual mode was approved. Refresh before saving your courses." });
         var storageUserKey = existingSetting?.UserKey ?? normalizedUserKey;
         var settingJson = Serialize(request, existingSetting?.SettingJson);
@@ -198,12 +199,62 @@ public static class AcademyPreferenceEndpoints
             cancellationToken);
     }
 
-    private static string Serialize(SaveAcademyPreferencesRequest request, string? existingJson)
+    internal static string Serialize(SaveAcademyPreferencesRequest request, string? existingJson)
     {
+        var courses = JsonSerializer.SerializeToNode(
+            SelectObject(request.CanvasLecturePreferences, existingJson, "canvasLecturePreferences"), JsonOptions)!.AsObject();
+        var lectures = JsonSerializer.SerializeToNode(
+            SelectArray(request.ManualLectures, existingJson, "manualLectures"), JsonOptions)!.AsArray();
+
+        // A delayed sync may contain the whole preference snapshot from before deletion.
+        // Keep deletion markers under the same per-owner transaction lock as the save.
+        foreach (var storedCourse in GetStored(existingJson, "canvasLecturePreferences", JsonValueKind.Object).EnumerateObject())
+        {
+            if (storedCourse.Value.ValueKind != JsonValueKind.Object ||
+                !storedCourse.Value.TryGetProperty("permanentlyDeletedAt", out var deletedAt) ||
+                deletedAt.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(deletedAt.GetString()))
+                continue;
+
+            var course = courses[storedCourse.Name] as JsonObject;
+            if (course is null)
+            {
+                course = JsonNode.Parse(storedCourse.Value.GetRawText())!.AsObject();
+                courses[storedCourse.Name] = course;
+            }
+            course["permanentlyDeletedAt"] = deletedAt.GetString();
+            foreach (var key in new[] { "convertedToManualAt", "archivedAsManualLectureId" })
+            {
+                if (storedCourse.Value.TryGetProperty(key, out var storedValue))
+                    course[key] = JsonNode.Parse(storedValue.GetRawText());
+            }
+        }
+
+        var deletedManualIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (courseId, node) in courses)
+        {
+            if (node is not JsonObject course ||
+                course["permanentlyDeletedAt"] is not JsonValue deletion ||
+                !deletion.TryGetValue<string>(out var deletedAt) || string.IsNullOrWhiteSpace(deletedAt))
+                continue;
+
+            course["deleted"] = true;
+            course["hidden"] = true;
+            deletedManualIds.Add($"manual-canvas-{courseId}");
+            if (course["archivedAsManualLectureId"] is JsonValue archived && archived.TryGetValue<string>(out var archivedId))
+                deletedManualIds.Add(archivedId);
+        }
+
+        for (var index = lectures.Count - 1; index >= 0; index--)
+        {
+            if (lectures[index] is JsonObject lecture && lecture["id"] is JsonValue id &&
+                id.TryGetValue<string>(out var manualId) && deletedManualIds.Contains(manualId))
+                lectures.RemoveAt(index);
+        }
+
         var value = new
         {
-            manualLectures = SelectArray(request.ManualLectures, existingJson, "manualLectures"),
-            canvasLecturePreferences = SelectObject(request.CanvasLecturePreferences, existingJson, "canvasLecturePreferences"),
+            manualLectures = lectures,
+            canvasLecturePreferences = courses,
             manualCoursework = SelectArray(request.ManualCoursework, existingJson, "manualCoursework"),
             canvasCourseworkPreferences = SelectObject(request.CanvasCourseworkPreferences, existingJson, "canvasCourseworkPreferences"),
             manualAssessments = SelectArray(request.ManualAssessments, existingJson, "manualAssessments"),

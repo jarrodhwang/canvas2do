@@ -4,6 +4,7 @@ import { useLanguage } from '../context/LanguageContext';
 import { getHolidayForDateByNation, type AcademyNation } from '../i18n';
 import { badgeColorClasses, dotColorClasses } from '@/lib/colorStyles';
 import { cn } from '@/lib/utils';
+import { getIsoDateInTimeZone } from '../lib/timeZone';
 import { CalendarProgressIndicator } from './CalendarProgressIndicator';
 import {
   defaultCalendarProgressThresholds,
@@ -51,12 +52,7 @@ function isSundayIsoDate(dateIso: string) {
 }
 
 function getTodayIsoDate() {
-  const today = new Date();
-  const year = today.getFullYear();
-  const month = `${today.getMonth() + 1}`.padStart(2, '0');
-  const day = `${today.getDate()}`.padStart(2, '0');
-
-  return `${year}-${month}-${day}`;
+  return getIsoDateInTimeZone(new Date());
 }
 
 function getDesktopVisibleEventCount(height: number, isExpanded: boolean) {

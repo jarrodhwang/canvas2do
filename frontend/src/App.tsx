@@ -1,5 +1,5 @@
 import { getDateBasedAcademySemester, normalizeAcademyTerm } from './lib/academyTerms';
-import { automaticTimeZone, getBrowserTimeZone, getSelectedTimeZone, getTimeZoneOptions, setSelectedTimeZone } from './lib/timeZone';
+import { automaticTimeZone, getBrowserTimeZone, getIsoDateInTimeZone, getSelectedTimeZone, getTimeZoneOptions, setSelectedTimeZone } from './lib/timeZone';
 import { ManualModePanel } from './components/ManualModePanel';
 import { useAcademyTerms } from './lib/useAcademyTerms';
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent } from 'react';
@@ -2147,17 +2147,18 @@ function getLocalIsoDate(value?: string) {
     return undefined;
   }
 
+  // Canvas and manual all-day entries may be date-only values. Keep their
+  // calendar date intact instead of interpreting midnight as a timezone offset.
+  const dateOnlyMatch = value.match(/^(\d{4}-\d{2}-\d{2})$/);
+  if (dateOnlyMatch) return dateOnlyMatch[1];
+
   const date = new Date(value);
 
   if (Number.isNaN(date.getTime())) {
     return undefined;
   }
 
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, '0');
-  const day = `${date.getDate()}`.padStart(2, '0');
-
-  return `${year}-${month}-${day}`;
+  return getIsoDateInTimeZone(date);
 }
 
 function getIsoDateFromUtcDate(date: Date) {
@@ -2165,12 +2166,7 @@ function getIsoDateFromUtcDate(date: Date) {
 }
 
 function getTodayIsoDate() {
-  const today = new Date();
-  const year = today.getFullYear();
-  const month = `${today.getMonth() + 1}`.padStart(2, '0');
-  const day = `${today.getDate()}`.padStart(2, '0');
-
-  return `${year}-${month}-${day}`;
+  return getIsoDateInTimeZone(new Date());
 }
 
 function addDaysToIsoDate(value: string, amount: number) {

@@ -27,6 +27,7 @@ import { canvasToDoApi, type AcademyPreferences, type CanvasCalendarItem, type C
 import { useLanguage } from '../context/LanguageContext';
 import { useWorkspaceMode } from '../context/WorkspaceModeContext';
 import { canRestoreConvertedCanvasCourse, shouldConvertCanvasCourseToManual } from '../lib/canvasCourseMigration';
+import { getIsoDateInTimeZone, getSelectedTimeZone } from '../lib/timeZone';
 import type { ColorToken, DashboardCardConfig } from '../modes/types';
 import { cn } from '../lib/utils';
 import { dotColorClasses } from '../lib/colorStyles';
@@ -917,7 +918,13 @@ function formatCourseworkDue(value?: string, locale = 'en-CA') {
     hour: 'numeric',
     minute: '2-digit',
     month: 'short',
+    timeZone: getSelectedTimeZone(),
   });
+}
+
+function getIsoDayNumber(value: string) {
+  const [year, month, day] = value.split('-').map(Number);
+  return Date.UTC(year, month - 1, day) / 86_400_000;
 }
 
 function getCourseworkDueState(value?: string, isCompleted = false): CourseworkDueState {
@@ -936,9 +943,9 @@ function getCourseworkDueState(value?: string, isCompleted = false): CourseworkD
   }
 
   const now = new Date();
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const startOfDueDate = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate()).getTime();
-  const daysUntilDue = Math.round((startOfDueDate - startOfToday) / 86_400_000);
+  const today = getIsoDateInTimeZone(now);
+  const dueDay = getIsoDateInTimeZone(dueDate);
+  const daysUntilDue = getIsoDayNumber(dueDay) - getIsoDayNumber(today);
 
   if (dueDate.getTime() < now.getTime()) {
     return 'overdue';
@@ -2188,15 +2195,14 @@ function DashboardRows({
       return null;
     }
 
-    const now = new Date();
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-    const startOfDueDate = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate()).getTime();
+    const today = getIsoDateInTimeZone(new Date());
+    const dueDay = getIsoDateInTimeZone(dueDate);
 
-    if (startOfDueDate < startOfToday) {
+    if (dueDay < today) {
       return 'today';
     }
 
-    if (startOfDueDate === startOfToday) {
+    if (dueDay === today) {
       return 'tomorrow';
     }
 

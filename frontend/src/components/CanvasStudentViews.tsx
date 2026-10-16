@@ -21,6 +21,7 @@ import type {
   CanvasInboxItem,
 } from '../api/canvasToDoApi';
 import { useLanguage } from '../context/LanguageContext';
+import { getSelectedTimeZone } from '../lib/timeZone';
 import { cn } from '../lib/utils';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -891,7 +892,7 @@ function formatInboxDate(value: string | undefined, locale: string) {
 
   return Number.isNaN(date.getTime())
     ? ''
-    : new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(date);
+    : new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short', timeZone: getSelectedTimeZone() }).format(date);
 }
 
 export function CanvasInboxView({ onOpenCanvasSettings, selectedSemester }: CanvasStudentViewProps) {

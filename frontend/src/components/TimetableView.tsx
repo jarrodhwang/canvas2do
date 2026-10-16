@@ -3,6 +3,7 @@ import { useState, type CSSProperties } from 'react';
 import { useLanguage } from '../context/LanguageContext';
 import { badgeColorClasses } from '../lib/colorStyles';
 import { cn } from '../lib/utils';
+import { getSelectedTimeZone } from '../lib/timeZone';
 import { EventPill } from './EventPill';
 import { getTimetableWeek, layoutTimetableDay, type TimetableSession } from './timetableLayout';
 import { Button } from './ui/button';
@@ -32,7 +33,7 @@ export function TimetableView({ sessions, selectedDateIso, todayIso, isPhone = f
   const startHour = blocks.length ? Math.floor(Math.min(...blocks.map((block) => block.start)) / 60) : 8;
   const endHour = blocks.length ? Math.ceil(Math.max(...blocks.map((block) => block.end)) / 60) : 18;
   const duration = Math.max(60, (endHour - startHour) * 60);
-  const timeLabel = (minute: number) => new Date(2000, 0, 1, 0, minute).toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' });
+  const timeLabel = (minute: number) => new Date(2000, 0, 1, 0, minute).toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit', timeZone: getSelectedTimeZone() });
   const sessionTime = (session: TimetableSession, start: number, end: number) => session.endAt
     ? `${timeLabel(start)} – ${timeLabel(end)}`
     : `${timeLabel(start)} · ${language === 'ko' ? '종료 시간 없음' : 'End not set'}`;

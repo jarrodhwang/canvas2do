@@ -1,4 +1,5 @@
 import { getDateBasedAcademySemester, normalizeAcademyTerm } from './lib/academyTerms';
+import { automaticTimeZone, getBrowserTimeZone, getSelectedTimeZone, getTimeZoneOptions, setSelectedTimeZone } from './lib/timeZone';
 import { ManualModePanel } from './components/ManualModePanel';
 import { useAcademyTerms } from './lib/useAcademyTerms';
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent } from 'react';
@@ -173,6 +174,7 @@ interface AcademyCalendarSettings {
   courseworkShowStudyItems: boolean;
   fontFamily: AcademyFontFamily;
   fontSizePercent: number;
+  timeZone: string;
   hiddenCourseIds?: string[];
   gradeProgressGreenAt: number;
   gradeProgressYellowAt: number;
@@ -682,6 +684,7 @@ const defaultAcademyCalendarSettings: AcademyCalendarSettings = {
   courseworkShowStudyItems: true,
   fontFamily: 'inter',
   fontSizePercent: 100,
+  timeZone: automaticTimeZone,
   gradeProgressGreenAt: defaultGradeProgressColorThresholds.greenAt,
   gradeProgressYellowAt: defaultGradeProgressColorThresholds.yellowAt,
   language: 'en',
@@ -1205,6 +1208,9 @@ function normalizeAcademyCalendarSettings(
   const fontSizePercent = Number.isFinite(settings.fontSizePercent)
     ? Math.min(Math.max(Math.round(Number(settings.fontSizePercent)), 80), 130)
     : fallback.fontSizePercent;
+  const timeZone = settings.timeZone === automaticTimeZone || (typeof settings.timeZone === 'string' && getTimeZoneOptions().includes(settings.timeZone))
+    ? settings.timeZone
+    : fallback.timeZone;
   const autoRefreshIntervalMs = Number.isFinite(settings.autoRefreshIntervalMs)
     ? Math.min(
         Math.max(Math.round(Number(settings.autoRefreshIntervalMs)), minimumAcademyAutoRefreshIntervalMs),
@@ -1233,6 +1239,7 @@ function normalizeAcademyCalendarSettings(
     courseworkShowStudyItems,
     fontFamily,
     fontSizePercent,
+    timeZone,
     gradeProgressGreenAt,
     gradeProgressYellowAt,
     hiddenCourseIds,
@@ -2265,7 +2272,7 @@ function formatCalendarSourceItemTime(item: CalendarSourceItem) {
 
   return Number.isNaN(date.getTime())
     ? undefined
-    : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+    : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: getSelectedTimeZone() });
 }
 
 function formatCalendarSourceItemSelectedDayTime(item: CalendarSourceItem) {
@@ -2279,7 +2286,7 @@ function formatCalendarSourceItemSelectedDayTime(item: CalendarSourceItem) {
 
   return Number.isNaN(date.getTime())
     ? undefined
-    : date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    : date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZone: getSelectedTimeZone() });
 }
 
 function getClassSessionCompletionTime(item: CalendarSourceItem) {
@@ -2887,6 +2894,7 @@ function formatSettingsDateTime(value?: string, locale = 'en-CA') {
     day: 'numeric',
     hour: 'numeric',
     minute: '2-digit',
+    timeZone: getSelectedTimeZone(),
     month: 'short',
     year: 'numeric',
   });
@@ -3171,6 +3179,7 @@ function AcademySettingsView({
     }));
   };
   const updateSettings = (partialSettings: Partial<AcademyCalendarSettings>) => {
+    if (typeof partialSettings.timeZone === 'string') setSelectedTimeZone(partialSettings.timeZone);
     onSettingsChange(normalizeAcademyCalendarSettings({
       ...settings,
       ...partialSettings,
@@ -3973,7 +3982,7 @@ function AcademySettingsView({
               </span>
               <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
             </summary>
-            <div className="mt-3 grid gap-3 rounded-lg border bg-card p-3 md:grid-cols-4">
+            <div className="mt-3 grid gap-3 rounded-lg border bg-card p-3 md:grid-cols-5">
               <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
                 <span>{dictionary.academyLanguageSelection}</span>
                 <Select onValueChange={handleAcademyLanguageChange} value={settings.language}>
@@ -4013,6 +4022,16 @@ function AcademySettingsView({
                 <span className="text-[11px] normal-case text-muted-foreground">
                   {dictionary.academyNationSelectionHint}
                 </span>
+              </label>
+              <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
+                <span>{dictionary.academyTimeZone}</span>
+                <Select onValueChange={(value) => updateSettings({ timeZone: value })} value={settings.timeZone}>
+                  <SelectTrigger className="h-9 rounded-md bg-background"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={automaticTimeZone}>{dictionary.academyTimeZoneAuto} ({getBrowserTimeZone()})</SelectItem>
+                    {getTimeZoneOptions().map((zone) => <SelectItem key={zone} value={zone}>{zone}</SelectItem>)}
+                  </SelectContent>
+                </Select>
               </label>
               <label className="grid gap-1.5 text-xs font-black uppercase text-muted-foreground">
                 <span>{dictionary.academyFontFamily}</span>
@@ -4684,6 +4703,7 @@ function App() {
   const [academyCalendarSettings, setAcademyCalendarSettings] = useState(getStoredAcademyCalendarSettings);
   const [savedAcademyCalendarSettings, setSavedAcademyCalendarSettings] = useState(getStoredAcademyCalendarSettings);
   const [academyThemeClock, setAcademyThemeClock] = useState(() => Date.now());
+  useEffect(() => setSelectedTimeZone(academyCalendarSettings.timeZone), [academyCalendarSettings.timeZone]);
   const [academyResponsiveState, setAcademyResponsiveState] = useState(() => getAcademyResponsiveState());
   const [hiddenCalendarCourseIds, setHiddenCalendarCourseIds] = useState(getStoredHiddenCalendarCourseIds);
   const [academyPreferencesSaveStatus, setAcademyPreferencesSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle');
@@ -6700,7 +6720,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
               variant === 'mobile' && 'text-sm',
             )}>
               {variant === 'mobile'
-                ? new Date(`${selectedCalendarDayIso}T12:00:00`).toLocaleDateString(language === 'ko' ? 'ko-KR' : 'en-US', { month: 'short', day: 'numeric', weekday: currentView === 'board' ? undefined : 'short' })
+                ? new Date(`${selectedCalendarDayIso}T12:00:00`).toLocaleDateString(language === 'ko' ? 'ko-KR' : 'en-US', { month: 'short', day: 'numeric', weekday: currentView === 'board' ? undefined : 'short', timeZone: getSelectedTimeZone() })
                 : selectedDayHeading.primary}
             </h2>
             {selectedDayHolidayItems.length > 0 ? (

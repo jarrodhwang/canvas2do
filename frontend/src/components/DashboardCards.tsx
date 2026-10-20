@@ -4105,7 +4105,7 @@ export function DashboardCards({
     }
   };
 
-  const dashboardCards: RenderableDashboardCard[] = activeMode.dashboardCards.map((card) => {
+  const dashboardCards: RenderableDashboardCard[] = useMemo(() => activeMode.dashboardCards.map((card) => {
     const translatedCard = translateDashboardCard(activeMode.id, card);
     const isWaitingForAcademyPreferences = !hasLoadedAcademyPreferences;
 
@@ -4374,7 +4374,30 @@ export function DashboardCards({
     }
 
     return translatedCard;
-  });
+  }), [
+    academyPreferencesLoadStatus,
+    activeCourseSemester,
+    activeMode.dashboardCards,
+    activeMode.id,
+    canvasAssessmentPreferences,
+    canvasCourseLoadStatus,
+    canvasCourses,
+    canvasCourseworkItems,
+    canvasCourseworkLoadStatus,
+    canvasCourseworkPreferences,
+    canvasLecturePreferences,
+    courseworkHideSettings,
+    courseworkShowStudyItems,
+    dateLocale,
+    dictionary,
+    fallbackCourseSemester,
+    hasLoadedAcademyPreferences,
+    manualAssessments,
+    manualCoursework,
+    manualLectures,
+    quietCanvas,
+    translateDashboardCard,
+  ]);
 
   useEffect(
     () => () => {

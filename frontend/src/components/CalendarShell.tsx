@@ -1,5 +1,6 @@
 import type { WorkspaceModeMockData } from '../data/mockWorkspaceData';
-import { AlertTriangle, CalendarCheck2, CalendarDays, CalendarRange, ChevronLeft, ChevronRight, Clock, ListChecks, LoaderCircle, Maximize2, Minimize2, SlidersHorizontal } from 'lucide-react';
+import { AlertTriangle, CalendarCheck2, CalendarDays, CalendarRange, ChevronLeft, ChevronRight, Clock, ListChecks, Maximize2, Minimize2, SlidersHorizontal } from 'lucide-react';
+import { Skeleton } from './ui/skeleton';
 import { useRef, useState, type ReactNode, type WheelEvent } from 'react';
 import { useLanguage } from '../context/LanguageContext';
 import { formatMonthHeading, getViewLabel, type AcademyNation } from '../i18n';
@@ -514,7 +515,6 @@ export function CalendarShell({
                     'overflow-x-auto lg:min-h-0 lg:flex-1',
                     fillHeight && 'min-h-0 flex-1',
                   ),
-              showCalendarLoading && 'opacity-35 blur-[1px]',
             )}
             onWheel={handleMonthWheel}
           >
@@ -585,15 +585,18 @@ export function CalendarShell({
           {showCalendarLoading ? (
             <div
               aria-live="polite"
-              className="absolute inset-0 z-20 flex min-h-[440px] items-center justify-center rounded-xl bg-card/85 px-4 text-center backdrop-blur-sm"
+              aria-busy="true"
+              className="pointer-events-none absolute inset-0 z-20 grid min-h-[440px] grid-cols-7 grid-rows-6 gap-1 rounded-xl bg-card p-2"
               role="status"
             >
-              <div className="flex min-w-0 flex-col items-center gap-3 rounded-xl border bg-card px-5 py-4 shadow-sm">
-                <LoaderCircle aria-hidden="true" className="animate-spin text-primary" size={28} strokeWidth={2.5} />
-                <div className="text-base font-black text-foreground">
-                  {dictionary.canvasCalendarLoading}
+              <span className="sr-only">{dictionary.canvasCalendarLoading}</span>
+              {Array.from({ length: 42 }, (_, index) => (
+                <div className="grid content-start gap-1.5 rounded-md p-1.5" key={index}>
+                  <Skeleton className="h-4 w-5" />
+                  {index % 3 !== 1 ? <Skeleton className="h-3 w-full max-[520px]:hidden" /> : null}
+                  {index % 4 === 0 ? <Skeleton className="h-3 w-2/3 max-[520px]:hidden" /> : null}
                 </div>
-              </div>
+              ))}
             </div>
           ) : emptyMessage && (view === 'month' || view === 'agenda') ? (
             <div

@@ -1,6 +1,7 @@
 import { canRestoreConvertedCanvasCourse } from '../lib/canvasCourseMigration';
 /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps -- This restored integration view reloads and groups roster state by selected term. */
-import { ChevronDown, ChevronRight, ExternalLink, LoaderCircle, Mail, RefreshCw, Search, Users } from 'lucide-react';
+import { ChevronDown, ChevronRight, ExternalLink, Mail, RefreshCw, Search, Users } from 'lucide-react';
+import { LoadingSkeleton } from './LoadingSkeleton';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { canvasToDoApi } from '../api/canvasToDoApi';
@@ -537,10 +538,7 @@ export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: Canva
               />
             </label>
             {isLoading ? (
-              <div className="flex min-w-0 items-center gap-2 rounded-lg border bg-muted/55 px-3 py-2 text-xs font-black text-muted-foreground">
-                <LoaderCircle aria-hidden="true" className="shrink-0 animate-spin text-primary" size={15} strokeWidth={2.4} />
-                <span className="truncate">{dictionary.academyPeopleLoading}</span>
-              </div>
+              <LoadingSkeleton label={dictionary.academyPeopleLoading} variant="inline" />
             ) : null}
           </div>
         </div>
@@ -619,10 +617,7 @@ export function CanvasPeopleView({ onOpenCoursePeople, selectedSemester }: Canva
                         {dictionary.canvasCourseNotPublished}
                       </div>
                     ) : (loadStatus === 'loading' && people.length === 0) || state.status === 'loading' ? (
-                      <div className="flex items-center gap-2 p-4 text-sm font-bold text-muted-foreground">
-                        <LoaderCircle className="size-4 animate-spin text-primary" />
-                        {dictionary.academyPeopleLoading}
-                      </div>
+                      <LoadingSkeleton className="p-3" label={dictionary.academyPeopleLoading} />
                     ) : state.status === 'failed' && people.length === 0 ? (
                       <div className="p-4 text-sm font-bold text-muted-foreground">
                         {state.error || dictionary.academyPeopleUnavailable}

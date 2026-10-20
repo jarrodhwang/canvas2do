@@ -1,7 +1,8 @@
 import { getDateBasedAcademySemester, normalizeAcademyTerm } from '../lib/academyTerms';
 import { useAcademyTerms } from '../lib/useAcademyTerms';
 /* eslint-disable react-hooks/set-state-in-effect -- This restored integration view synchronizes selection and request state in effects. */
-import { ArrowLeft, BarChart3, ChevronDown, ChevronRight, LoaderCircle, RefreshCw, TrendingUp } from 'lucide-react';
+import { ArrowLeft, BarChart3, ChevronDown, ChevronRight, RefreshCw, TrendingUp } from 'lucide-react';
+import { LoadingSkeleton } from './LoadingSkeleton';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import { canvasToDoApi } from '../api/canvasToDoApi';
@@ -1303,10 +1304,7 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp, isPh
 
       if (detail?.status === 'loading') {
         return (
-          <div className="flex items-center gap-2 rounded-lg border bg-background/70 px-3 py-3 text-sm text-muted-foreground">
-            <LoaderCircle className="size-4 animate-spin" />
-            {dictionary.academyGradesDetailLoading}
-          </div>
+          <LoadingSkeleton label={dictionary.academyGradesDetailLoading} rows={2} />
         );
       }
 
@@ -1474,9 +1472,8 @@ export function AcademyGradesView({ selectedSemester: selectedSemesterProp, isPh
         </Card>
       ) : isLoading ? (
         <Card className="shadow-none max-[520px]:py-0">
-          <CardContent className="flex items-center gap-2 py-8 text-sm text-muted-foreground max-[520px]:min-h-14 max-[520px]:py-3 max-[520px]:text-xs">
-            <LoaderCircle className="size-4 animate-spin" />
-            {dictionary.academyGradesLoading}
+          <CardContent className="py-4">
+            <LoadingSkeleton label={dictionary.academyGradesLoading} />
           </CardContent>
         </Card>
       ) : visibleRows.length ? (() => {

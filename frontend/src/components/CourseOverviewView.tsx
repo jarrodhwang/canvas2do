@@ -29,6 +29,7 @@ import {
   Trash2,
   Users,
 } from 'lucide-react';
+import { LoadingSkeleton } from './LoadingSkeleton';
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent, type TouchEvent } from 'react';
 
 import { canvasToDoApi } from '../api/canvasToDoApi';
@@ -819,18 +820,9 @@ function CanvasLoadingBanner({
 }) {
   return (
     <div
-      className={cn(
-        'flex min-w-0 items-center gap-2 rounded-lg border bg-primary/5 font-semibold text-muted-foreground',
-        size === 'compact' ? 'px-2.5 py-2 text-xs' : 'px-3 py-3 text-sm',
-        className,
-      )}
+      className={cn('min-w-0', className)}
     >
-      <LoaderCircle
-        aria-hidden="true"
-        className={cn('shrink-0 animate-spin text-primary', size === 'compact' ? 'size-3.5' : 'size-4')}
-        strokeWidth={2.4}
-      />
-      <span className="truncate">{label}</span>
+      <LoadingSkeleton label={label} rows={size === 'compact' ? 1 : 2} />
     </div>
   );
 }
@@ -2840,10 +2832,7 @@ function CourseDetailView({
 
     if (isLoading && visibleCriteria.length === 0) {
       return (
-        <div className="flex items-center gap-2 rounded-lg border bg-muted/30 p-4 text-sm font-semibold text-muted-foreground">
-          <LoaderCircle className="size-4 animate-spin text-primary" />
-          {dictionary.courseDetailRubricLoading}
-        </div>
+        <LoadingSkeleton label={dictionary.courseDetailRubricLoading} rows={2} />
       );
     }
 
@@ -3449,10 +3438,7 @@ function CourseDetailView({
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
             {isCanvasLoading || integratedResourceStatus === 'loading' ? (
-              <Badge className="hidden gap-1.5 rounded-md lg:inline-flex" variant="outline">
-                <LoaderCircle aria-hidden="true" className="animate-spin text-primary" size={13} strokeWidth={2.4} />
-                {dictionary.courseDetailLoading}
-              </Badge>
+              <LoadingSkeleton className="hidden lg:inline-flex" label={dictionary.courseDetailLoading} variant="inline" />
             ) : null}
             <Button
               aria-label={dictionary.courseDetailPrevious}
@@ -4778,10 +4764,7 @@ export function CourseOverviewView({
             </SelectContent>
           </Select>}
           {courseLoadStatus === 'loading' && !quietCanvas && !isMobileTrashView ? (
-            <Badge className="gap-1.5 max-[520px]:hidden" variant="outline">
-              <LoaderCircle aria-hidden="true" className="animate-spin text-primary" size={13} strokeWidth={2.4} />
-              <span>{dictionary.canvasCoursesLoading}</span>
-            </Badge>
+            <LoadingSkeleton className="max-[520px]:hidden" label={dictionary.canvasCoursesLoading} variant="inline" />
           ) : null}
           <Badge variant="secondary">
             <span>{isMobileTrashView ? deletedManualRows.length : rows.length}<span className="max-[520px]:sr-only"> {dictionary.courseOverviewCountLabel}</span></span>

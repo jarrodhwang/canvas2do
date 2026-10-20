@@ -1,6 +1,7 @@
 import { getDateBasedAcademySemester, normalizeAcademyTerm } from './lib/academyTerms';
 import { automaticTimeZone, getBrowserTimeZone, getIsoDateInTimeZone, getSelectedTimeZone, getTimeZoneOptions, setSelectedTimeZone } from './lib/timeZone';
 import { DraftTitleInput } from './components/DraftTitleInput';
+import { Skeleton } from './components/ui/skeleton';
 import { ManualModePanel } from './components/ManualModePanel';
 import { useAcademyTerms } from './lib/useAcademyTerms';
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent } from 'react';
@@ -4655,11 +4656,11 @@ function WorkspaceViewFallback() {
       aria-live="polite"
       className="grid min-h-64 content-start gap-3 rounded-xl border bg-card p-4"
     >
-      <div className="h-5 w-40 rounded-md bg-muted" />
+      <Skeleton className="h-5 w-40" />
       <div className="grid gap-2">
-        <div className="h-20 rounded-lg bg-muted/70" />
-        <div className="h-20 rounded-lg bg-muted/50" />
-        <div className="h-20 rounded-lg bg-muted/40" />
+        <Skeleton className="h-20 rounded-lg" />
+        <Skeleton className="h-20 rounded-lg" />
+        <Skeleton className="h-20 rounded-lg" />
       </div>
     </div>
   );
@@ -6372,14 +6373,22 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
       const gridRange = getCalendarGridRange(calendarMonth);
       const requestedAt = Date.now();
 
-      setCanvasCalendarPages((currentPages) => ({
-        ...currentPages,
-        [monthKey]: {
-          items: currentPages[monthKey]?.items ?? [],
-          requestedAt,
-          status: 'loading',
-        },
-      }));
+      // Refresh silently when the month already has data: keep showing it instead of
+      // flipping back to a loading state, and keep it if the refresh fails.
+      setCanvasCalendarPages((currentPages) => {
+        const currentPage = currentPages[monthKey];
+
+        return {
+          ...currentPages,
+          [monthKey]: currentPage?.status === 'loaded'
+            ? { ...currentPage, requestedAt }
+            : {
+                items: currentPage?.items ?? [],
+                requestedAt,
+                status: 'loading',
+              },
+        };
+      });
 
       let timeoutId: number | undefined;
       const timeoutTask = new Promise<never>((_, reject) => {
@@ -6448,7 +6457,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
           setCanvasCalendarPages((currentPages) => {
             const currentPage = currentPages[monthKey];
 
-            if (currentPage?.requestedAt !== requestedAt) {
+            if (currentPage?.requestedAt !== requestedAt || currentPage.status === 'loaded') {
               return currentPages;
             }
 

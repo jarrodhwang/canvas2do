@@ -11,6 +11,7 @@ import {
   Settings,
   Users,
 } from 'lucide-react';
+import { LoadingSkeleton } from './LoadingSkeleton';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { canvasToDoApi } from '../api/canvasToDoApi';
@@ -512,10 +513,7 @@ function ConnectionNotice({ message, onOpenCanvasSettings }: { message: string; 
 function LoadingOrEmpty({ emptyMessage, status }: { emptyMessage: string; status: LoadStatus }) {
   if (status === 'loading' || status === 'idle') {
     return (
-      <div className="flex min-h-40 items-center justify-center gap-2 text-sm text-muted-foreground">
-        <LoaderCircle className="size-4 animate-spin" />
-        Loading…
-      </div>
+      <LoadingSkeleton className="min-h-40 content-start" label="Loading…" />
     );
   }
 

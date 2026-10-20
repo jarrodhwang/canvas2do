@@ -1,6 +1,7 @@
 import { canRestoreConvertedCanvasCourse } from '../lib/canvasCourseMigration';
 /* eslint-disable react-hooks/set-state-in-effect -- This restored integration view synchronizes request and selection state in effects. */
-import { ArrowLeft, ArrowRight, ChevronDown, ChevronRight, ExternalLink, Inbox, LoaderCircle, RefreshCw } from 'lucide-react';
+import { ArrowLeft, ArrowRight, ChevronDown, ChevronRight, ExternalLink, Inbox, RefreshCw } from 'lucide-react';
+import { LoadingSkeleton } from './LoadingSkeleton';
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 
 import { canvasToDoApi, type AcademyPreferences, type CanvasCourse, type CanvasInboxItem } from '../api/canvasToDoApi';
@@ -782,10 +783,7 @@ export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasI
           </div>
 
           {isLoading ? (
-            <div className="mt-3 flex min-w-0 items-center gap-2 rounded-lg border bg-muted/55 px-3 py-2 text-xs font-black text-muted-foreground">
-              <LoaderCircle aria-hidden="true" className="shrink-0 animate-spin text-primary" size={15} strokeWidth={2.4} />
-              <span className="truncate">{dictionary.canvasInboxLoading}</span>
-            </div>
+            <LoadingSkeleton className="mt-3" label={dictionary.canvasInboxLoading} variant="inline" />
           ) : null}
         </div>
 
@@ -849,10 +847,7 @@ export function CanvasInboxView({ onOpenIntegration, selectedSemester }: CanvasI
                             {dictionary.canvasCourseNotPublished}
                           </div>
                         ) : group.state.status === 'loading' ? (
-                          <div className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold text-muted-foreground">
-                            <LoaderCircle className="size-4 animate-spin text-primary" />
-                            {dictionary.canvasInboxLoading}
-                          </div>
+                          <LoadingSkeleton className="px-3 py-2" label={dictionary.canvasInboxLoading} rows={2} />
                         ) : group.state.status === 'failed' ? (
                           <div className="rounded-lg px-3 py-2 text-xs font-bold text-muted-foreground">
                             {group.state.error || dictionary.canvasInboxUnavailable}

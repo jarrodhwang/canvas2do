@@ -34,6 +34,7 @@ import { dotColorClasses } from '../lib/colorStyles';
 import { DateTimeField } from './DateTimeField';
 import { DraftTitleInput } from './DraftTitleInput';
 import { EventPill } from './EventPill';
+import { Skeleton } from './ui/skeleton';
 import { PhoneCourseworkForm } from './PhoneCourseworkForm';
 import {
   ManualLectureDialog,
@@ -2101,7 +2102,32 @@ interface DashboardRowsProps {
   onToggleLectureStar: (row: RenderableDashboardRow) => void;
 }
 
-function DashboardRows({
+function DashboardRowsSkeleton({ label }: { label: string }) {
+  return (
+    <div aria-busy="true" aria-live="polite" className="grid gap-2" role="status">
+      <span className="sr-only">{label}</span>
+      {[0, 1, 2].map((index) => (
+        <div className="grid gap-2 rounded-lg border p-3" key={index}>
+          <Skeleton className="h-4 w-2/3" />
+          <div className="flex gap-2">
+            <Skeleton className="h-5 w-16" />
+            <Skeleton className="h-5 w-12" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DashboardRows(props: DashboardRowsProps) {
+  const loadingRow = props.card.rows.length === 1 && props.card.rows[0].id === 'loading'
+    ? props.card.rows[0]
+    : undefined;
+
+  return loadingRow ? <DashboardRowsSkeleton label={loadingRow.value} /> : <DashboardRowsContent {...props} />;
+}
+
+function DashboardRowsContent({
   isPhone = false,
   card,
   compactCourseRows = false,
@@ -3798,6 +3824,12 @@ export function DashboardCards({
   const [canvasCourseLoadStatus, setCanvasCourseLoadStatus] = useState<CanvasCourseLoadStatus>('loading');
   const [canvasCourseworkItems, setCanvasCourseworkItems] = useState<CanvasCalendarItem[]>([]);
   const [canvasCourseworkLoadStatus, setCanvasCourseworkLoadStatus] = useState<CanvasCourseLoadStatus>('loading');
+  const canvasCourseLoadStatusRef = useRef(canvasCourseLoadStatus);
+  const canvasCourseworkLoadStatusRef = useRef(canvasCourseworkLoadStatus);
+  useEffect(() => {
+    canvasCourseLoadStatusRef.current = canvasCourseLoadStatus;
+    canvasCourseworkLoadStatusRef.current = canvasCourseworkLoadStatus;
+  });
   const [isAcademyDashboardRefreshInProgress, setIsAcademyDashboardRefreshInProgress] = useState(false);
   const [lastSuccessfulDashboardRefreshAt, setLastSuccessfulDashboardRefreshAt] = useState<number | null>(null);
   const [dashboardRefreshClock, setDashboardRefreshClock] = useState(() => Date.now());
@@ -4538,7 +4570,7 @@ export function DashboardCards({
       isSyncing = true;
       // Timer refreshes should honor the short server cache. Manual and resume
       // refreshes can still bypass it when the user explicitly needs fresh data.
-      void refreshAcademyDashboardDataEvent({ forceCanvasRefresh: false })
+      void refreshAcademyDashboardDataEvent({ forceCanvasRefresh: false, silent: true })
         .catch(() => undefined)
         .finally(() => {
           isSyncing = false;
@@ -6240,10 +6272,17 @@ export function DashboardCards({
     await refreshAcademyDashboardData({ forceCanvasRefresh: true });
   };
 
-  async function refreshAcademyDashboardData(options: { forceCanvasRefresh?: boolean } = {}) {
+  async function refreshAcademyDashboardData(options: { forceCanvasRefresh?: boolean; silent?: boolean } = {}) {
     setIsAcademyDashboardRefreshInProgress(true);
-    setCanvasCourseLoadStatus('loading');
-    setCanvasCourseworkLoadStatus('loading');
+    // Only show loading placeholders on the first load; later refreshes update in place.
+    const hasLoadedCourses = canvasCourseLoadStatusRef.current === 'loaded';
+    const hasLoadedCoursework = canvasCourseworkLoadStatusRef.current === 'loaded';
+    if (!hasLoadedCourses) {
+      setCanvasCourseLoadStatus('loading');
+    }
+    if (!hasLoadedCoursework) {
+      setCanvasCourseworkLoadStatus('loading');
+    }
     if (!hasLoadedAcademyPreferences) {
       setAcademyPreferencesLoadStatus('loading');
     }
@@ -6312,10 +6351,12 @@ export function DashboardCards({
       setCanvasTermName(coursesResult.value.termName);
       setCanvasCourseLoadStatus('loaded');
     } else {
-      setCanvasCourses(null);
-      setCanvasCourseListIsComplete(false);
-      setCanvasTermName(undefined);
-      setCanvasCourseLoadStatus('failed');
+      if (!hasLoadedCourses) {
+        setCanvasCourses(null);
+        setCanvasCourseListIsComplete(false);
+        setCanvasTermName(undefined);
+        setCanvasCourseLoadStatus('failed');
+      }
     }
 
     let syncedCanvasCourseworkItems: CanvasCalendarItem[] | null = null;
@@ -6328,8 +6369,10 @@ export function DashboardCards({
       setCanvasCourseworkItems(syncedCanvasCourseworkItems);
       setCanvasCourseworkLoadStatus('loaded');
     } else if (canvasCourseworkRequestSequenceRef.current === courseworkRequestSequence) {
-      setCanvasCourseworkItems([]);
-      setCanvasCourseworkLoadStatus('failed');
+      if (!hasLoadedCoursework) {
+        setCanvasCourseworkItems([]);
+        setCanvasCourseworkLoadStatus('failed');
+      }
     }
 
     setIsAcademyDashboardRefreshInProgress(false);
@@ -6343,7 +6386,9 @@ export function DashboardCards({
       const refreshedAt = getCurrentTimestamp();
       setLastSuccessfulDashboardRefreshAt(refreshedAt);
       setDashboardRefreshClock(refreshedAt);
-      showDashboardSnackbar({ message: dictionary.academyDashboardRefreshSuccess, tone: 'success' });
+      if (!options.silent) {
+        showDashboardSnackbar({ message: dictionary.academyDashboardRefreshSuccess, tone: 'success' });
+      }
     } else {
       const failureMessage = preferencesResult.status === 'rejected'
         ? dictionary.academyDashboardPreferencesRefreshFailed
@@ -6353,7 +6398,9 @@ export function DashboardCards({
             ? dictionary.academyDashboardCanvasCalendarRefreshFailed
             : dictionary.academyDashboardRefreshFailed;
 
-      showDashboardSnackbar({ message: failureMessage, tone: 'error' });
+      if (!options.silent) {
+        showDashboardSnackbar({ message: failureMessage, tone: 'error' });
+      }
     }
 
     return syncedCanvasCourseworkItems;

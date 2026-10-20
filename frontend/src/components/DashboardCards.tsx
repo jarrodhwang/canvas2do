@@ -1722,6 +1722,14 @@ function cacheAcademyPreferences(
 
   cacheAcademyCalendarSettings(calendarSettings);
   clearLegacyAcademyPreferenceStorage();
+  lastBroadcastAcademyPreferencesJson = serializeAcademyPreferenceValues({
+    canvasAssessmentPreferences: assessmentPreferences,
+    canvasCourseworkPreferences: courseworkPreferences,
+    canvasLecturePreferences: preferences,
+    manualAssessments: assessments,
+    manualCoursework: coursework,
+    manualLectures: lectures,
+  });
   const detail = {
     canvasAssessmentPreferences: assessmentPreferences,
     canvasCourseworkPreferences: courseworkPreferences,
@@ -1780,10 +1788,30 @@ function getAcademyPreferenceValues(preferences: AcademyPreferences) {
   };
 }
 
+// The server echoes back what was just saved. Re-broadcasting identical data hands every
+// listener fresh object identities and forces a second full re-render after each edit.
+let lastBroadcastAcademyPreferencesJson = '';
+
+function serializeAcademyPreferenceValues(values: ReturnType<typeof getAcademyPreferenceValues>) {
+  return JSON.stringify([
+    values.manualLectures,
+    values.canvasLecturePreferences,
+    values.manualCoursework,
+    values.canvasCourseworkPreferences,
+    values.manualAssessments,
+    values.canvasAssessmentPreferences,
+  ]);
+}
+
 function cacheAcademyPreferencesResponse(preferences: AcademyPreferences) {
   const values = getAcademyPreferenceValues(preferences);
 
   cacheAcademyCalendarSettings(preferences.calendarSettings, { source: 'server' });
+
+  if (serializeAcademyPreferenceValues(values) === lastBroadcastAcademyPreferencesJson) {
+    return;
+  }
+
   cacheAcademyPreferences(
     values.manualLectures,
     values.canvasLecturePreferences,

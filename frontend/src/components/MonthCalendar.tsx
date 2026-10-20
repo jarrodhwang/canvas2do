@@ -1,6 +1,6 @@
 import type { CalendarDay } from '../data/mockWorkspaceData';
 import { Plus } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useLanguage } from '../context/LanguageContext';
 import { getWeekdayLabels, type AcademyNation } from '../i18n';
 import { cn } from '../lib/utils';
@@ -59,6 +59,10 @@ export function MonthCalendar({
   const visibleDays = mobileScope === 'week'
     ? days.slice(selectedWeekStartIndex, selectedWeekStartIndex + 7)
     : days;
+  const selectItemRef = useRef(onSelectItem);
+  useEffect(() => {
+    selectItemRef.current = onSelectItem;
+  });
   const renderDayCell = (day: CalendarDay) => (
     <DayCell
       day={day}
@@ -70,7 +74,7 @@ export function MonthCalendar({
       key={day.id}
       onSelect={() => {
         setSelectedDayId(day.id);
-        onSelectItem(day);
+        selectItemRef.current(day);
       }}
       progressDisplay={progressDisplay}
       progressThresholds={progressThresholds}

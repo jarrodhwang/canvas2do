@@ -1,5 +1,5 @@
 import type { CalendarDay } from '../data/mockWorkspaceData';
-import { forwardRef, useCallback, useEffect, useRef, useState } from 'react';
+import { forwardRef, memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useLanguage } from '../context/LanguageContext';
 import { getHolidayForDateByNation, type AcademyNation } from '../i18n';
 import { badgeColorClasses, dotColorClasses } from '@/lib/colorStyles';
@@ -67,7 +67,7 @@ function getDesktopVisibleEventCount(height: number, isExpanded: boolean) {
   return Math.max(1, Math.min(maximumCount, calculatedCount));
 }
 
-export const DayCell = forwardRef<HTMLButtonElement, DayCellProps>(function DayCell({
+const DayCellBase = forwardRef<HTMLButtonElement, DayCellProps>(function DayCell({
   day,
   holidayNation,
   holidayNations,
@@ -275,3 +275,18 @@ export const DayCell = forwardRef<HTMLButtonElement, DayCellProps>(function DayC
     </button>
   );
 });
+
+// onSelect is intentionally ignored: callers pass a closure that always dispatches to the
+// latest handler, so selecting one day only re-renders the cells whose own props changed.
+export const DayCell = memo(DayCellBase, (previous, next) => (
+  previous.day === next.day &&
+  previous.holidayNation === next.holidayNation &&
+  (previous.holidayNations ?? []).join() === (next.holidayNations ?? []).join() &&
+  previous.isCompact === next.isCompact &&
+  previous.isExpanded === next.isExpanded &&
+  previous.isSelected === next.isSelected &&
+  previous.progressDisplay === next.progressDisplay &&
+  previous.progressThresholds?.greenAt === next.progressThresholds?.greenAt &&
+  previous.progressThresholds?.yellowAt === next.progressThresholds?.yellowAt &&
+  previous.todayIso === next.todayIso
+));

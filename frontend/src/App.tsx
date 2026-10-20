@@ -1,5 +1,6 @@
 import { getDateBasedAcademySemester, normalizeAcademyTerm } from './lib/academyTerms';
 import { automaticTimeZone, getBrowserTimeZone, getIsoDateInTimeZone, getSelectedTimeZone, getTimeZoneOptions, setSelectedTimeZone } from './lib/timeZone';
+import { DraftTitleInput } from './components/DraftTitleInput';
 import { ManualModePanel } from './components/ManualModePanel';
 import { useAcademyTerms } from './lib/useAcademyTerms';
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent } from 'react';
@@ -2774,7 +2775,7 @@ function createAcademyCalendarDays(
         return nextItemsByDate;
       }
 
-      nextItemsByDate[date] = [...(nextItemsByDate[date] ?? []), item];
+      (nextItemsByDate[date] ??= []).push(item);
 
       return nextItemsByDate;
     }, {})
@@ -2820,7 +2821,7 @@ function createAcademyCalendarData(
   data: WorkspaceModeMockData,
   monthDate: Date,
   sourceItems: CalendarSourceItem[],
-  loadStatus: CanvasCalendarLoadStatus,
+  days: CalendarDay[],
   agendaDateIso: string,
   fallbackCourseLabel: string,
   activeCourseOptionIds?: Set<string>,
@@ -2841,7 +2842,7 @@ function createAcademyCalendarData(
       fallbackCourseLabel,
       activeCourseOptionIds,
     ),
-    days: createAcademyCalendarDays(monthDate, sourceItems, loadStatus, activeCourseOptionIds),
+    days,
     monthLabel: formatCalendarMonthLabel(monthDate),
   };
 }
@@ -4962,12 +4963,24 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
   const selectedDayRelativeBadge = formatRelativeDayBadge(selectedCalendarDayIso);
   const activeCalendarTodayIso = getTodayIsoDate();
   const isSelectedCalendarDayToday = selectedCalendarDayIso === activeCalendarTodayIso;
+  // The 42-cell grid does not depend on the selected day, so keep its identity stable and
+  // let DayCell skip re-rendering when only the selection changes.
+  const calendarDays = useMemo(
+    () => createAcademyCalendarDays(
+      calendarMonth,
+      calendarSourceItems,
+      effectiveCanvasCalendarLoadStatus,
+      activeCalendarCourseOptionIds,
+    ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [calendarMonth, calendarSourceItems, calendarCourseFilterOptions, effectiveCanvasCalendarLoadStatus],
+  );
   const calendarData = useMemo(
     () => createAcademyCalendarData(
       activeData,
       calendarMonth,
       calendarSourceItems,
-      effectiveCanvasCalendarLoadStatus,
+      calendarDays,
       selectedCalendarDayIso,
       dictionary.selectedDayTodoNoCourse,
       activeCalendarCourseOptionIds,
@@ -4975,11 +4988,11 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       activeData,
+      calendarDays,
       calendarMonth,
       calendarSourceItems,
       calendarCourseFilterOptions,
       dictionary.selectedDayTodoNoCourse,
-      effectiveCanvasCalendarLoadStatus,
       selectedCalendarDayIso,
     ],
   );
@@ -6991,24 +7004,15 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                         )}
                         <span className="min-w-0">
                           {isEditingTitle ? (
-                            <input
+                            <DraftTitleInput
                               aria-label={dictionary.boardAddTodoItem}
                               autoFocus
                               className="block min-w-0 max-w-full rounded-md border bg-background px-2 py-1 text-[15px] font-black leading-snug text-foreground outline-none transition focus-visible:ring-2 focus-visible:ring-ring/45"
-                              onBlur={handleFinishCalendarTodoTitleEdit}
-                              onChange={(event) => handleUpdateCalendarSourceItemTitle(
-                                item,
-                                event.target.value,
-                                { persist: false },
-                              )}
                               onClick={(event) => event.stopPropagation()}
+                              onCommit={(title) => handleUpdateCalendarSourceItemTitle(item, title, { persist: false })}
+                              onDone={handleFinishCalendarTodoTitleEdit}
                               onFocus={(event) => event.currentTarget.select()}
-                              onKeyDown={(event) => {
-                                event.stopPropagation();
-                                if (event.key === 'Enter' || event.key === 'Escape') {
-                                  event.currentTarget.blur();
-                                }
-                              }}
+                              onKeyDown={(event) => event.stopPropagation()}
                               placeholder={dictionary.boardAddTodoItem}
                               value={item.title}
                             />

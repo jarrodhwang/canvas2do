@@ -2,9 +2,10 @@ import { getDateBasedAcademySemester, normalizeAcademyTerm } from './lib/academy
 import { automaticTimeZone, getBrowserTimeZone, getIsoDateInTimeZone, getSelectedTimeZone, getTimeZoneOptions, setSelectedTimeZone } from './lib/timeZone';
 import { DraftTitleInput } from './components/DraftTitleInput';
 import { Skeleton } from './components/ui/skeleton';
+import { useStableCallback } from './lib/useStableCallback';
 import { ManualModePanel } from './components/ManualModePanel';
 import { useAcademyTerms } from './lib/useAcademyTerms';
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent } from 'react';
 import {
   Activity,
   BarChart3,
@@ -125,7 +126,8 @@ const AcademyGradesView = lazy(() => import('./components/AcademyGradesView').th
 const CanvasInboxView = lazy(() => import('./components/CanvasInboxView').then((module) => ({ default: module.CanvasInboxView })));
 const CanvasPeopleView = lazy(() => import('./components/CanvasPeopleView').then((module) => ({ default: module.CanvasPeopleView })));
 const CourseOverviewView = lazy(() => import('./components/CourseOverviewView').then((module) => ({ default: module.CourseOverviewView })));
-const DashboardCards = lazy(() => import('./components/DashboardCards').then((module) => ({ default: module.DashboardCards })));
+// Memoized so selecting a calendar day does not re-render the (large) dashboard card tree.
+const DashboardCards = lazy(() => import('./components/DashboardCards').then((module) => ({ default: memo(module.DashboardCards) })));
 
 interface WorkspaceNavigation {
   modeId: string;
@@ -5524,6 +5526,19 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
     persistAcademyCalendarSettings(nextSettings);
   };
 
+  const stableOpenAcademyCourseworkDialog = useStableCallback(openAcademyCourseworkDialog);
+  const stableOpenAcademyCourseResource = useStableCallback(openAcademyCourseResource);
+  const stableToggleCourseworkStudyItems = useStableCallback(handleToggleCourseworkStudyItems);
+  const dashboardCourseworkHideSettings = useMemo(() => ({
+    completedAfterHours: academyCalendarSettings.courseworkHideCompletedAfterHours,
+    completedFrom: academyCalendarSettings.courseworkHideCompletedFrom,
+    uncompletedAfterHours: academyCalendarSettings.courseworkHideUncompletedAfterHours,
+  }), [
+    academyCalendarSettings.courseworkHideCompletedAfterHours,
+    academyCalendarSettings.courseworkHideCompletedFrom,
+    academyCalendarSettings.courseworkHideUncompletedAfterHours,
+  ]);
+
   const handleRevertAcademyCalendarSettings = () => {
     const nextSettings = savedAcademyCalendarSettingsRef.current;
 
@@ -7477,17 +7492,13 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                       isPhone={isPhoneAcademyMode}
                       academyAutoRefreshIntervalMs={academyAutoRefreshIntervalMs}
                       compactAcademySummary={shouldUseCompactDashboardMonth}
-                      courseworkHideSettings={{
-                        completedAfterHours: academyCalendarSettings.courseworkHideCompletedAfterHours,
-                        completedFrom: academyCalendarSettings.courseworkHideCompletedFrom,
-                        uncompletedAfterHours: academyCalendarSettings.courseworkHideUncompletedAfterHours,
-                      }}
+                      courseworkHideSettings={dashboardCourseworkHideSettings}
                       courseworkShowStudyItems={academyCalendarSettings.courseworkShowStudyItems}
                       effectiveWideSummaryCards={isAcademyEffectiveExtraLarge}
                       hideSummaryCards={effectiveCalendarExpanded}
-                      onOpenAddItem={openAcademyCourseworkDialog}
-                      onOpenCourse={openAcademyCourseResource}
-                      onToggleCourseworkStudyItems={handleToggleCourseworkStudyItems}
+                      onOpenAddItem={stableOpenAcademyCourseworkDialog}
+                      onOpenCourse={stableOpenAcademyCourseResource}
+                      onToggleCourseworkStudyItems={stableToggleCourseworkStudyItems}
                       selectedSemester={selectedAcademySemester}
                     />
                   ) : null}
@@ -7505,17 +7516,13 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
                       isPhone={isPhoneAcademyMode}
                       academyAutoRefreshIntervalMs={academyAutoRefreshIntervalMs}
                       compactAcademySummary={false}
-                      courseworkHideSettings={{
-                        completedAfterHours: academyCalendarSettings.courseworkHideCompletedAfterHours,
-                        completedFrom: academyCalendarSettings.courseworkHideCompletedFrom,
-                        uncompletedAfterHours: academyCalendarSettings.courseworkHideUncompletedAfterHours,
-                      }}
+                      courseworkHideSettings={dashboardCourseworkHideSettings}
                       courseworkShowStudyItems={academyCalendarSettings.courseworkShowStudyItems}
                       effectiveWideSummaryCards={false}
                       courseworkOnly
-                      onOpenAddItem={openAcademyCourseworkDialog}
-                      onOpenCourse={openAcademyCourseResource}
-                      onToggleCourseworkStudyItems={handleToggleCourseworkStudyItems}
+                      onOpenAddItem={stableOpenAcademyCourseworkDialog}
+                      onOpenCourse={stableOpenAcademyCourseResource}
+                      onToggleCourseworkStudyItems={stableToggleCourseworkStudyItems}
                       selectedSemester={selectedAcademySemester}
                     />
                   ) : null}

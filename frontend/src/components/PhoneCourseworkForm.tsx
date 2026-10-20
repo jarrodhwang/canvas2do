@@ -17,7 +17,8 @@ interface PhoneCourseworkDraft {
 }
 
 interface PhoneCourseworkFormProps {
-  courseOptions: Array<{ value: string; label: string; semester?: string }>;
+  applyCourseDefaultType?: boolean;
+  courseOptions: Array<{ value: string; label: string; semester?: string; defaultCourseworkType?: string }>;
   typeOptions: Array<{ value: string; label: string }>;
   submissionOptions: Array<{ value: string; label: string }>;
   draft: PhoneCourseworkDraft;
@@ -73,7 +74,7 @@ function PhoneDateTimeField({ label, value = '', onChange, disabled, defaultTime
   );
 }
 
-export function PhoneCourseworkForm({ courseOptions, typeOptions, submissionOptions, draft, disabled, onChange, onClose, onSubmit, submitLabel, title }: PhoneCourseworkFormProps) {
+export function PhoneCourseworkForm({ applyCourseDefaultType = false, courseOptions, typeOptions, submissionOptions, draft, disabled, onChange, onClose, onSubmit, submitLabel, title }: PhoneCourseworkFormProps) {
   const { dictionary, language } = useLanguage();
   const dialogRef = useRef<HTMLDivElement>(null);
   const [customCourse, setCustomCourse] = useState(() => Boolean(draft.courseCode && !courseOptions.some((option) => option.value === draft.courseCode)));
@@ -109,7 +110,7 @@ export function PhoneCourseworkForm({ courseOptions, typeOptions, submissionOpti
                 const value = event.target.value;
                 setCustomCourse(value === '__custom__');
                 const course = courseOptions.find((option) => option.value === value);
-                onChange({ courseCode: value === '__custom__' ? '' : value, semester: course?.semester ?? draft.semester });
+                onChange({ courseCode: value === '__custom__' ? '' : value, courseworkType: (applyCourseDefaultType && course?.defaultCourseworkType) || draft.courseworkType, semester: course?.semester ?? draft.semester });
               }} value={customCourse ? '__custom__' : draft.courseCode}>
                 <option value="">{language === 'ko' ? '과목 없음' : 'No course'}</option>
                 {courseOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}

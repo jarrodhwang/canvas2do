@@ -91,6 +91,7 @@ export interface ManualLecture {
   assessments: ManualLectureAssessment[];
   schedule: ManualLectureSchedule;
   links: ManualLectureLink[];
+  defaultCourseworkType?: string;
   friendlyCourseCode?: string;
   friendlyName?: string;
   starred?: boolean;

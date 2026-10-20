@@ -383,6 +383,7 @@ interface StoredCoursePreference {
   currentGrade?: string;
   currentScore?: number;
   convertedToManualAt?: string;
+  defaultCourseworkType?: string;
   deleted?: boolean;
   dueAt?: string;
   startAt?: string;
@@ -1103,6 +1104,27 @@ function getStoredManualAssessments() {
   return Array.isArray(storedAssessments)
     ? storedAssessments as StoredManualAssessment[]
     : [];
+}
+
+function getDefaultCourseworkTypeForCourse(courseCode?: string) {
+  if (!courseCode?.trim()) {
+    return undefined;
+  }
+
+  const manualLecture = getStoredManualLectures().find((lecture) => (
+    lecture.defaultCourseworkType &&
+    (codesMatch(courseCode, lecture.friendlyCourseCode) || codesMatch(courseCode, lecture.code))
+  ));
+
+  if (manualLecture) {
+    return manualLecture.defaultCourseworkType;
+  }
+
+  return Object.values(getStoredCanvasLecturePreferences()).find((preference) => (
+    preference.defaultCourseworkType &&
+    !preference.deleted &&
+    (codesMatch(courseCode, preference.friendlyCourseCode) || codesMatch(courseCode, preference.originalCourseCode))
+  ))?.defaultCourseworkType;
 }
 
 function getStoredCanvasCourseworkPreferences() {
@@ -4785,7 +4807,10 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
   const effectiveCalendarExpanded = isCalendarExpanded || shouldAutoExpandCalendar;
   const canvasCalendarMonthKey = getCalendarMonthKey(calendarMonth);
   const visibleCalendarMonths = useMemo(() => getVisibleCalendarMonths(calendarMonth), [calendarMonth]);
-  const visibleCalendarMonthKeys = visibleCalendarMonths.map((monthDate) => getCalendarMonthKey(monthDate));
+  const visibleCalendarMonthKeys = useMemo(
+    () => visibleCalendarMonths.map((monthDate) => getCalendarMonthKey(monthDate)),
+    [visibleCalendarMonths],
+  );
   const isCalendarDataView = !isMainOnlyView && (
     currentView === 'month' ||
     currentView === 'agenda' ||
@@ -4806,9 +4831,9 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
     canvasCalendarPage?.status,
   );
   const isCanvasCalendarPageLoaded = canvasCalendarPage?.status === 'loaded';
-  const visibleCanvasCalendarItems = getCanvasCalendarItemsForMonthKeys(
-    canvasCalendarPages,
-    visibleCalendarMonthKeys,
+  const visibleCanvasCalendarItems = useMemo(
+    () => getCanvasCalendarItemsForMonthKeys(canvasCalendarPages, visibleCalendarMonthKeys),
+    [canvasCalendarPages, visibleCalendarMonthKeys],
   );
   const isWaitingForAcademyPreferences =
     !hasLoadedAcademyPreferences &&
@@ -4828,27 +4853,54 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
       : canvasCalendarPage?.errorMessage ?? dictionary.canvasCalendarUnavailable
     : undefined;
   const canRenderAcademyCalendarSourceItems = hasLoadedAcademyPreferences;
-  const allCalendarSourceItems = canRenderAcademyCalendarSourceItems
-    ? getCalendarSourceItems(visibleCanvasCalendarItems, academyPreferenceVersion, academyCalendarSettings)
-        .filter((item) => (
-          academyCalendarSettings.showPastTermCalendarItems ||
-          semesterMatches(item.semester, selectedAcademySemester)
-        ))
-        .filter((item) => !isCourseReferenceHidden(item))
-    : [];
-  const calendarCourseFilterOptions = canRenderAcademyCalendarSourceItems
-    ? getActiveCalendarCourseOptions(
-        visibleCanvasCalendarItems,
-        hiddenCalendarCourseIds,
-        dictionary.selectedDayTodoNoCourse,
-        selectedAcademySemester,
-      )
-    : [];
+  const calendarTodayIso = getTodayIsoDate();
+  const allCalendarSourceItems = useMemo(
+    () => canRenderAcademyCalendarSourceItems
+      ? getCalendarSourceItems(visibleCanvasCalendarItems, academyPreferenceVersion, academyCalendarSettings)
+          .filter((item) => (
+            academyCalendarSettings.showPastTermCalendarItems ||
+            semesterMatches(item.semester, selectedAcademySemester)
+          ))
+          .filter((item) => !isCourseReferenceHidden(item))
+      : [],
+    // calendarTodayIso keeps relative-day state fresh across midnight.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      academyCalendarSettings,
+      academyPreferenceVersion,
+      calendarTodayIso,
+      canRenderAcademyCalendarSourceItems,
+      selectedAcademySemester,
+      visibleCanvasCalendarItems,
+    ],
+  );
+  const calendarCourseFilterOptions = useMemo(
+    () => canRenderAcademyCalendarSourceItems
+      ? getActiveCalendarCourseOptions(
+          visibleCanvasCalendarItems,
+          hiddenCalendarCourseIds,
+          dictionary.selectedDayTodoNoCourse,
+          selectedAcademySemester,
+        )
+      : [],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      academyPreferenceVersion,
+      canRenderAcademyCalendarSourceItems,
+      dictionary.selectedDayTodoNoCourse,
+      hiddenCalendarCourseIds,
+      selectedAcademySemester,
+      visibleCanvasCalendarItems,
+    ],
+  );
   const activeCalendarCourseOptionIds = new Set(calendarCourseFilterOptions.map((option) => option.id));
-  const calendarSourceItems = filterCalendarSourceItemsByCourse(
-    allCalendarSourceItems,
-    hiddenCalendarCourseIds,
-    dictionary.selectedDayTodoNoCourse,
+  const calendarSourceItems = useMemo(
+    () => filterCalendarSourceItemsByCourse(
+      allCalendarSourceItems,
+      hiddenCalendarCourseIds,
+      dictionary.selectedDayTodoNoCourse,
+    ),
+    [allCalendarSourceItems, dictionary.selectedDayTodoNoCourse, hiddenCalendarCourseIds],
   );
   const selectedDaySourceItems = calendarSourceItems
     .filter((item) => getLocalIsoDate(getCalendarSourceItemDate(item)) === selectedCalendarDayIso)
@@ -4910,14 +4962,26 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
   const selectedDayRelativeBadge = formatRelativeDayBadge(selectedCalendarDayIso);
   const activeCalendarTodayIso = getTodayIsoDate();
   const isSelectedCalendarDayToday = selectedCalendarDayIso === activeCalendarTodayIso;
-  const calendarData = createAcademyCalendarData(
-    activeData,
-    calendarMonth,
-    calendarSourceItems,
-    effectiveCanvasCalendarLoadStatus,
-    selectedCalendarDayIso,
-    dictionary.selectedDayTodoNoCourse,
-    activeCalendarCourseOptionIds,
+  const calendarData = useMemo(
+    () => createAcademyCalendarData(
+      activeData,
+      calendarMonth,
+      calendarSourceItems,
+      effectiveCanvasCalendarLoadStatus,
+      selectedCalendarDayIso,
+      dictionary.selectedDayTodoNoCourse,
+      activeCalendarCourseOptionIds,
+    ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      activeData,
+      calendarMonth,
+      calendarSourceItems,
+      calendarCourseFilterOptions,
+      dictionary.selectedDayTodoNoCourse,
+      effectiveCanvasCalendarLoadStatus,
+      selectedCalendarDayIso,
+    ],
   );
   const selectedDayProgressInfo = getDayTodoProgress(selectedDaySourceItems);
   const selectedCalendarTodoDetailsItem = selectedCalendarTodoDetailsId
@@ -5520,7 +5584,7 @@ const accessKey = (authSession?.access ?? []).join('\u001f');
       courseCode,
       dueAt: getEndOfDayIsoDateTime(dateIso),
       startAt: new Date().toISOString(),
-      courseworkType: 'study',
+      courseworkType: getDefaultCourseworkTypeForCourse(courseCode) ?? 'study',
       submissionType: 'no_submission',
       completed: false,
       semester: selectedAcademySemester,

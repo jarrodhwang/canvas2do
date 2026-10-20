@@ -6,6 +6,7 @@ import { useLanguage } from '../context/LanguageContext';
 import type { BoardColumnConfig } from '../modes/types';
 import { dotColorClasses } from '../lib/colorStyles';
 import { cn } from '../lib/utils';
+import { DraftTitleInput } from './DraftTitleInput';
 import { EventPill } from './EventPill';
 import { Button } from './ui/button';
 import { Card } from './ui/card';
@@ -431,20 +432,15 @@ export function BoardView({
                           tabIndex={0}
                         >
                           {isEditingTitle ? (
-                            <input
+                            <DraftTitleInput
                               aria-label={dictionary.boardAddTodoItem}
                               autoFocus
                               className="block w-full min-w-0 rounded-md border bg-background px-2 py-1 text-sm font-semibold leading-snug text-foreground outline-none transition focus-visible:ring-2 focus-visible:ring-ring/45"
-                              onBlur={onFinishItemTitleEdit}
-                              onChange={(event) => onUpdateItemTitle?.(item, event.target.value)}
                               onClick={(event) => event.stopPropagation()}
+                              onCommit={(title) => onUpdateItemTitle?.(item, title)}
+                              onDone={onFinishItemTitleEdit}
                               onFocus={(event) => event.currentTarget.select()}
-                              onKeyDown={(event) => {
-                                event.stopPropagation();
-                                if (event.key === 'Enter' || event.key === 'Escape') {
-                                  event.currentTarget.blur();
-                                }
-                              }}
+                              onKeyDown={(event) => event.stopPropagation()}
                               placeholder={dictionary.boardAddTodoItem}
                               value={item.title}
                             />

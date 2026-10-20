@@ -32,6 +32,7 @@ import type { ColorToken, DashboardCardConfig } from '../modes/types';
 import { cn } from '../lib/utils';
 import { dotColorClasses } from '../lib/colorStyles';
 import { DateTimeField } from './DateTimeField';
+import { DraftTitleInput } from './DraftTitleInput';
 import { EventPill } from './EventPill';
 import { PhoneCourseworkForm } from './PhoneCourseworkForm';
 import {
@@ -156,6 +157,7 @@ type CanvasLecturePreferences = Record<string, {
   currentGrade?: string;
   currentScore?: number;
   convertedToManualAt?: string;
+  defaultCourseworkType?: string;
   permanentlyDeletedAt?: string;
   deleted?: boolean;
   friendlyCourseCode?: string;
@@ -339,6 +341,7 @@ const submissionTypes = [
 const assessmentTypes = ['quiz', 'midterm', 'final_exam', 'exam'];
 
 interface CourseworkCourseOption {
+  defaultCourseworkType?: string;
   label: string;
   semester?: string;
   value: string;
@@ -1932,7 +1935,7 @@ function getCourseworkCourseOptions(
   currentCourseCode?: string,
 ): CourseworkCourseOption[] {
   const optionMap = new Map<string, CourseworkCourseOption>();
-  const addOption = (courseCode?: string, courseName?: string, semester?: string) => {
+  const addOption = (courseCode?: string, courseName?: string, semester?: string, defaultCourseworkType?: string) => {
     const value = courseCode?.trim();
 
     if (!value || optionMap.has(value)) {
@@ -1942,6 +1945,7 @@ function getCourseworkCourseOptions(
     const normalizedSemester = normalizeSemesterName(semester, fallbackSemester);
 
     optionMap.set(value, {
+      defaultCourseworkType: defaultCourseworkType || undefined,
       semester: normalizedSemester,
       value,
       label: courseName ? `${value} - ${courseName}` : value,
@@ -1960,6 +1964,7 @@ function getCourseworkCourseOptions(
       preferences.friendlyCourseCode || course.courseCode || course.id,
       preferences.friendlyName || course.name,
       semester,
+      preferences.defaultCourseworkType,
     );
   });
   manualLectures.forEach((lecture) => {
@@ -1973,6 +1978,7 @@ function getCourseworkCourseOptions(
       lecture.friendlyCourseCode || lecture.code,
       lecture.friendlyName || lecture.name,
       semester,
+      lecture.defaultCourseworkType,
     );
   });
   addOption(currentCourseCode, undefined, selectedSemester);
@@ -2877,20 +2883,15 @@ function DashboardRows({
         {row.assessmentType ? <EventPill className="h-5 max-w-24 px-1.5 text-[10px]" color={row.chipColor ?? card.color} compact label={row.assessmentType} /> : null}
       </>;
       const titleContent = isRenamingRow ? (
-        <input
+        <DraftTitleInput
           aria-label={dictionary.boardAddTodoItem}
           autoFocus
           className="block min-w-0 max-w-full rounded-md border bg-background px-2 py-1 text-sm font-black text-foreground outline-none transition focus-visible:ring-2 focus-visible:ring-ring/45"
-          onBlur={onFinishCourseworkRename}
-          onChange={(event) => onRenameCoursework(row, event.target.value)}
           onClick={(event) => event.stopPropagation()}
+          onCommit={(title) => onRenameCoursework(row, title)}
+          onDone={() => window.setTimeout(onFinishCourseworkRename, 0)}
           onFocus={(event) => event.currentTarget.select()}
-          onKeyDown={(event) => {
-            event.stopPropagation();
-            if (event.key === 'Enter' || event.key === 'Escape') {
-              event.currentTarget.blur();
-            }
-          }}
+          onKeyDown={(event) => event.stopPropagation()}
           placeholder={dictionary.boardAddTodoItem}
           value={row.value}
         />
@@ -3141,6 +3142,8 @@ function DashboardRows({
 }
 
 interface CourseFriendlyNameDialogProps {
+  defaultCourseworkType: string;
+  onDefaultCourseworkTypeChange: (value: string) => void;
   friendlyCourseCode: string;
   friendlyName: string;
   onFriendlyCourseCodeChange: (value: string) => void;
@@ -3152,6 +3155,8 @@ interface CourseFriendlyNameDialogProps {
 }
 
 function CourseFriendlyNameDialog({
+  defaultCourseworkType,
+  onDefaultCourseworkTypeChange,
   friendlyCourseCode,
   friendlyName,
   onFriendlyCourseCodeChange,
@@ -3209,6 +3214,22 @@ function CourseFriendlyNameDialog({
               value={friendlyName}
             />
           </div>
+          <div className="space-y-2">
+            <Label className="text-xs font-black uppercase text-muted-foreground" htmlFor="course-default-coursework-type">
+              {dictionary.courseDefaultCourseworkType}
+            </Label>
+            <select
+              className="h-9 w-full rounded-md border bg-background px-3 text-sm font-semibold text-foreground"
+              id="course-default-coursework-type"
+              onChange={(event) => onDefaultCourseworkTypeChange(event.target.value)}
+              value={defaultCourseworkType}
+            >
+              <option value="">{dictionary.courseDefaultCourseworkTypeNone}</option>
+              {courseworkTypes.map((courseworkType) => (
+                <option key={courseworkType} value={courseworkType}>{formatCourseworkType(courseworkType)}</option>
+              ))}
+            </select>
+          </div>
           <DialogFooter>
             <Button onClick={() => onOpenChange(false)} type="button" variant="outline">
               {dictionary.cancel}
@@ -3225,6 +3246,7 @@ interface CourseworkDialogProps {
   courseOptions: CourseworkCourseOption[];
   selectedSemester: string;
   initialCoursework?: ManualCourseworkItem;
+  applyCourseDefaultType?: boolean;
   isCanvasCoursework?: boolean;
   isPhone?: boolean;
   onOpenChange: (open: boolean) => void;
@@ -3259,6 +3281,7 @@ function createManualCourseworkId() {
 }
 
 function CourseworkDialog({
+  applyCourseDefaultType = false,
   courseOptions,
   initialCoursework,
   isCanvasCoursework = false,
@@ -3271,12 +3294,17 @@ function CourseworkDialog({
   title,
 }: CourseworkDialogProps) {
   const { dictionary } = useLanguage();
-  const [draft, setDraft] = useState<ManualCourseworkItem>(() => (
-    initialCoursework ?? {
+  const [draft, setDraft] = useState<ManualCourseworkItem>(() => {
+    const initialDraft = initialCoursework ?? {
       ...createEmptyCoursework(selectedSemester),
       ...(isPhone ? { dueAt: getDefaultCourseworkDueAt() } : {}),
-    }
-  ));
+    };
+    const initialDefaultType = applyCourseDefaultType
+      ? courseOptions.find((option) => option.value === initialDraft.courseCode)?.defaultCourseworkType
+      : undefined;
+
+    return initialDefaultType ? { ...initialDraft, courseworkType: initialDefaultType } : initialDraft;
+  });
   const lockedCanvasFieldClassName = isCanvasCoursework ? 'opacity-70' : '';
   const selectedCourseValue = courseOptions.some((option) => option.value === draft.courseCode)
     ? draft.courseCode
@@ -3307,6 +3335,7 @@ function CourseworkDialog({
           courseOptions={courseOptions}
           disabled={isCanvasCoursework}
           draft={{ ...draft, dueAt: formatDateInputValue(draft.dueAt), startAt: formatDateInputValue(draft.startAt), endAt: formatDateInputValue(draft.endAt) }}
+          applyCourseDefaultType={applyCourseDefaultType}
           onChange={(changes) => setDraft((current) => ({ ...current, ...changes }))}
           onClose={() => onOpenChange(false)}
           onSubmit={handleSubmit}
@@ -3359,6 +3388,7 @@ function CourseworkDialog({
                   setDraft((current) => ({
                     ...current,
                     courseCode: value.startsWith('current:') ? value.replace(/^current:/, '') : value,
+                    courseworkType: (applyCourseDefaultType && option?.defaultCourseworkType) || current.courseworkType,
                     semester: option?.semester ?? current.semester,
                   }));
                 }}
@@ -3780,6 +3810,7 @@ export function DashboardCards({
   const [friendlyNameRow, setFriendlyNameRow] = useState<RenderableDashboardRow | null>(null);
   const [friendlyCourseCodeInput, setFriendlyCourseCodeInput] = useState('');
   const [friendlyNameInput, setFriendlyNameInput] = useState('');
+  const [defaultCourseworkTypeInput, setDefaultCourseworkTypeInput] = useState('');
   const refreshTimeoutRef = useRef<number | null>(null);
   const dashboardSnackbarTimeoutRef = useRef<number | null>(null);
   const academyRefreshLongPressTimeoutRef = useRef<number | null>(null);
@@ -5504,6 +5535,11 @@ export function DashboardCards({
     setFriendlyNameRow(row);
     setFriendlyCourseCodeInput(row.friendlyCourseCode ?? row.originalCourseCode ?? row.label);
     setFriendlyNameInput(row.friendlyName ?? '');
+    setDefaultCourseworkTypeInput(
+      (row.lectureSource === 'canvas' && row.canvasCourseId
+        ? canvasLecturePreferences[row.canvasCourseId]?.defaultCourseworkType
+        : manualLectures.find((lecture) => lecture.id === row.manualLectureId)?.defaultCourseworkType) ?? '',
+    );
   };
 
   const handleSaveLectureFriendlyName = () => {
@@ -5520,6 +5556,7 @@ export function DashboardCards({
         [friendlyNameRow.canvasCourseId!]: {
           ...(currentPreferences[friendlyNameRow.canvasCourseId!] ?? {}),
           friendlyCourseCode: friendlyCourseCode || undefined,
+          defaultCourseworkType: defaultCourseworkTypeInput || undefined,
           friendlyName: friendlyName || undefined,
           originalCourseCode: friendlyNameRow.originalCourseCode,
         },
@@ -5530,6 +5567,7 @@ export function DashboardCards({
           ? {
               ...lecture,
               friendlyCourseCode: friendlyCourseCode || undefined,
+              defaultCourseworkType: defaultCourseworkTypeInput || undefined,
               friendlyName: friendlyName || undefined,
             }
           : lecture
@@ -5539,6 +5577,7 @@ export function DashboardCards({
     setFriendlyNameRow(null);
     setFriendlyCourseCodeInput('');
     setFriendlyNameInput('');
+    setDefaultCourseworkTypeInput('');
   };
 
   const handleToggleLectureStar = (row: RenderableDashboardRow) => {
@@ -6633,6 +6672,7 @@ export function DashboardCards({
         semesterOptions={courseSemesterOptions}
       />
       <CourseworkDialog
+        applyCourseDefaultType
         isPhone={isPhone}
         courseOptions={courseworkCourseOptions}
         initialCoursework={initialManualCourseworkDraft}
@@ -6815,6 +6855,8 @@ export function DashboardCards({
         </DialogContent>
       </Dialog>
       <CourseFriendlyNameDialog
+        defaultCourseworkType={defaultCourseworkTypeInput}
+        onDefaultCourseworkTypeChange={setDefaultCourseworkTypeInput}
         friendlyCourseCode={friendlyCourseCodeInput}
         friendlyName={friendlyNameInput}
         onFriendlyCourseCodeChange={setFriendlyCourseCodeInput}
@@ -6824,6 +6866,7 @@ export function DashboardCards({
             setFriendlyNameRow(null);
             setFriendlyCourseCodeInput('');
             setFriendlyNameInput('');
+            setDefaultCourseworkTypeInput('');
           }
         }}
         onSave={handleSaveLectureFriendlyName}

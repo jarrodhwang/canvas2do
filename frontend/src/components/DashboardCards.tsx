@@ -3905,34 +3905,36 @@ export function DashboardCards({
   const selectedManualLecture = selectedManualLectureId
     ? manualLectures.find((lecture) => lecture.id === selectedManualLectureId)
     : undefined;
-  const recoverableCanvasCourseworkKeys = new Set<string>();
-  canvasCourseworkItems.forEach((item) => {
-    if (isCourseworkCanvasItem(item)) {
-      addRecoverableCanvasAssignmentReferenceKey(
-        recoverableCanvasCourseworkKeys,
-        item.id,
-        canvasCourseworkPreferences[item.id] ?? {},
-        item,
-      );
-      return;
-    }
+  const recoverableCanvasCourseworkCount = useMemo(() => {
+    const recoverableCanvasCourseworkKeys = new Set<string>();
+    canvasCourseworkItems.forEach((item) => {
+      if (isCourseworkCanvasItem(item)) {
+        addRecoverableCanvasAssignmentReferenceKey(
+          recoverableCanvasCourseworkKeys,
+          item.id,
+          canvasCourseworkPreferences[item.id] ?? {},
+          item,
+        );
+        return;
+      }
 
-    if (isAssessmentCanvasItem(item)) {
-      addRecoverableCanvasAssignmentReferenceKey(
-        recoverableCanvasCourseworkKeys,
-        item.id,
-        canvasAssessmentPreferences[item.id] ?? {},
-        item,
-      );
-    }
-  });
-  Object.entries(canvasCourseworkPreferences).forEach(([itemId, preference]) => {
-    addRecoverableCanvasAssignmentReferenceKey(recoverableCanvasCourseworkKeys, itemId, preference);
-  });
-  Object.entries(canvasAssessmentPreferences).forEach(([itemId, preference]) => {
-    addRecoverableCanvasAssignmentReferenceKey(recoverableCanvasCourseworkKeys, itemId, preference);
-  });
-  const recoverableCanvasCourseworkCount = recoverableCanvasCourseworkKeys.size;
+      if (isAssessmentCanvasItem(item)) {
+        addRecoverableCanvasAssignmentReferenceKey(
+          recoverableCanvasCourseworkKeys,
+          item.id,
+          canvasAssessmentPreferences[item.id] ?? {},
+          item,
+        );
+      }
+    });
+    Object.entries(canvasCourseworkPreferences).forEach(([itemId, preference]) => {
+      addRecoverableCanvasAssignmentReferenceKey(recoverableCanvasCourseworkKeys, itemId, preference);
+    });
+    Object.entries(canvasAssessmentPreferences).forEach(([itemId, preference]) => {
+      addRecoverableCanvasAssignmentReferenceKey(recoverableCanvasCourseworkKeys, itemId, preference);
+    });
+    return recoverableCanvasCourseworkKeys.size;
+  }, [canvasCourseworkItems, canvasCourseworkPreferences, canvasAssessmentPreferences]);
   const selectedCanvasCourse = selectedCanvasCourseId
     ? canvasCourses?.find((course) => course.id === selectedCanvasCourseId)
     : undefined;
@@ -4650,150 +4652,71 @@ export function DashboardCards({
   }, [activeMode.id]);
 
   const updateStoredManualLectures = (updater: (lectures: ManualLecture[]) => ManualLecture[]) => {
-    setManualLectures((currentLectures) => {
-      const nextLectures = updater(currentLectures);
-
-      if (Object.is(nextLectures, currentLectures)) {
-        return currentLectures;
-      }
-
-      manualLecturesRef.current = nextLectures;
-      persistAcademyPreferences(
-        nextLectures,
-        canvasLecturePreferencesRef.current,
-        manualCourseworkRef.current,
-        canvasCourseworkPreferencesRef.current,
-        manualAssessmentsRef.current,
-        canvasAssessmentPreferencesRef.current,
-      );
-
-      return nextLectures;
-    });
+    const current = manualLecturesRef.current;
+    const next = updater(current);
+    if (Object.is(next, current)) return;
+    manualLecturesRef.current = next;
+    setManualLectures(next);
+    persistAcademyPreferencePatch({ manualLectures: next });
   };
 
   const updateStoredCanvasLecturePreferences = (
     updater: (preferences: CanvasLecturePreferences) => CanvasLecturePreferences,
   ) => {
-    setCanvasLecturePreferences((currentPreferences) => {
-      const nextPreferences = updater(currentPreferences);
-
-      if (Object.is(nextPreferences, currentPreferences)) {
-        return currentPreferences;
-      }
-
-      canvasLecturePreferencesRef.current = nextPreferences;
-      persistAcademyPreferencePatch({
-        canvasLecturePreferences: nextPreferences,
-      });
-
-      return nextPreferences;
-    });
+    const current = canvasLecturePreferencesRef.current;
+    const next = updater(current);
+    if (Object.is(next, current)) return;
+    canvasLecturePreferencesRef.current = next;
+    setCanvasLecturePreferences(next);
+    persistAcademyPreferencePatch({ canvasLecturePreferences: next });
   };
 
   const updateStoredManualCoursework = (
     updater: (coursework: ManualCourseworkItem[]) => ManualCourseworkItem[],
     options: { persist?: boolean } = {},
   ) => {
-    const shouldPersist = options.persist !== false;
-
-    setManualCoursework((currentCoursework) => {
-      const nextCoursework = updater(currentCoursework);
-
-      if (Object.is(nextCoursework, currentCoursework)) {
-        return currentCoursework;
-      }
-
-      manualCourseworkRef.current = nextCoursework;
-      if (shouldPersist) {
-        persistAcademyPreferences(
-          manualLecturesRef.current,
-          canvasLecturePreferencesRef.current,
-          nextCoursework,
-          canvasCourseworkPreferencesRef.current,
-          manualAssessmentsRef.current,
-          canvasAssessmentPreferencesRef.current,
-        );
-      }
-
-      return nextCoursework;
-    });
+    const current = manualCourseworkRef.current;
+    const next = updater(current);
+    if (Object.is(next, current)) return;
+    manualCourseworkRef.current = next;
+    setManualCoursework(next);
+    if (options.persist !== false) persistAcademyPreferencePatch({ manualCoursework: next });
   };
 
   const updateStoredCanvasCourseworkPreferences = (
     updater: (preferences: CanvasCourseworkPreferences) => CanvasCourseworkPreferences,
     options: { persist?: boolean } = {},
   ) => {
-    const shouldPersist = options.persist !== false;
-
-    setCanvasCourseworkPreferences((currentPreferences) => {
-      const nextPreferences = updater(currentPreferences);
-
-      if (Object.is(nextPreferences, currentPreferences)) {
-        return currentPreferences;
-      }
-
-      canvasCourseworkPreferencesRef.current = nextPreferences;
-      if (shouldPersist) {
-        persistAcademyPreferencePatch({
-          canvasCourseworkPreferences: nextPreferences,
-        });
-      }
-
-      return nextPreferences;
-    });
+    const current = canvasCourseworkPreferencesRef.current;
+    const next = updater(current);
+    if (Object.is(next, current)) return;
+    canvasCourseworkPreferencesRef.current = next;
+    setCanvasCourseworkPreferences(next);
+    if (options.persist !== false) persistAcademyPreferencePatch({ canvasCourseworkPreferences: next });
   };
 
   const updateStoredManualAssessments = (
     updater: (assessments: ManualAssessmentItem[]) => ManualAssessmentItem[],
     options: { persist?: boolean } = {},
   ) => {
-    const shouldPersist = options.persist !== false;
-
-    setManualAssessments((currentAssessments) => {
-      const nextAssessments = updater(currentAssessments);
-
-      if (Object.is(nextAssessments, currentAssessments)) {
-        return currentAssessments;
-      }
-
-      manualAssessmentsRef.current = nextAssessments;
-      if (shouldPersist) {
-        persistAcademyPreferences(
-          manualLecturesRef.current,
-          canvasLecturePreferencesRef.current,
-          manualCourseworkRef.current,
-          canvasCourseworkPreferencesRef.current,
-          nextAssessments,
-          canvasAssessmentPreferencesRef.current,
-        );
-      }
-
-      return nextAssessments;
-    });
+    const current = manualAssessmentsRef.current;
+    const next = updater(current);
+    if (Object.is(next, current)) return;
+    manualAssessmentsRef.current = next;
+    setManualAssessments(next);
+    if (options.persist !== false) persistAcademyPreferencePatch({ manualAssessments: next });
   };
 
   const updateStoredCanvasAssessmentPreferences = (
     updater: (preferences: CanvasAssessmentPreferences) => CanvasAssessmentPreferences,
     options: { persist?: boolean } = {},
   ) => {
-    const shouldPersist = options.persist !== false;
-
-    setCanvasAssessmentPreferences((currentPreferences) => {
-      const nextPreferences = updater(currentPreferences);
-
-      if (Object.is(nextPreferences, currentPreferences)) {
-        return currentPreferences;
-      }
-
-      canvasAssessmentPreferencesRef.current = nextPreferences;
-      if (shouldPersist) {
-        persistAcademyPreferencePatch({
-          canvasAssessmentPreferences: nextPreferences,
-        });
-      }
-
-      return nextPreferences;
-    });
+    const current = canvasAssessmentPreferencesRef.current;
+    const next = updater(current);
+    if (Object.is(next, current)) return;
+    canvasAssessmentPreferencesRef.current = next;
+    setCanvasAssessmentPreferences(next);
+    if (options.persist !== false) persistAcademyPreferencePatch({ canvasAssessmentPreferences: next });
   };
 
   useEffect(() => {

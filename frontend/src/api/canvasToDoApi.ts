@@ -14,6 +14,13 @@ const safeRequestMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
 export const authenticationRequiredEvent = 'canvas-to-do-authentication-required';
 let academyPreferenceOwnerKey: string | null = null;
 let academyPreferenceOwnerVersion = 0;
+let academyPreferencesRead: Promise<AcademyPreferences> | null = null;
+let academyPreferencesReadVersion = 0;
+
+function invalidateAcademyPreferencesRead() {
+  academyPreferencesRead = null;
+  academyPreferencesReadVersion += 1;
+}
 
 interface AcademyPreferenceRequestScope {
   ownerKey: string;
@@ -56,6 +63,7 @@ function setAcademyPreferenceOwnerKey(value?: string | null) {
 
   canvasCalendarRequests.forEach(({ controller }) => controller.abort());
   canvasCalendarRequests.clear();
+  invalidateAcademyPreferencesRead();
   academyTermStore.reset();
   academyPreferenceOwnerKey = nextOwnerKey;
   academyPreferenceOwnerVersion += 1;
@@ -1101,6 +1109,7 @@ export const canvasToDoApi = {
 
   async changeManualCourseTerm(id: string, year: number, term: string): Promise<AcademyPreferences> {
     const scope = getAcademyPreferenceRequestScope();
+    invalidateAcademyPreferencesRead();
     const response = await apiFetch(`${apiBaseUrl}/academy/courses/${encodeURIComponent(id)}/term`, {
       credentials: 'include', method: 'PUT',
       headers: { 'Content-Type': 'application/json', [academyPreferenceOwnerHeader]: scope.ownerKey },
@@ -1110,6 +1119,7 @@ export const canvasToDoApi = {
     if (!response.ok) throw new ApiError((await readErrorResponse(response, 'Unable to change term.')).message, response.status);
     const result = await response.json() as AcademyPreferences;
     assertCurrentAcademyPreferenceScope(scope);
+    invalidateAcademyPreferencesRead();
     academyTermStore.preferences(result);
     return result;
   },
@@ -1397,29 +1407,35 @@ export const canvasToDoApi = {
   async getAcademyPreferences(
     scope: AcademyPreferenceRequestScope = getAcademyPreferenceRequestScope(),
   ) {
-    const response = await apiFetch(`${apiBaseUrl}/academy/preferences`, {
-      credentials: 'include',
-      headers: {
-        [academyPreferenceOwnerHeader]: scope.ownerKey,
-      },
-    });
-
     assertCurrentAcademyPreferenceScope(scope);
+    if (academyPreferencesRead) return academyPreferencesRead;
 
-    if (!response.ok) {
-      const { message } = await readErrorResponse(response, 'Unable to load Academy preferences.');
-
-      throw new ApiError(message, response.status);
+    const readVersion = academyPreferencesReadVersion;
+    const read = (async () => {
+      const response = await apiFetch(`${apiBaseUrl}/academy/preferences`, {
+        credentials: 'include',
+        headers: { [academyPreferenceOwnerHeader]: scope.ownerKey },
+      });
+      assertCurrentAcademyPreferenceScope(scope);
+      if (!response.ok) {
+        const { message } = await readErrorResponse(response, 'Unable to load Academy preferences.');
+        throw new ApiError(message, response.status);
+      }
+      const result = await response.json() as AcademyPreferences;
+      assertCurrentAcademyPreferenceScope(scope);
+      if (academyPreferencesReadVersion === readVersion) academyTermStore.preferences(result);
+      return {
+        ...result,
+        canvasCourseworkPreferences: normalizeCanvasItemPreferences(result.canvasCourseworkPreferences ?? {}),
+        canvasAssessmentPreferences: normalizeCanvasItemPreferences(result.canvasAssessmentPreferences ?? {}),
+      };
+    })();
+    academyPreferencesRead = read;
+    try {
+      return await read;
+    } finally {
+      if (academyPreferencesRead === read) academyPreferencesRead = null;
     }
-
-    const result = await response.json() as AcademyPreferences;
-    assertCurrentAcademyPreferenceScope(scope);
-    academyTermStore.preferences(result);
-    return {
-      ...result,
-      canvasCourseworkPreferences: normalizeCanvasItemPreferences(result.canvasCourseworkPreferences ?? {}),
-      canvasAssessmentPreferences: normalizeCanvasItemPreferences(result.canvasAssessmentPreferences ?? {}),
-    };
   },
 
   async saveAcademyPreferences(
@@ -1427,6 +1443,7 @@ export const canvasToDoApi = {
     scope: AcademyPreferenceRequestScope = getAcademyPreferenceRequestScope(),
   ) {
     assertCurrentAcademyPreferenceScope(scope);
+    invalidateAcademyPreferencesRead();
     const response = await apiFetch(`${apiBaseUrl}/academy/preferences`, {
       body: JSON.stringify(preferences),
       credentials: 'include',
@@ -1447,6 +1464,7 @@ export const canvasToDoApi = {
 
     const result = await response.json() as AcademyPreferences;
     assertCurrentAcademyPreferenceScope(scope);
+    invalidateAcademyPreferencesRead();
     academyTermStore.preferences(result);
     return {
       ...result,

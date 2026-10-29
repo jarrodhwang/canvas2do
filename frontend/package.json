@@ -12,7 +12,8 @@
     "test:migration": "node --experimental-strip-types scripts/test-canvas-course-migration.mjs",
     "preview": "vite preview",
     "test:onboarding": "node --experimental-strip-types scripts/test-canvas-onboarding.mjs",
-    "test:terms": "node --experimental-strip-types scripts/test-academy-terms.mjs"
+    "test:terms": "node --experimental-strip-types scripts/test-academy-terms.mjs",
+    "test:preferences-requests": "node scripts/test-preferences-requests.mjs"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.9",

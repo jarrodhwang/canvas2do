@@ -148,6 +148,24 @@ foreach (var scenario in new[] { "healthy", "calendar-only", "duplicate-sources"
     Console.WriteLine("PASS durable permanent course deletion, delayed saves and retained coursework");
 }
 
+// A small dashboard edit must preserve all unrelated fields and nested settings.
+{
+    var existing = """{"manualLectures":[{"id":"course"}],"manualCoursework":[{"id":"old"}],"manualAssessments":[{"id":"exam"}],"canvasCourseworkPreferences":{"a":{"title":"A"}},"calendarSettings":{"display":{"color":"blue","size":2},"selectedSemester":"Fall 2026"}}""";
+    var patch = JsonSerializer.Deserialize<SaveAcademyPreferencesRequest>("""{"manualCoursework":[{"id":"new"}],"calendarSettings":{"display":{"size":3}}}""", new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+    var result = JsonNode.Parse(AcademyPreferenceEndpoints.Serialize(patch, existing))!;
+    Check(result["manualCoursework"]![0]!["id"]!.GetValue<string>() == "new", "Partial edit replaces the intended section");
+    Check(result["manualLectures"]![0]!["id"]!.GetValue<string>() == "course" &&
+        result["manualAssessments"]![0]!["id"]!.GetValue<string>() == "exam" &&
+        result["canvasCourseworkPreferences"]!["a"]!["title"]!.GetValue<string>() == "A", "Partial edit preserves unrelated sections");
+    Check(result["calendarSettings"]!["display"]!["size"]!.GetValue<int>() == 3 &&
+        result["calendarSettings"]!["display"]!["color"]!.GetValue<string>() == "blue" &&
+        result["calendarSettings"]!["selectedSemester"]!.GetValue<string>() == "Fall 2026", "Nested settings merge is preserved");
+    var empty = JsonNode.Parse(AcademyPreferenceEndpoints.Serialize(patch, "invalid json"))!;
+    Check(empty["manualLectures"]!.AsArray().Count == 0 && empty["manualCoursework"]!.AsArray().Count == 1,
+        "Invalid stored document falls back to empty sections");
+    Console.WriteLine("PASS partial preferences updates and nested settings merge");
+}
+
 static void Check(bool condition, string description)
 {
     if (!condition) throw new InvalidOperationException(description);

@@ -160,11 +160,11 @@ public static class AcademyPreferenceEndpoints
             cancellationToken);
 
         var existingSetting = await FindAsync(db, normalizedUserKey, cancellationToken);
-        if ((await ManualModeEndpoints.GetAsync(db, normalizedUserKey, cancellationToken))?.Status == "approved" &&
-            request.CanvasLecturePreferences.ValueKind == JsonValueKind.Object &&
+        if (request.CanvasLecturePreferences.ValueKind == JsonValueKind.Object &&
             request.CanvasLecturePreferences.EnumerateObject().Any(p => p.Value.ValueKind == JsonValueKind.Object &&
                 !p.Value.TryGetProperty("convertedToManualAt", out _) &&
-                !p.Value.TryGetProperty("permanentlyDeletedAt", out _)))
+                !p.Value.TryGetProperty("permanentlyDeletedAt", out _)) &&
+            (await ManualModeEndpoints.GetAsync(db, normalizedUserKey, cancellationToken))?.Status == "approved")
             return Results.Conflict(new { detail = "Permanent manual mode was approved. Refresh before saving your courses." });
         var storageUserKey = existingSetting?.UserKey ?? normalizedUserKey;
         var settingJson = Serialize(request, existingSetting?.SettingJson);
@@ -201,14 +201,16 @@ public static class AcademyPreferenceEndpoints
 
     internal static string Serialize(SaveAcademyPreferencesRequest request, string? existingJson)
     {
+        // Parse the stored document once per save, including partial updates.
+        TryParseObject(existingJson, out var storedRoot);
         var courses = JsonSerializer.SerializeToNode(
-            SelectObject(request.CanvasLecturePreferences, existingJson, "canvasLecturePreferences"), JsonOptions)!.AsObject();
+            SelectObject(request.CanvasLecturePreferences, storedRoot, "canvasLecturePreferences"), JsonOptions)!.AsObject();
         var lectures = JsonSerializer.SerializeToNode(
-            SelectArray(request.ManualLectures, existingJson, "manualLectures"), JsonOptions)!.AsArray();
+            SelectArray(request.ManualLectures, storedRoot, "manualLectures"), JsonOptions)!.AsArray();
 
         // A delayed sync may contain the whole preference snapshot from before deletion.
         // Keep deletion markers under the same per-owner transaction lock as the save.
-        foreach (var storedCourse in GetStored(existingJson, "canvasLecturePreferences", JsonValueKind.Object).EnumerateObject())
+        foreach (var storedCourse in GetStored(storedRoot, "canvasLecturePreferences", JsonValueKind.Object).EnumerateObject())
         {
             if (storedCourse.Value.ValueKind != JsonValueKind.Object ||
                 !storedCourse.Value.TryGetProperty("permanentlyDeletedAt", out var deletedAt) ||
@@ -255,34 +257,34 @@ public static class AcademyPreferenceEndpoints
         {
             manualLectures = lectures,
             canvasLecturePreferences = courses,
-            manualCoursework = SelectArray(request.ManualCoursework, existingJson, "manualCoursework"),
-            canvasCourseworkPreferences = SelectObject(request.CanvasCourseworkPreferences, existingJson, "canvasCourseworkPreferences"),
-            manualAssessments = SelectArray(request.ManualAssessments, existingJson, "manualAssessments"),
-            canvasAssessmentPreferences = SelectObject(request.CanvasAssessmentPreferences, existingJson, "canvasAssessmentPreferences"),
+            manualCoursework = SelectArray(request.ManualCoursework, storedRoot, "manualCoursework"),
+            canvasCourseworkPreferences = SelectObject(request.CanvasCourseworkPreferences, storedRoot, "canvasCourseworkPreferences"),
+            manualAssessments = SelectArray(request.ManualAssessments, storedRoot, "manualAssessments"),
+            canvasAssessmentPreferences = SelectObject(request.CanvasAssessmentPreferences, storedRoot, "canvasAssessmentPreferences"),
             calendarSettings = request.CalendarSettings.ValueKind == JsonValueKind.Object
-                ? MergeStoredObject(request.CalendarSettings, existingJson, "calendarSettings")
-                : GetStored(existingJson, "calendarSettings", JsonValueKind.Object),
+                ? MergeStoredObject(request.CalendarSettings, storedRoot, "calendarSettings")
+                : GetStored(storedRoot, "calendarSettings", JsonValueKind.Object),
         };
 
         return JsonSerializer.Serialize(value, JsonOptions);
     }
 
-    private static JsonElement SelectArray(JsonElement requested, string? stored, string propertyName) =>
+    private static JsonElement SelectArray(JsonElement requested, JsonElement stored, string propertyName) =>
         requested.ValueKind == JsonValueKind.Array
             ? requested.Clone()
             : GetStored(stored, propertyName, JsonValueKind.Array);
 
-    private static JsonElement SelectObject(JsonElement requested, string? stored, string propertyName) =>
+    private static JsonElement SelectObject(JsonElement requested, JsonElement stored, string propertyName) =>
         requested.ValueKind == JsonValueKind.Object
             ? requested.Clone()
             : GetStored(stored, propertyName, JsonValueKind.Object);
 
     private static JsonElement MergeStoredObject(
         JsonElement requested,
-        string? storedJson,
+        JsonElement storedRoot,
         string propertyName)
     {
-        var stored = GetStored(storedJson, propertyName, JsonValueKind.Object);
+        var stored = GetStored(storedRoot, propertyName, JsonValueKind.Object);
         return MergeObjects(stored, requested);
     }
 
@@ -333,15 +335,10 @@ public static class AcademyPreferenceEndpoints
             exists);
     }
 
-    private static JsonElement GetStored(string? json, string propertyName, JsonValueKind expectedKind)
-    {
-        if (!TryParseObject(json, out var root))
-        {
-            return Empty(expectedKind);
-        }
-
-        return GetProperty(root, propertyName, expectedKind);
-    }
+    private static JsonElement GetStored(JsonElement root, string propertyName, JsonValueKind expectedKind) =>
+        root.ValueKind == JsonValueKind.Object
+            ? GetProperty(root, propertyName, expectedKind)
+            : Empty(expectedKind);
 
     private static JsonElement GetProperty(JsonElement root, string propertyName, JsonValueKind expectedKind) =>
         root.TryGetProperty(propertyName, out var value) && value.ValueKind == expectedKind
